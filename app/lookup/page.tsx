@@ -269,6 +269,42 @@ export default function LookupPage() {
     toast.info('تم تفريغ الشاشة وبدء بحث جديد');
   };
 
+  // Check if current active candidate or search results have joint data (in both sheets) for a given year & month
+  const isPeriodBothAvailable = (year: number, month: number): boolean => {
+    const key = `${year}-${month}`;
+    if (selectedCandidate?.joint_periods) {
+      return selectedCandidate.joint_periods.includes(key);
+    }
+    if (candidates.length > 0) {
+      return candidates.some((c) => c.joint_periods?.includes(key));
+    }
+    if (details?.allMonthsHistory) {
+      return details.allMonthsHistory.some(
+        (m) => m.year === year && m.month === month && m.inPayroll && m.inInsurance
+      );
+    }
+    return false;
+  };
+
+  const hasAnyJointPeriod = (): boolean => {
+    if (selectedCandidate?.joint_periods) {
+      return selectedCandidate.joint_periods.length > 0;
+    }
+    if (candidates.length > 0) {
+      return candidates.some(
+        (c) =>
+          (c.joint_periods && c.joint_periods.length > 0) ||
+          (c.first_both_month &&
+            !c.first_both_month.includes('لم يظهر') &&
+            !c.first_both_month.includes('غير متوفر'))
+      );
+    }
+    if (details?.allMonthsHistory) {
+      return details.allMonthsHistory.some((m) => m.inPayroll && m.inInsurance);
+    }
+    return false;
+  };
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#080d1a', position: 'relative' }}>
       <div className="orb orb-tl" style={{ opacity: 0.12 }} />
@@ -316,7 +352,7 @@ export default function LookupPage() {
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
-                    gap: 5,
+                    gap: 6,
                     padding: '5px 12px',
                     borderRadius: 10,
                     fontSize: 11,
@@ -330,11 +366,22 @@ export default function LookupPage() {
                 >
                   <Sparkles style={{ width: 12, height: 12, color: searchTargetPeriod === 'auto' ? '#818cf8' : 'inherit' }} />
                   أول شهر ظهور مشترك (تلقائي)
+                  {hasAnyJointPeriod() && (
+                    <span
+                      title="الموظف متوفر في كلا الشيتين (مرتبات + تأمينات)"
+                      className="online-dot-container"
+                      style={{ marginRight: 2 }}
+                    >
+                      <span className="online-dot-ping" />
+                      <span className="online-dot-core" />
+                    </span>
+                  )}
                 </button>
 
                 {availablePeriods.map((p) => {
                   const val = `${p.year}-${p.month}`;
                   const isActive = searchTargetPeriod === val;
+                  const isBoth = isPeriodBothAvailable(p.year, p.month);
                   return (
                     <button
                       key={`hero_target_${val}`}
@@ -348,14 +395,36 @@ export default function LookupPage() {
                         borderRadius: 10,
                         fontSize: 11,
                         fontWeight: isActive ? 800 : 600,
-                        background: isActive ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.03)',
-                        border: isActive ? '1.5px solid #818cf8' : '1px solid rgba(255,255,255,0.08)',
-                        color: isActive ? '#ffffff' : '#94a3b8',
+                        background: isActive
+                          ? 'rgba(99,102,241,0.25)'
+                          : isBoth
+                          ? 'rgba(16, 185, 129, 0.08)'
+                          : 'rgba(255,255,255,0.03)',
+                        border: isActive
+                          ? '1.5px solid #818cf8'
+                          : isBoth
+                          ? '1px solid rgba(16, 185, 129, 0.4)'
+                          : '1px solid rgba(255,255,255,0.08)',
+                        color: isActive ? '#ffffff' : isBoth ? '#a7f3d0' : '#94a3b8',
                         cursor: 'pointer',
                         transition: 'all 0.15s ease',
                       }}
+                      title={
+                        isBoth
+                          ? `متوفر في كلا الشيتين (مرتبات + تأمينات) لشهر ${p.month}/${p.year}`
+                          : `فحص شهر ${p.month}/${p.year}`
+                      }
                     >
                       <span className="font-mono-pro">شهر {p.month}/{p.year}</span>
+                      {isBoth && (
+                        <span
+                          className="online-dot-container"
+                          style={{ marginRight: 2 }}
+                        >
+                          <span className="online-dot-ping" />
+                          <span className="online-dot-core" />
+                        </span>
+                      )}
                       {isActive && <CheckCircle2 style={{ width: 12, height: 12, color: '#34d399' }} />}
                     </button>
                   );

@@ -17,6 +17,7 @@ export interface SearchCandidate {
   has_resignation?: boolean;
   resignation_summary?: string;
   sources?: string[];
+  joint_periods?: string[];
   target_month_status?: {
     year: number;
     month: number;
@@ -145,6 +146,7 @@ export async function searchEmployees(
       let firstBothYear: number | null = null;
       let firstBothM: number | null = null;
       let attendanceDays: string | null = null;
+      let jointPeriods: string[] = [];
       let targetMonthStatus: {
         year: number;
         month: number;
@@ -210,17 +212,22 @@ export async function searchEmployees(
           resignationSummary = `مستقيل ${rDate} ${rType}`.trim();
         }
 
-        // Calculate first joint appearance (both payroll and insurance together)
+        // Calculate all joint appearance periods (both payroll and insurance together)
         for (const pr of payrolls) {
           const matchedMi = insurances.find(
             (mi) => mi.period_year === pr.period_year && mi.period_month === pr.period_month
           );
           if (matchedMi) {
-            firstBothMonth = `${matchedMi.period_month} / ${matchedMi.period_year}`;
-            firstBothYear = matchedMi.period_year;
-            firstBothM = matchedMi.period_month;
-            attendanceDays = pr.attendance_days ? String(pr.attendance_days).trim() : '0';
-            break;
+            const pKey = `${pr.period_year}-${pr.period_month}`;
+            if (!jointPeriods.includes(pKey)) {
+              jointPeriods.push(pKey);
+            }
+            if (!firstBothMonth) {
+              firstBothMonth = `${matchedMi.period_month} / ${matchedMi.period_year}`;
+              firstBothYear = matchedMi.period_year;
+              firstBothM = matchedMi.period_month;
+              attendanceDays = pr.attendance_days ? String(pr.attendance_days).trim() : '0';
+            }
           }
         }
 
@@ -286,6 +293,7 @@ export async function searchEmployees(
         source: 'consolidated',
         source_label: Array.from(p.sources).join(' • '),
         sources: Array.from(p.sources),
+        joint_periods: jointPeriods,
         target_month_status: targetMonthStatus,
       };
     })
