@@ -116,16 +116,24 @@ export default function LookupPage() {
   const handleQueryChange = (val: string, periodVal: string = searchTargetPeriod) => {
     setQuery(val);
     if (timerRef.current) clearTimeout(timerRef.current);
+
+    let currentPeriod = periodVal;
+    // When deleting or clearing search input (< 2 characters), auto-revert target period to default 'auto'
     if (val.trim().length < 2) {
+      if (searchTargetPeriod !== 'auto') {
+        setSearchTargetPeriod('auto');
+        currentPeriod = 'auto';
+      }
       setCandidates([]);
       setSearching(false);
       setDropdownOpen(false);
       return;
     }
+
     setSearching(true);
     timerRef.current = setTimeout(async () => {
       try {
-        const res  = await fetch(buildSearchUrl(val, periodVal));
+        const res  = await fetch(buildSearchUrl(val, currentPeriod));
         const data = await res.json();
         if (data.success) {
           const resList = data.results || [];
@@ -256,6 +264,7 @@ export default function LookupPage() {
     setQuery('');
     setCandidates([]);
     setDropdownOpen(false);
+    setSearchTargetPeriod('auto');
     if (timerRef.current) clearTimeout(timerRef.current);
   };
 
@@ -265,8 +274,9 @@ export default function LookupPage() {
     setSelectedCandidate(null);
     setDetails(null);
     setDropdownOpen(false);
+    setSearchTargetPeriod('auto');
     if (timerRef.current) clearTimeout(timerRef.current);
-    toast.info('تم تفريغ الشاشة وبدء بحث جديد');
+    toast.info('تم تفريغ الشاشة والعودة للوضع الافتراضي (أول ظهور تلقائي)');
   };
 
   // Check if current active candidate or search results have joint data (in both sheets) for a given year & month
