@@ -92,15 +92,31 @@ export default function HistoryPage() {
 
   useEffect(() => { fetchLogs(); }, []);
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`حذف "${name}" وكافة سجلاتها؟`)) return;
+  const [confirmModal, setConfirmModal] = useState<{ id: string; name: string; sourceType: string; month: string } | null>(null);
+
+  const handleDeleteClick = (log: ImportLog) => {
+    const monthLabel = log.period_month && log.period_year
+      ? `شهر ${log.period_month}/${log.period_year}`
+      : '';
+    setConfirmModal({
+      id: log.id,
+      name: log.file_name,
+      sourceType: SOURCE_CFG[log.source_type]?.label ?? log.source_type,
+      month: monthLabel,
+    });
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!confirmModal) return;
+    const { id, name } = confirmModal;
+    setConfirmModal(null);
     setDeletingId(id);
     const tid = toast.loading(`جارٍ حذف "${name}"...`);
     try {
       const res  = await fetch(`/api/import/history?id=${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
-        toast.success('تم الحذف بنجاح', { id: tid });
+        toast.success(data.message || 'تم الحذف بنجاح', { id: tid });
         setLogs((p) => p.filter((l) => l.id !== id));
       } else {
         toast.error(data.error || 'فشل الحذف', { id: tid });
@@ -295,7 +311,7 @@ export default function HistoryPage() {
                           <td style={{ textAlign: 'center' }}>
                             <button
                               type="button"
-                              onClick={() => handleDelete(log.id, log.file_name)}
+                              onClick={() => handleDeleteClick(log)}
                               disabled={deletingId === log.id}
                               className="btn-danger"
                               style={{ padding: '7px', borderRadius: 10, cursor: deletingId === log.id ? 'not-allowed' : 'pointer', display: 'inline-flex' }}

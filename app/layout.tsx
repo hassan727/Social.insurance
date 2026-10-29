@@ -15,7 +15,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ar" dir="rtl" className="h-full">
+    <html lang="ar" dir="rtl" className="h-full" suppressHydrationWarning>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
@@ -25,6 +25,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body
+        suppressHydrationWarning
         className="min-h-full antialiased selection:bg-indigo-500 selection:text-white"
         style={{ fontFamily: "'Cairo', 'Inter', system-ui, sans-serif" }}
       >

@@ -2,14 +2,15 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Search, UploadCloud, History, ShieldCheck, Sparkles, Menu, X } from 'lucide-react';
+import { Search, UploadCloud, History, ShieldCheck, Sparkles, Menu, X, FileSpreadsheet } from 'lucide-react';
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const NAV_ITEMS = [
-  { href: '/lookup',  label: 'استدعاء موظف',  icon: Search,       badge: 'رئيسي', color: '#818cf8' },
-  { href: '/import',  label: 'استيراد ملفات', icon: UploadCloud,  badge: 'Excel',  color: '#34d399' },
-  { href: '/history', label: 'سجل العمليات',  icon: History,                       color: '#a78bfa' },
+  { href: '/lookup',  label: 'استدعاء موظف',  icon: Search,          badge: 'رئيسي', color: '#818cf8' },
+  { href: '/reports', label: 'التقارير والقوالب', icon: FileSpreadsheet, badge: '2026', color: '#38bdf8' },
+  { href: '/import',  label: 'استيراد ملفات', icon: UploadCloud,     badge: 'Excel',  color: '#34d399' },
+  { href: '/history', label: 'سجل العمليات',  icon: History,                          color: '#a78bfa' },
 ];
 
 export default function Navbar() {
