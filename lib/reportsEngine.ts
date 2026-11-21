@@ -1,5 +1,9 @@
 import * as XLSX from 'xlsx';
 import { supabaseServer } from './supabaseServer';
+import type { Database } from '@/types/supabase';
+
+// Type-safe table name — only tables that actually exist in Supabase
+type PublicTableName = keyof Database['public']['Tables'];
 
 export type CompanyAccount = 'E.G' | 'm.g' | 'ALL';
 export type ReportType =
@@ -100,14 +104,14 @@ function parseAmount(val: unknown): number {
   return isNaN(num) ? 0 : num;
 }
 
-// Paginated Supabase fetcher
-async function fetchAllRecords(table: string, selectFields = '*') {
+// Paginated Supabase fetcher — type-safe: table must be a real Supabase table name
+async function fetchAllRecords(table: PublicTableName, selectFields = '*') {
   const all: Record<string, unknown>[] = [];
   let from = 0;
   const step = 1000;
   while (true) {
-    const { data, error } = await supabaseServer
-      .from(table as 'incoming_insurance_records')
+    const { data, error } = await (supabaseServer
+      .from(table) as ReturnType<typeof supabaseServer.from>)
       .select(selectFields)
       .range(from, from + step - 1);
     if (error) {
@@ -128,8 +132,13 @@ let cachedData: {
   monthlyIns: Record<string, unknown>[];
   payrollRecords: Record<string, unknown>[];
   resignationRecords: Record<string, unknown>[];
+  masterEmployees: Record<string, unknown>[];
   timestamp: number;
 } | null = null;
+
+export function invalidateReportsCache() {
+  cachedData = null;
+}
 
 async function getCachedRawData() {
   const now = Date.now();
@@ -137,11 +146,12 @@ async function getCachedRawData() {
     return cachedData;
   }
 
-  const [incomingIns, monthlyIns, payrollRecords, resignationRecords] = await Promise.all([
+  const [incomingIns, monthlyIns, payrollRecords, resignationRecords, masterEmployees] = await Promise.all([
     fetchAllRecords('incoming_insurance_records'),
     fetchAllRecords('monthly_insurance_records'),
     fetchAllRecords('monthly_payroll_records'),
     fetchAllRecords('resignation_records'),
+    fetchAllRecords('employees_master', 'id, company_account, employee_code, national_id, employee_name, current_status, current_job_title, current_region, current_department, insurance_number, insurance_status, consolidated_data'),
   ]);
 
   cachedData = {
@@ -149,6 +159,7 @@ async function getCachedRawData() {
     monthlyIns,
     payrollRecords,
     resignationRecords,
+    masterEmployees,
     timestamp: now,
   };
 
@@ -162,7 +173,7 @@ export async function generateReportData(
   method: CalculationMethod = 'actual',
   targetMonth: number = 9
 ): Promise<ReportResult> {
-  const { incomingIns, monthlyIns, payrollRecords, resignationRecords } = await getCachedRawData();
+  const { incomingIns, monthlyIns, payrollRecords, resignationRecords, masterEmployees } = await getCachedRawData();
 
   // 1. Build Global Reference Maps
   const globalByNid = new Map<string, Record<string, unknown>>();
@@ -309,6 +320,94 @@ export async function generateReportData(
     }
   });
 
+  // Also bridge employees from employees_master so Smart-Imported employees appear in reports
+  masterEmployees.forEach((emp) => {
+    const raw = (emp.consolidated_data as Record<string, string>) || {};
+    const nid = ((emp.national_id as string) || raw['الرقم القومى'] || raw['الرقم القومي'] || '').trim();
+    const code = ((emp.employee_code as string) || raw['الكود'] || '').trim();
+    const name = ((emp.employee_name as string) || raw['الاسم'] || '').trim();
+    const companyAcc = ((emp.company_account as string) || 'E.G').trim();
+
+    if (account !== 'ALL') {
+      const matchAcc =
+        account === 'E.G'
+          ? companyAcc.toUpperCase() === 'E.G' || companyAcc === ''
+          : companyAcc.toLowerCase() === 'm.g';
+      if (!matchAcc) return;
+    }
+
+    const key = nid || code || name;
+    if (!key) return;
+
+    if (!employeesMap.has(key)) {
+      employeesMap.set(key, {
+        code,
+        nid,
+        name,
+        jobTitle: (emp.current_job_title as string) || raw['الوظيفه'] || raw['الوظيفة'] || '',
+        department: (emp.current_department as string) || raw['الاداره'] || raw['الإدارة'] || '',
+        region: (emp.current_region as string) || raw['المنطقه'] || raw['المنطقة'] || '',
+        companyAcc,
+        salariesByMonth: {},
+        attendanceByMonth: {},
+      });
+    }
+
+    const empRecord = employeesMap.get(key)!;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ledger = (raw.financial_ledger as unknown as Record<string, any>) || {};
+    const salLedger = ledger.salaries_by_month || {};
+    const attLedger = ledger.attendance_by_month || {};
+    const insLedger = ledger.ins_wages_by_month || {};
+
+    for (let m = 1; m <= 12; m++) {
+      const sVal = salLedger[String(m)] || parseAmount(raw[`راتب شهر ${m}`] || raw[`مرتب شهر ${m}`] || raw[`شهر ${m}`]);
+      if (sVal > 0 && !empRecord.salariesByMonth[m]) {
+        empRecord.salariesByMonth[m] = sVal;
+      }
+      const aVal = attLedger[String(m)] || parseAmount(raw[`ايام شهر ${m}`] || raw[`أيام شهر ${m}`]);
+      if (aVal > 0 && !empRecord.attendanceByMonth[m]) {
+        empRecord.attendanceByMonth[m] = aVal;
+      }
+      const iVal = insLedger[String(m)] || parseAmount(raw[`تأمينات شهر ${m}`] || raw[`تامين شهر ${m}`]);
+      if (iVal > 0) {
+        if (nid) {
+          if (!insWagesMap.has(nid)) insWagesMap.set(nid, {});
+          insWagesMap.get(nid)![m] = iVal;
+        }
+        if (code) {
+          if (!insWagesMap.has(code)) insWagesMap.set(code, {});
+          insWagesMap.get(code)![m] = iVal;
+        }
+      }
+    }
+
+    if (nid && !globalByNid.has(nid)) {
+      globalByNid.set(nid, {
+        nid,
+        code,
+        name,
+        job: (emp.current_job_title as string) || '',
+        insJob: raw['الوظيفه في التامينات'] || '',
+        subDate: raw['تاريخ بدايه الاشتراك'] || '',
+        insNum: (emp.insurance_number as string) || raw['الرقم التاميني'] || '',
+        companyAcc,
+      });
+    }
+    if (code && !globalByCode.has(code)) {
+      globalByCode.set(code, {
+        nid,
+        code,
+        name,
+        job: (emp.current_job_title as string) || '',
+        insJob: raw['الوظيفه في التامينات'] || '',
+        subDate: raw['تاريخ بدايه الاشتراك'] || '',
+        insNum: (emp.insurance_number as string) || raw['الرقم التاميني'] || '',
+        companyAcc,
+      });
+    }
+  });
+
   // Helper lookups
   const getGlobal = (n?: string, c?: string): Record<string, unknown> => {
     return (n ? globalByNid.get(n) : undefined) || (c ? globalByCode.get(c) : undefined) || {};
@@ -444,7 +543,9 @@ export async function generateReportData(
       { key: 'insWage', label: 'الاجر التامينى', width: 15 },
       { key: 'avgQ1', label: 'متوسط Q1', width: 14 },
       { key: 'avgQ2', label: 'متوسط Q2', width: 14 },
-      { key: 'avgQ3', label: 'متوسط Q3', width: 16 },
+      { key: 'avgQ3', label: 'متوسط Q3', width: 14 },
+      { key: 'avgQ4', label: 'متوسط Q4', width: 14 },
+      { key: 'targetAvg', label: `متوسط الفترة (${quarter})`, width: 18 },
       { key: 'workedMonthsInQuarter', label: 'عدد أشهر العمل (الربع المحدد)', width: 22 },
       { key: 'notes', label: 'ملاحظات الفترة', width: 22 },
     ];
@@ -455,16 +556,21 @@ export async function generateReportData(
       const subStartDate = (g.subDate as string) || '';
 
       const insWages = getInsWages(emp.nid, emp.code);
-      const insWage =
-        insWages[9] ||
-        insWages[8] ||
-        insWages[7] ||
-        insWages[6] ||
-        insWages[5] ||
-        insWages[4] ||
-        insWages[3] ||
-        insWages[2] ||
-        0;
+      
+      // Dynamic Insurance Wage resolution for the period:
+      let insWage = 0;
+      for (let i = targetMonths.length - 1; i >= 0; i--) {
+        const m = targetMonths[i];
+        if (insWages[m]) { insWage = insWages[m]; break; }
+      }
+      if (!insWage) {
+        for (let m = 12; m >= 1; m--) {
+          if (insWages[m]) { insWage = insWages[m]; break; }
+        }
+      }
+      if (!insWage) {
+        insWage = parseAmount(g.insSalary || (g.raw as Record<string, unknown>)?.['الاجر التاميني'] || 0);
+      }
 
       // Quarterly averages
       const calcQuarterAvg = (months: number[]) => {
@@ -479,6 +585,7 @@ export async function generateReportData(
       const q1 = calcQuarterAvg([1, 2, 3]);
       const q2 = calcQuarterAvg([4, 5, 6]);
       const q3 = calcQuarterAvg([7, 8, 9]);
+      const q4 = calcQuarterAvg([10, 11, 12]);
 
       // Target period check
       const currentTargetSals = targetMonths
@@ -491,7 +598,9 @@ export async function generateReportData(
       const targetQuarterAvg =
         quarter === 'Q1' ? q1
         : quarter === 'Q2' ? q2
-        : q3; // Q3 or any other selection defaults to Q3
+        : quarter === 'Q3' ? q3
+        : quarter === 'Q4' ? q4
+        : calcQuarterAvg([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 
       if (activeInTarget) {
         activeInPeriodCount++;
@@ -530,6 +639,8 @@ export async function generateReportData(
         avgQ1: q1,
         avgQ2: q2,
         avgQ3: q3,
+        avgQ4: q4,
+        targetAvg: targetQuarterAvg,
         workedMonthsInQuarter: workedMonthsLabel,
         notes: note,
       });
@@ -625,7 +736,15 @@ export async function generateReportData(
           totalPayroll += salaryInMonth;
 
           const insWages = getInsWages(emp.nid, emp.code);
-          const insWage = insWages[9] || insWages[8] || insWages[7] || 5385;
+          let insWage = insWages[monthNum] || 0;
+          if (!insWage) {
+            for (let m = 12; m >= 1; m--) {
+              if (insWages[m]) { insWage = insWages[m]; break; }
+            }
+          }
+          if (!insWage) {
+            insWage = parseAmount(g.insSalary || (g.raw as Record<string, unknown>)?.['الاجر التاميني'] || 0);
+          }
           const employer1875 = Math.round(insWage * 0.1875 * 100) / 100;
           const worker11 = Math.round(insWage * 0.11 * 100) / 100;
           const total2975 = Math.round((worker11 + employer1875) * 100) / 100;
@@ -666,7 +785,19 @@ export async function generateReportData(
     empList.forEach((emp) => {
       const g = getGlobal(emp.nid, emp.code);
       const insWages = getInsWages(emp.nid, emp.code);
-      const insWage = insWages[9] || insWages[8] || insWages[7] || 0;
+      let insWage = 0;
+      for (let i = targetMonths.length - 1; i >= 0; i--) {
+        const m = targetMonths[i];
+        if (insWages[m]) { insWage = insWages[m]; break; }
+      }
+      if (!insWage) {
+        for (let m = 12; m >= 1; m--) {
+          if (insWages[m]) { insWage = insWages[m]; break; }
+        }
+      }
+      if (!insWage) {
+        insWage = parseAmount(g.insSalary || (g.raw as Record<string, unknown>)?.['الاجر التاميني'] || 0);
+      }
 
       const currentTargetSals = targetMonths
         .map((m) => emp.salariesByMonth[m])
@@ -738,8 +869,21 @@ export async function generateReportData(
     ];
 
     empList.forEach((emp) => {
+      const g = getGlobal(emp.nid, emp.code);
       const insWages = getInsWages(emp.nid, emp.code);
-      const insWage = insWages[9] || insWages[8] || insWages[7] || 0;
+      let insWage = 0;
+      for (let i = targetMonths.length - 1; i >= 0; i--) {
+        const m = targetMonths[i];
+        if (insWages[m]) { insWage = insWages[m]; break; }
+      }
+      if (!insWage) {
+        for (let m = 12; m >= 1; m--) {
+          if (insWages[m]) { insWage = insWages[m]; break; }
+        }
+      }
+      if (!insWage) {
+        insWage = parseAmount(g.insSalary || (g.raw as Record<string, unknown>)?.['الاجر التاميني'] || 0);
+      }
 
       const currentTargetSals = targetMonths
         .map((m) => emp.salariesByMonth[m])
@@ -818,7 +962,15 @@ export async function generateReportData(
     });
   } else {
     // comprehensive_master
-    reportTitle = `كشف البيانات الشامل للموظفين والرواتب - ${account}`;
+    reportTitle = `كشف البيانات الشامل للموظفين والرواتب - ${quarter} (${account === 'ALL' ? 'جميع الحسابات' : account})`;
+    
+    // Dynamic month columns matching targetMonths
+    const monthCols: ReportColumn[] = targetMonths.map((m) => ({
+      key: `s${m}`,
+      label: `راتب شهر ${m}`,
+      width: 14,
+    }));
+
     columns = [
       { key: 'code', label: 'الكود', width: 10 },
       { key: 'name', label: 'الاسم', width: 34 },
@@ -830,29 +982,48 @@ export async function generateReportData(
       { key: 'insJobTitle', label: 'الوظيفة بالتأمينات', width: 20 },
       { key: 'subStartDate', label: 'بداية الاشتراك', width: 16 },
       { key: 'insWage', label: 'الأجر التأميني', width: 14 },
-      { key: 's7', label: 'راتب شهر 7', width: 14 },
-      { key: 's8', label: 'راتب شهر 8', width: 14 },
-      { key: 's9', label: 'راتب شهر 9', width: 14 },
-      { key: 'hrAvgQ3', label: 'متوسط Q3 (HR)', width: 16 },
-      { key: 'accountingAvgQ3', label: 'متوسط Q3 (÷3)', width: 16 },
-      { key: 'status', label: 'الحالة', width: 22 },
+      ...monthCols,
+      { key: 'periodAvg', label: `متوسط الفترة (${quarter} - HR)`, width: 18 },
+      { key: 'accountingAvg', label: `متوسط المحاسبة (÷${targetMonths.length})`, width: 18 },
+      { key: 'status', label: 'حالة الفترة', width: 22 },
     ];
 
     empList.forEach((emp) => {
       const g = getGlobal(emp.nid, emp.code);
       const insWages = getInsWages(emp.nid, emp.code);
-      const insWage = insWages[9] || insWages[8] || insWages[7] || 0;
 
-      const s7 = emp.salariesByMonth[7] || 0;
-      const s8 = emp.salariesByMonth[8] || 0;
-      const s9 = emp.salariesByMonth[9] || 0;
-      const q3Total = s7 + s8 + s9;
-      const workedMonths = (s7 > 0 ? 1 : 0) + (s8 > 0 ? 1 : 0) + (s9 > 0 ? 1 : 0);
+      let insWage = 0;
+      for (let i = targetMonths.length - 1; i >= 0; i--) {
+        const m = targetMonths[i];
+        if (insWages[m]) { insWage = insWages[m]; break; }
+      }
+      if (!insWage) {
+        for (let m = 12; m >= 1; m--) {
+          if (insWages[m]) { insWage = insWages[m]; break; }
+        }
+      }
+      if (!insWage) {
+        insWage = parseAmount(g.insSalary || (g.raw as Record<string, unknown>)?.['الاجر التاميني'] || 0);
+      }
 
-      const hrAvgQ3 = workedMonths > 0 ? Math.round(q3Total / workedMonths) : '';
-      const accAvgQ3 = workedMonths > 0 ? Math.round(q3Total / 3) : '';
+      // Dynamic salary per target month
+      const rowMonths: Record<string, unknown> = {};
+      let totalPeriodSal = 0;
+      let workedInPeriod = 0;
 
-      if (workedMonths > 0) activeInPeriodCount++;
+      targetMonths.forEach((m) => {
+        const sal = emp.salariesByMonth[m] || 0;
+        rowMonths[`s${m}`] = sal > 0 ? sal : '';
+        if (sal > 0) {
+          totalPeriodSal += sal;
+          workedInPeriod++;
+        }
+      });
+
+      const hrAvg = workedInPeriod > 0 ? Math.round(totalPeriodSal / workedInPeriod) : '';
+      const accAvg = workedInPeriod > 0 ? Math.round(totalPeriodSal / targetMonths.length) : '';
+
+      if (workedInPeriod > 0) activeInPeriodCount++;
 
       rows.push({
         code: emp.code,
@@ -865,19 +1036,15 @@ export async function generateReportData(
         insJobTitle: (g.insJob as string) || '',
         subStartDate: (g.subDate as string) || '',
         insWage: insWage || '',
-        s7: s7 || '',
-        s8: s8 || '',
-        s9: s9 || '',
-        hrAvgQ3,
-        accountingAvgQ3: accAvgQ3,
+        ...rowMonths,
+        periodAvg: hrAvg,
+        accountingAvg: accAvg,
         status:
-          workedMonths === 3
-            ? 'كامل (3 أشهر)'
-            : workedMonths === 2
-            ? 'متوسط شهرين'
-            : workedMonths === 1
-            ? 'شهر واحد'
-            : 'غير مسجل بـ Q3',
+          workedInPeriod === targetMonths.length
+            ? `كامل (${workedInPeriod} أشهر)`
+            : workedInPeriod > 0
+            ? `متوسط ${workedInPeriod} أشهر`
+            : `غير مسجل في ${quarter}`,
       });
     });
   }

@@ -39,6 +39,400 @@ export type Database = {
   }
   public: {
     Tables: {
+      employees_master: {
+        Row: {
+          id: string
+          company_account: string
+          employee_code: string | null
+          national_id: string | null
+          employee_name: string
+          current_status: string | null
+          current_job_title: string | null
+          current_region: string | null
+          current_department: string | null
+          insurance_number: string | null
+          insurance_status: string | null
+          insurance_salary: number | null
+          insurance_job_title: string | null
+          insurance_start_date: string | null
+          hire_date: string | null
+          resignation_date: string | null
+          last_working_day: string | null
+          phone_number: string | null
+          address: string | null
+          consolidated_data: Json
+          first_seen_at: string
+          last_updated_at: string
+          last_import_id: string | null
+          has_duplicate_risk: boolean | null
+          data_completeness_score: number | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          company_account: string
+          employee_code?: string | null
+          national_id?: string | null
+          employee_name: string
+          current_status?: string | null
+          current_job_title?: string | null
+          current_region?: string | null
+          current_department?: string | null
+          insurance_number?: string | null
+          insurance_status?: string | null
+          insurance_salary?: number | null
+          insurance_job_title?: string | null
+          insurance_start_date?: string | null
+          hire_date?: string | null
+          resignation_date?: string | null
+          last_working_day?: string | null
+          phone_number?: string | null
+          address?: string | null
+          consolidated_data?: Json
+          first_seen_at?: string
+          last_updated_at?: string
+          last_import_id?: string | null
+          has_duplicate_risk?: boolean | null
+          data_completeness_score?: number | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          company_account?: string
+          employee_code?: string | null
+          national_id?: string | null
+          employee_name?: string
+          current_status?: string | null
+          current_job_title?: string | null
+          current_region?: string | null
+          current_department?: string | null
+          insurance_number?: string | null
+          insurance_status?: string | null
+          insurance_salary?: number | null
+          insurance_job_title?: string | null
+          insurance_start_date?: string | null
+          hire_date?: string | null
+          resignation_date?: string | null
+          last_working_day?: string | null
+          phone_number?: string | null
+          address?: string | null
+          consolidated_data?: Json
+          first_seen_at?: string
+          last_updated_at?: string
+          last_import_id?: string | null
+          has_duplicate_risk?: boolean | null
+          data_completeness_score?: number | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      employee_history: {
+        Row: {
+          id: string
+          employee_id: string | null
+          change_type: string
+          from_company_account: string | null
+          to_company_account: string | null
+          from_employee_code: string | null
+          to_employee_code: string | null
+          changed_fields: string[] | null
+          old_values: Json | null
+          new_values: Json | null
+          import_id: string | null
+          change_reason: string | null
+          notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          employee_id?: string | null
+          change_type: string
+          from_company_account?: string | null
+          to_company_account?: string | null
+          from_employee_code?: string | null
+          to_employee_code?: string | null
+          changed_fields?: string[] | null
+          old_values?: Json | null
+          new_values?: Json | null
+          import_id?: string | null
+          change_reason?: string | null
+          notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          employee_id?: string | null
+          change_type?: string
+          from_company_account?: string | null
+          to_company_account?: string | null
+          from_employee_code?: string | null
+          to_employee_code?: string | null
+          changed_fields?: string[] | null
+          old_values?: Json | null
+          new_values?: Json | null
+          import_id?: string | null
+          change_reason?: string | null
+          notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "employee_history_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "employee_history_import_id_fkey"
+            columns: ["import_id"]
+            isOneToOne: false
+            referencedRelation: "import_logs"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      dynamic_sheets: {
+        Row: {
+          id: string
+          sheet_name: string
+          display_name: string
+          description: string | null
+          column_definitions: Json
+          matching_keys: string[]
+          primary_key_field: string | null
+          is_active: boolean | null
+          is_master_source: boolean | null
+          update_strategy: string | null
+          total_columns: number | null
+          last_import_date: string | null
+          total_records_imported: number | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          sheet_name: string
+          display_name: string
+          description?: string | null
+          column_definitions: Json
+          matching_keys: string[]
+          primary_key_field?: string | null
+          is_active?: boolean | null
+          is_master_source?: boolean | null
+          update_strategy?: string | null
+          total_columns?: number | null
+          last_import_date?: string | null
+          total_records_imported?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          sheet_name?: string
+          display_name?: string
+          description?: string | null
+          column_definitions?: Json
+          matching_keys?: string[]
+          primary_key_field?: string | null
+          is_active?: boolean | null
+          is_master_source?: boolean | null
+          update_strategy?: string | null
+          total_columns?: number | null
+          last_import_date?: string | null
+          total_records_imported?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      sheet_data: {
+        Row: {
+          id: string
+          sheet_id: string | null
+          employee_id: string | null
+          row_data: Json
+          row_code: string | null
+          row_national_id: string | null
+          row_name: string | null
+          import_id: string | null
+          row_number: number | null
+          is_latest: boolean | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          sheet_id?: string | null
+          employee_id?: string | null
+          row_data: Json
+          row_code?: string | null
+          row_national_id?: string | null
+          row_name?: string | null
+          import_id?: string | null
+          row_number?: number | null
+          is_latest?: boolean | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          sheet_id?: string | null
+          employee_id?: string | null
+          row_data?: Json
+          row_code?: string | null
+          row_national_id?: string | null
+          row_name?: string | null
+          import_id?: string | null
+          row_number?: number | null
+          is_latest?: boolean | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sheet_data_sheet_id_fkey"
+            columns: ["sheet_id"]
+            isOneToOne: false
+            referencedRelation: "dynamic_sheets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_data_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "sheet_data_import_id_fkey"
+            columns: ["import_id"]
+            isOneToOne: false
+            referencedRelation: "import_logs"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      matching_conflicts: {
+        Row: {
+          id: string
+          employee_a_id: string | null
+          employee_b_id: string | null
+          conflict_type: string
+          confidence_score: number | null
+          conflict_data: Json | null
+          resolved: boolean | null
+          resolution_action: string | null
+          resolved_by: string | null
+          resolved_at: string | null
+          resolution_notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          employee_a_id?: string | null
+          employee_b_id?: string | null
+          conflict_type: string
+          confidence_score?: number | null
+          conflict_data?: Json | null
+          resolved?: boolean | null
+          resolution_action?: string | null
+          resolved_by?: string | null
+          resolved_at?: string | null
+          resolution_notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          employee_a_id?: string | null
+          employee_b_id?: string | null
+          conflict_type?: string
+          confidence_score?: number | null
+          conflict_data?: Json | null
+          resolved?: boolean | null
+          resolution_action?: string | null
+          resolved_by?: string | null
+          resolved_at?: string | null
+          resolution_notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "matching_conflicts_employee_a_id_fkey"
+            columns: ["employee_a_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "matching_conflicts_employee_b_id_fkey"
+            columns: ["employee_b_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
+      search_history: {
+        Row: {
+          id: string
+          search_query: string
+          national_id: string | null
+          employee_code: string | null
+          employee_name: string | null
+          result_found: boolean | null
+          results_count: number | null
+          search_timestamp: string
+          user_ip: string | null
+          company_account: string | null
+          insurance_status: string | null
+          status: string | null
+          has_resignation: boolean | null
+          first_both_month: string | null
+          attendance_days: string | null
+          search_result: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          search_query: string
+          national_id?: string | null
+          employee_code?: string | null
+          employee_name?: string | null
+          result_found?: boolean | null
+          results_count?: number | null
+          search_timestamp?: string
+          user_ip?: string | null
+          company_account?: string | null
+          insurance_status?: string | null
+          status?: string | null
+          has_resignation?: boolean | null
+          first_both_month?: string | null
+          attendance_days?: string | null
+          search_result?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          search_query?: string
+          national_id?: string | null
+          employee_code?: string | null
+          employee_name?: string | null
+          result_found?: boolean | null
+          results_count?: number | null
+          search_timestamp?: string
+          user_ip?: string | null
+          company_account?: string | null
+          insurance_status?: string | null
+          status?: string | null
+          has_resignation?: boolean | null
+          first_both_month?: string | null
+          attendance_days?: string | null
+          search_result?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       import_logs: {
         Row: {
           column_mapping: Json | null
@@ -341,12 +735,340 @@ export type Database = {
           },
         ]
       }
+      data_discrepancies: {
+        Row: {
+          id: string
+          employee_id: string | null
+          raw_employee_code: string | null
+          raw_national_id: string | null
+          raw_employee_name: string | null
+          discrepancy_type: string
+          severity: string
+          source_a: string | null
+          source_b: string | null
+          field_name: string | null
+          value_a: string | null
+          value_b: string | null
+          description: string | null
+          status: string
+          resolved_at: string | null
+          resolved_by: string | null
+          resolution_notes: string | null
+          first_detected_at: string
+          last_checked_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          employee_id?: string | null
+          raw_employee_code?: string | null
+          raw_national_id?: string | null
+          raw_employee_name?: string | null
+          discrepancy_type: string
+          severity?: string
+          source_a?: string | null
+          source_b?: string | null
+          field_name?: string | null
+          value_a?: string | null
+          value_b?: string | null
+          description?: string | null
+          status?: string
+          resolved_at?: string | null
+          resolved_by?: string | null
+          resolution_notes?: string | null
+          first_detected_at?: string
+          last_checked_at?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          employee_id?: string | null
+          raw_employee_code?: string | null
+          raw_national_id?: string | null
+          raw_employee_name?: string | null
+          discrepancy_type?: string
+          severity?: string
+          source_a?: string | null
+          source_b?: string | null
+          field_name?: string | null
+          value_a?: string | null
+          value_b?: string | null
+          description?: string | null
+          status?: string
+          resolved_at?: string | null
+          resolved_by?: string | null
+          resolution_notes?: string | null
+          first_detected_at?: string
+          last_checked_at?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "data_discrepancies_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      matching_candidates: {
+        Row: {
+          id: string
+          import_id: string | null
+          sheet_name: string
+          row_data: Json
+          row_number: number | null
+          raw_code: string | null
+          raw_national_id: string | null
+          raw_name: string | null
+          candidate_employee_id: string | null
+          match_type: string | null
+          confidence_score: number | null
+          candidate_snapshot: Json | null
+          status: string
+          reviewed_by: string | null
+          reviewed_at: string | null
+          notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          import_id?: string | null
+          sheet_name: string
+          row_data: Json
+          row_number?: number | null
+          raw_code?: string | null
+          raw_national_id?: string | null
+          raw_name?: string | null
+          candidate_employee_id?: string | null
+          match_type?: string | null
+          confidence_score?: number | null
+          candidate_snapshot?: Json | null
+          status?: string
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          notes?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          import_id?: string | null
+          sheet_name?: string
+          row_data?: Json
+          row_number?: number | null
+          raw_code?: string | null
+          raw_national_id?: string | null
+          raw_name?: string | null
+          candidate_employee_id?: string | null
+          match_type?: string | null
+          confidence_score?: number | null
+          candidate_snapshot?: Json | null
+          status?: string
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          notes?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "matching_candidates_candidate_employee_id_fkey"
+            columns: ["candidate_employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "matching_candidates_import_id_fkey"
+            columns: ["import_id"]
+            isOneToOne: false
+            referencedRelation: "import_logs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      saved_reports: {
+        Row: {
+          id: string
+          report_name: string
+          report_description: string | null
+          report_config: Json
+          created_by: string | null
+          is_public: boolean
+          is_pinned: boolean
+          last_run_at: string | null
+          run_count: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          report_name: string
+          report_description?: string | null
+          report_config: Json
+          created_by?: string | null
+          is_public?: boolean
+          is_pinned?: boolean
+          last_run_at?: string | null
+          run_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          report_name?: string
+          report_description?: string | null
+          report_config?: Json
+          created_by?: string | null
+          is_public?: boolean
+          is_pinned?: boolean
+          last_run_at?: string | null
+          run_count?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      quality_run_log: {
+        Row: {
+          id: string
+          run_type: string
+          triggered_by: string | null
+          total_employees_checked: number | null
+          discrepancies_found: number | null
+          discrepancies_resolved: number | null
+          new_discrepancies: number | null
+          duration_ms: number | null
+          error_message: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          run_type?: string
+          triggered_by?: string | null
+          total_employees_checked?: number | null
+          discrepancies_found?: number | null
+          discrepancies_resolved?: number | null
+          new_discrepancies?: number | null
+          duration_ms?: number | null
+          error_message?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          run_type?: string
+          triggered_by?: string | null
+          total_employees_checked?: number | null
+          discrepancies_found?: number | null
+          discrepancies_resolved?: number | null
+          new_discrepancies?: number | null
+          duration_ms?: number | null
+          error_message?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      field_conflicts: {
+        Row: {
+          id: string
+          employee_id: string
+          field_name: string
+          current_value: string | null
+          current_source: string | null
+          proposed_value: string
+          proposed_source: string
+          proposed_import_id: string | null
+          status: string
+          merged_value: string | null
+          reviewed_by: string | null
+          reviewed_at: string | null
+          review_notes: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          employee_id: string
+          field_name: string
+          current_value?: string | null
+          current_source?: string | null
+          proposed_value: string
+          proposed_source: string
+          proposed_import_id?: string | null
+          status?: string
+          merged_value?: string | null
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          review_notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          employee_id?: string
+          field_name?: string
+          current_value?: string | null
+          current_source?: string | null
+          proposed_value?: string
+          proposed_source?: string
+          proposed_import_id?: string | null
+          status?: string
+          merged_value?: string | null
+          reviewed_by?: string | null
+          reviewed_at?: string | null
+          review_notes?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "field_conflicts_employee_id_fkey"
+            columns: ["employee_id"]
+            isOneToOne: false
+            referencedRelation: "employees_master"
+            referencedColumns: ["id"]
+          }
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      deduplicate_sheet_data: {
+        Args: {
+          target_sheet_name?: string | null
+        }
+        Returns: {
+          sheet_name: string
+          total_rows: number
+          duplicates_marked: number
+          latest_rows: number
+        }[]
+      }
+      detect_all_field_conflicts: {
+        Args: Record<PropertyKey, never>
+        Returns: {
+          employees_scanned: number
+          total_conflicts_found: number
+        }[]
+      }
+      detect_employee_field_conflicts: {
+        Args: {
+          employee_id_param: string
+          import_id_param?: string | null
+        }
+        Returns: number
+      }
+      apply_conflict_decision: {
+        Args: {
+          conflict_id_param: string
+          decision: string
+          merged_val?: string | null
+          reviewed_by_param?: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

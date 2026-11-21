@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import Navbar from '@/components/Navbar';
+import CrossSheetReportsView from '@/components/CrossSheetReportsView';
+import OfficialPrintAuditPanel from '@/components/OfficialPrintAuditPanel';
 import {
   FileSpreadsheet,
   Download,
@@ -154,6 +155,18 @@ const REPORT_CONFIGS: Record<string, {
 };
 
 export default function ReportsPage() {
+  const [activeReportsView, setActiveReportsView] = useState<'payroll_insurance' | 'cross_sheet' | 'official_print_audit'>('payroll_insurance');
+
+  // Support direct tab URL (e.g. /reports?tab=official_print_audit)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search);
+      const tab = p.get('tab');
+      if (tab === 'official_print_audit' || tab === 'cross_sheet' || tab === 'payroll_insurance') {
+        setActiveReportsView(tab);
+      }
+    }
+  }, []);
   const [account, setAccount] = useState<'E.G' | 'm.g' | 'ALL'>('E.G');
   const [reportType, setReportType] = useState<string>('hr_letter');
   const [quarter, setQuarter] = useState<string>('Q3');
@@ -465,9 +478,7 @@ export default function ReportsPage() {
   }, [filteredRows, currentPage]);
 
   return (
-    <div style={{ minHeight: '100vh', background: '#080d1a', color: '#f1f5f9' }} dir="rtl">
-      <Navbar />
-
+    <div>
       <main style={{ width: '94%', maxWidth: 1800, margin: '2rem auto', padding: '0 1rem' }}>
         {/* ── Top Header Banner ── */}
         <div style={{ marginBottom: '2rem' }}>
@@ -517,6 +528,176 @@ export default function ReportsPage() {
             </div>
           </div>
         </div>
+
+        {/* ── Master Report View Switcher (3 Prominent Clickable Action Cards) ── */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+          gap: '14px',
+          marginBottom: '2rem',
+        }}>
+          {/* Tab 1: Payroll & Insurance */}
+          <button
+            type="button"
+            onClick={() => setActiveReportsView('payroll_insurance')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              padding: '18px 22px',
+              borderRadius: 16,
+              cursor: 'pointer',
+              textAlign: 'right',
+              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+              background: activeReportsView === 'payroll_insurance'
+                ? 'linear-gradient(135deg, rgba(79, 70, 229, 0.35) 0%, rgba(99, 102, 241, 0.2) 100%)'
+                : 'rgba(30, 41, 59, 0.6)',
+              border: activeReportsView === 'payroll_insurance'
+                ? '2px solid #818cf8'
+                : '1.5px solid rgba(148, 163, 184, 0.25)',
+              boxShadow: activeReportsView === 'payroll_insurance'
+                ? '0 0 24px rgba(99, 102, 241, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.2)'
+                : '0 4px 12px rgba(0, 0, 0, 0.25)',
+              transform: activeReportsView === 'payroll_insurance' ? 'scale(1.02)' : 'scale(1)',
+            }}
+          >
+            <div style={{
+              width: 48, height: 48, borderRadius: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              background: activeReportsView === 'payroll_insurance' ? 'rgba(99, 102, 241, 0.35)' : 'rgba(255, 255, 255, 0.06)',
+              border: `1px solid ${activeReportsView === 'payroll_insurance' ? '#818cf8' : 'rgba(255, 255, 255, 0.1)'}`,
+            }}>
+              <FileSpreadsheet style={{ width: 24, height: 24, color: activeReportsView === 'payroll_insurance' ? '#a5b4fc' : '#94a3b8' }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 15, fontWeight: 900, color: '#ffffff' }}>
+                  تقارير المرتبات والتأمينات
+                </span>
+                {activeReportsView === 'payroll_insurance' && (
+                  <span style={{ fontSize: 11, fontWeight: 800, padding: '2px 8px', borderRadius: 6, background: '#6366f1', color: '#ffffff' }}>نشط ✓</span>
+                )}
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: activeReportsView === 'payroll_insurance' ? '#cbd5e1' : '#64748b' }}>
+                HR Letter، الحد الأدنى 7000، والفاتورة الربع سنوية
+              </p>
+            </div>
+          </button>
+
+          {/* Tab 2: Cross Sheet */}
+          <button
+            type="button"
+            onClick={() => setActiveReportsView('cross_sheet')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              padding: '18px 22px',
+              borderRadius: 16,
+              cursor: 'pointer',
+              textAlign: 'right',
+              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+              background: activeReportsView === 'cross_sheet'
+                ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.35) 0%, rgba(14, 165, 233, 0.2) 100%)'
+                : 'rgba(30, 41, 59, 0.6)',
+              border: activeReportsView === 'cross_sheet'
+                ? '2px solid #38bdf8'
+                : '1.5px solid rgba(148, 163, 184, 0.25)',
+              boxShadow: activeReportsView === 'cross_sheet'
+                ? '0 0 24px rgba(56, 189, 248, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.2)'
+                : '0 4px 12px rgba(0, 0, 0, 0.25)',
+              transform: activeReportsView === 'cross_sheet' ? 'scale(1.02)' : 'scale(1)',
+            }}
+          >
+            <div style={{
+              width: 48, height: 48, borderRadius: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              background: activeReportsView === 'cross_sheet' ? 'rgba(56, 189, 248, 0.35)' : 'rgba(255, 255, 255, 0.06)',
+              border: `1px solid ${activeReportsView === 'cross_sheet' ? '#38bdf8' : 'rgba(255, 255, 255, 0.1)'}`,
+            }}>
+              <DatabaseZap style={{ width: 24, height: 24, color: activeReportsView === 'cross_sheet' ? '#7dd3fc' : '#94a3b8' }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 15, fontWeight: 900, color: '#ffffff' }}>
+                  الربط وتقارير الـ 13 شيت
+                </span>
+                {activeReportsView === 'cross_sheet' && (
+                  <span style={{ fontSize: 11, fontWeight: 800, padding: '2px 8px', borderRadius: 6, background: '#0284c7', color: '#ffffff' }}>نشط ✓</span>
+                )}
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: activeReportsView === 'cross_sheet' ? '#cbd5e1' : '#64748b' }}>
+                البنوك، الاستقطاعات، الكشف الطبي، ومسوغات التعيين
+              </p>
+            </div>
+          </button>
+
+          {/* Tab 3: Official Insurance Print Audit (High Priority) */}
+          <button
+            type="button"
+            onClick={() => setActiveReportsView('official_print_audit')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              padding: '18px 22px',
+              borderRadius: 16,
+              cursor: 'pointer',
+              textAlign: 'right',
+              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+              background: activeReportsView === 'official_print_audit'
+                ? 'linear-gradient(135deg, rgba(225, 29, 72, 0.45) 0%, rgba(159, 18, 57, 0.35) 100%)'
+                : 'linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.9) 100%)',
+              border: activeReportsView === 'official_print_audit'
+                ? '2px solid #f43f5e'
+                : '1.5px solid rgba(244, 63, 94, 0.4)',
+              boxShadow: activeReportsView === 'official_print_audit'
+                ? '0 0 30px rgba(244, 63, 94, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.3)'
+                : '0 4px 14px rgba(244, 63, 94, 0.15)',
+              transform: activeReportsView === 'official_print_audit' ? 'scale(1.02)' : 'scale(1)',
+            }}
+          >
+            <div style={{
+              width: 48, height: 48, borderRadius: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              background: activeReportsView === 'official_print_audit' ? 'rgba(244, 63, 94, 0.35)' : 'rgba(244, 63, 94, 0.12)',
+              border: `1px solid ${activeReportsView === 'official_print_audit' ? '#fda4af' : 'rgba(244, 63, 94, 0.35)'}`,
+            }}>
+              <ShieldCheck style={{ width: 26, height: 26, color: activeReportsView === 'official_print_audit' ? '#fecdd3' : '#fb7185' }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 15, fontWeight: 900, color: '#ffffff' }}>
+                  🔍 التدقيق الجنائي لبرنت التأمينات
+                </span>
+                <span style={{
+                  fontSize: 11, fontWeight: 900, padding: '3px 8px', borderRadius: 6,
+                  background: activeReportsView === 'official_print_audit' ? '#e11d48' : 'rgba(244, 63, 94, 0.25)',
+                  color: '#ffffff',
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                }}>
+                  {activeReportsView === 'official_print_audit' ? 'نشط الآن ✓' : '22/09/2026'}
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: activeReportsView === 'official_print_audit' ? '#ffe4e6' : '#fda4af' }}>
+                كشف التعارض الوظيفي، وتعديل المهن، وتصدير شيتات التأمينات
+              </p>
+            </div>
+          </button>
+        </div>
+
+        {/* ── Cross-Sheet Intelligence View ── */}
+        {activeReportsView === 'cross_sheet' && (
+          <CrossSheetReportsView />
+        )}
+
+        {/* ── Official Print Forensic Audit View ── */}
+        {activeReportsView === 'official_print_audit' && (
+          <OfficialPrintAuditPanel />
+        )}
+
+        {/* ── Payroll & Insurance Reports View ── */}
+        {activeReportsView === 'payroll_insurance' && (<>
 
         {/* ── Available Months Status Strip ── */}
         <div style={{
@@ -1505,6 +1686,8 @@ export default function ReportsPage() {
             </div>
           )}
         </div>
+
+        </>)}
       </main>
 
       {/* ── Delete Confirmation Modal ── */}

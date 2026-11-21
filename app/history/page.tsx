@@ -1,15 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import Navbar from '@/components/Navbar';
+import { useState, useEffect, useCallback } from 'react';
 import {
   History, Trash2, FileSpreadsheet, RefreshCw, Sparkles,
   CheckCircle2, XCircle, Database, ShieldCheck, TrendingUp,
-  AlertCircle, Calendar,
+  AlertTriangle, Calendar, Layers, ArrowRightLeft, ShieldAlert,
+  Server, HardDrive, Check, AlertCircle, FileUp
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import CountUp from 'react-countup';
+
+// ─── Interfaces ─────────────────────────────────────────────────────────────
 
 interface ImportLog {
   id: string;
@@ -25,325 +26,614 @@ interface ImportLog {
   created_at: string;
 }
 
+interface DatabaseStats {
+  incoming_insurance: {
+    total: number;
+    valid_insurance_number: number;
+    null_insurance_number: number;
+  };
+  resignation: {
+    total: number;
+    with_date: number;
+  };
+  sheet_data: {
+    total: number;
+    duplicates_inactive: number;
+    active_latest: number;
+  };
+  employees_master: {
+    total: number;
+    with_insurance_number: number;
+    null_insurance_number: number;
+    resigned_count: number;
+  };
+}
+
 const SOURCE_CFG: Record<string, { label: string; cls: string }> = {
   incoming_insurance: { label: 'أرقام وارد التأمين',    cls: 'badge-brand'   },
   res:                { label: 'ملف RES (الاستقالات)',  cls: 'badge-rose'    },
   monthly_payroll:    { label: 'مرتبات شهرية',          cls: 'badge-violet'  },
   monthly_insurance:  { label: 'تأمينات شهرية',         cls: 'badge-emerald' },
+  multi_sheet_import: { label: 'استيراد ذكي متعدد الأوراق (EGYPT GAS)', cls: 'badge-brand' },
 };
 
-type IconComp = React.ElementType;
-
-function StatCard({
-  icon: Icon, label, value, color, radialColor, delay = 0,
-}: { icon: IconComp; label: string; value: number; color: string; radialColor: string; delay?: number }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 28 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-      className="glass-card glass-card-hover"
-      style={{ borderRadius: 20, padding: '1.5rem', position: 'relative', overflow: 'hidden' }}
-    >
-      {/* Radial glow bottom-right */}
-      <div style={{
-        position: 'absolute', bottom: -30, right: -30,
-        width: 130, height: 130, borderRadius: '50%',
-        background: `radial-gradient(circle, ${radialColor} 0%, transparent 70%)`,
-        pointerEvents: 'none',
-      }} />
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, position: 'relative', zIndex: 1 }}>
-        <div style={{
-          width: 52, height: 52, borderRadius: 16, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: `${color}18`, border: `1px solid ${color}30`,
-        }}>
-          <Icon style={{ width: 24, height: 24, color }} />
-        </div>
-        <div>
-          <p style={{ fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>{label}</p>
-          <p className="font-mono-pro" style={{ fontSize: 30, fontWeight: 800, color, lineHeight: 1 }}>
-            <CountUp end={value} duration={1.6} separator="," />
-          </p>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
 export default function HistoryPage() {
-  const [logs, setLogs]           = useState<ImportLog[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'tables' | 'logs'>('tables');
+  const [logs, setLogs] = useState<ImportLog[]>([]);
+  const [stats, setStats] = useState<DatabaseStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const fetchLogs = async (showToast = false) => {
+  // Modal for confirming destructive clear
+  const [confirmClear, setConfirmClear] = useState<{
+    table: string;
+    label: string;
+    count: number;
+  } | null>(null);
+
+  // Modal for confirming delete import log
+  const [confirmDeleteLog, setConfirmDeleteLog] = useState<{
+    id: string;
+    fileName: string;
+  } | null>(null);
+
+  // ─── Fetch All Data ─────────────────────────────────────────────────────────
+
+  const loadData = useCallback(async (showToast = false) => {
     setLoading(true);
     try {
-      const res  = await fetch('/api/import/history');
-      const data = await res.json();
-      if (data.success) {
-        setLogs(data.logs || []);
-        if (showToast) toast.success('تم تحديث السجل بنجاح');
-      }
-    } catch { toast.error('خطأ أثناء تحميل السجل'); }
-    finally { setLoading(false); }
-  };
+      const [historyRes, controlRes] = await Promise.all([
+        fetch('/api/import/history'),
+        fetch('/api/database-control'),
+      ]);
 
-  useEffect(() => { fetchLogs(); }, []);
+      const historyData = await historyRes.json();
+      const controlData = await controlRes.json();
 
-  const [confirmModal, setConfirmModal] = useState<{ id: string; name: string; sourceType: string; month: string } | null>(null);
+      if (historyData.success) setLogs(historyData.logs || []);
+      if (controlData.success) setStats(controlData.stats);
 
-  const handleDeleteClick = (log: ImportLog) => {
-    const monthLabel = log.period_month && log.period_year
-      ? `شهر ${log.period_month}/${log.period_year}`
-      : '';
-    setConfirmModal({
-      id: log.id,
-      name: log.file_name,
-      sourceType: SOURCE_CFG[log.source_type]?.label ?? log.source_type,
-      month: monthLabel,
-    });
-  };
+      if (showToast) toast.success('تم تحديث بيانات قاعدة البيانات بنجاح');
+    } catch {
+      toast.error('خطأ أثناء تحميل بيانات قاعدة البيانات');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const handleDeleteConfirm = async () => {
-    if (!confirmModal) return;
-    const { id, name } = confirmModal;
-    setConfirmModal(null);
-    setDeletingId(id);
-    const tid = toast.loading(`جارٍ حذف "${name}"...`);
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // ─── Direct Database Actions (CRUD) ─────────────────────────────────────────
+
+  const handleClearTable = async () => {
+    if (!confirmClear) return;
+    const { table, label } = confirmClear;
+    setConfirmClear(null);
+    setActionLoading(`clear_${table}`);
+    const tid = toast.loading(`جارٍ مسح جدول ${label}...`);
+
     try {
-      const res  = await fetch(`/api/import/history?id=${id}`, { method: 'DELETE' });
+      const res = await fetch('/api/database-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'clear_table', table }),
+      });
       const data = await res.json();
       if (data.success) {
-        toast.success(data.message || 'تم الحذف بنجاح', { id: tid });
-        setLogs((p) => p.filter((l) => l.id !== id));
+        toast.success(data.message || `تم مسح ${label} بنجاح`, { id: tid });
+        await loadData();
       } else {
-        toast.error(data.error || 'فشل الحذف', { id: tid });
+        toast.error(data.error || 'فشلت عملية المسح', { id: tid });
       }
-    } catch { toast.error('خطأ أثناء الحذف', { id: tid }); }
-    finally { setDeletingId(null); }
+    } catch {
+      toast.error('حدث خطأ في الاتصال أثناء المسح', { id: tid });
+    } finally {
+      setActionLoading(null);
+    }
   };
 
-  const totalImports      = logs.length;
-  const totalAccepted     = logs.reduce((a, c) => a + (c.rows_accepted  || 0), 0);
-  const totalRejected     = logs.reduce((a, c) => a + (c.rows_rejected || 0), 0);
-  const acceptRate        = totalImports > 0
-    ? Math.round((totalAccepted / Math.max(totalAccepted + totalRejected, 1)) * 100)
-    : 0;
+  const handleDeleteImport = async () => {
+    if (!confirmDeleteLog) return;
+    const { id, fileName } = confirmDeleteLog;
+    setConfirmDeleteLog(null);
+    setActionLoading(`delete_${id}`);
+    const tid = toast.loading(`جارٍ حذف ملف "${fileName}" وسجلاته...`);
+
+    try {
+      const res = await fetch('/api/database-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_import', import_id: id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message || 'تم حذف الملف وسجلاته بنجاح', { id: tid });
+        await loadData();
+      } else {
+        toast.error(data.error || 'فشل حذف الملف', { id: tid });
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء حذف الملف', { id: tid });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleSyncIncoming = async () => {
+    setActionLoading('sync_incoming');
+    const tid = toast.loading('جارٍ مزامنة أرقام وارد التأمين مع سجل الموظفين Master...');
+    try {
+      const res = await fetch('/api/database-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync_incoming_to_master' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message, { id: tid });
+        await loadData();
+      } else {
+        toast.error(data.error || 'فشلت المزامنة', { id: tid });
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء المزامنة', { id: tid });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleSyncResignations = async () => {
+    setActionLoading('sync_resignation');
+    const tid = toast.loading('جارٍ مزامنة الاستقالات وتحديث حالة الموظفين المستقيلين...');
+    try {
+      const res = await fetch('/api/database-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync_resignation_to_master' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message, { id: tid });
+        await loadData();
+      } else {
+        toast.error(data.error || 'فشلت المزامنة', { id: tid });
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء مزامنة الاستقالات', { id: tid });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDeduplicateSheets = async () => {
+    setActionLoading('dedup_sheets');
+    const tid = toast.loading('جارٍ تنظيف الصفوف المكررة في شيتات غاز مصر...');
+    try {
+      const res = await fetch('/api/database-control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'deduplicate_sheets' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message, { id: tid });
+        await loadData();
+      } else {
+        toast.error(data.error || 'فشل تنظيف المكررات', { id: tid });
+      }
+    } catch {
+      toast.error('حدث خطأ أثناء تنظيف المكررات', { id: tid });
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#080d1a', position: 'relative' }}>
-
-      {/* Ambient orbs */}
-      <div className="orb orb-tl" style={{ opacity: 0.15 }} />
-      <div className="orb orb-bl" style={{ opacity: 0.1  }} />
-
-      <Navbar />
-
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <main style={{ width: '94%', maxWidth: 1800, margin: '0 auto', padding: '2rem 1rem', flex: 1, position: 'relative', zIndex: 10 }}>
 
         {/* ── Header ── */}
-        <motion.div
-          initial={{ opacity: 0, y: -16 }}
-          animate={{ opacity: 1, y:   0 }}
-          transition={{ duration: 0.4 }}
-          className="page-header-row"
-        >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 16 }}>
           <div>
-            <span className="badge-brand" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '4px 14px', borderRadius: 9999, marginBottom: 10 }}>
-              <Sparkles style={{ width: 12, height: 12 }} />
-              لوحة مراقبة عمليات الاستيراد
-            </span>
-            <h1 style={{ fontSize: 28, fontWeight: 900, color: '#f1f5f9', letterSpacing: '-0.3px', margin: '0 0 6px' }}>
-              سجل عمليات الاستيراد
-            </h1>
-            <p style={{ fontSize: 13, color: '#64748b', margin: 0 }}>
-              سجل تاريخي لكافة ملفات Excel المرفوعة مع إمكانية الحذف
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Server style={{ width: 22, height: 22, color: '#818cf8' }} />
+              </div>
+              <div>
+                <h1 style={{ fontSize: 26, fontWeight: 900, color: '#f1f5f9', margin: 0 }}>
+                  مركز التحكم في قاعدة البيانات وعمليات الرفع (CRUD Dashboard)
+                </h1>
+                <p style={{ fontSize: 13, color: '#94a3b8', margin: '4px 0 0' }}>
+                  تحكم كامل ومباشر من واجهة البرنامج: مسح الجداول القديمة، مزامنة الأرقام التأمينية، تنظيف المكررات، وحذف الملفات
+                </p>
+              </div>
+            </div>
           </div>
 
-          <button
-            onClick={() => fetchLogs(true)}
-            disabled={loading}
-            className="btn-ghost"
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 12, fontSize: 12, fontWeight: 700, cursor: loading ? 'not-allowed' : 'pointer' }}
-          >
-            <RefreshCw style={{ width: 15, height: 15, color: loading ? '#818cf8' : undefined, animation: loading ? 'spin-dual 1s linear infinite' : undefined }} />
-            تحديث السجل
-          </button>
-        </motion.div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {/* Tabs Selector */}
+            <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', borderRadius: 12, padding: 3, border: '1px solid rgba(255,255,255,0.1)' }}>
+              <button
+                onClick={() => setActiveTab('tables')}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: 9,
+                  border: 'none',
+                  background: activeTab === 'tables' ? '#6366f1' : 'transparent',
+                  color: activeTab === 'tables' ? '#ffffff' : '#94a3b8',
+                  fontSize: 13,
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                إدارة الجداول والبيانات (CRUD)
+              </button>
+              <button
+                onClick={() => setActiveTab('logs')}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: 9,
+                  border: 'none',
+                  background: activeTab === 'logs' ? '#6366f1' : 'transparent',
+                  color: activeTab === 'logs' ? '#ffffff' : '#94a3b8',
+                  fontSize: 13,
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                سجل الملفات والدفعات المرفوعة ({logs.length})
+              </button>
+            </div>
 
-        {/* ── KPI Stats ── */}
-        <div className="stats-grid" style={{ marginBottom: 24 }}>
-          <StatCard icon={Database}     label="إجمالي عمليات الرفع"     value={totalImports}  color="#818cf8" radialColor="rgba(99,102,241,0.2)"  delay={0}   />
-          <StatCard icon={CheckCircle2} label="السجلات المقبولة"         value={totalAccepted} color="#34d399" radialColor="rgba(16,185,129,0.2)"  delay={0.1} />
-          <StatCard icon={XCircle}      label="السجلات المرفوضة"         value={totalRejected} color="#fb7185" radialColor="rgba(244,63,94,0.2)"   delay={0.2} />
-          <StatCard icon={TrendingUp}   label="نسبة القبول الكلية (%)"   value={acceptRate}    color="#fbbf24" radialColor="rgba(245,158,11,0.2)"  delay={0.3} />
+            <button
+              onClick={() => loadData(true)}
+              disabled={loading}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 12, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#e2e8f0', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+            >
+              <RefreshCw style={{ width: 14, height: 14 }} className={loading ? 'spin' : ''} />
+              تحديث البيانات
+            </button>
+          </div>
         </div>
 
-        {/* ── Progress Bar ── */}
-        {totalImports > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.4 }}
-            className="glass-card"
-            style={{ borderRadius: 18, padding: '1.25rem 1.5rem', marginBottom: 24 }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <ShieldCheck style={{ width: 16, height: 16, color: '#818cf8' }} />
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#f1f5f9' }}>نسبة القبول الإجمالية</span>
-              </div>
-              <span className="font-mono-pro" style={{ fontSize: 18, fontWeight: 800, color: acceptRate >= 80 ? '#34d399' : acceptRate >= 50 ? '#fbbf24' : '#fb7185' }}>
-                {acceptRate}%
-              </span>
-            </div>
-            <div className="progress-bar">
-              <motion.div
-                className="progress-fill"
-                initial={{ width: 0 }}
-                animate={{ width: `${acceptRate}%` }}
-                transition={{ delay: 0.7, duration: 1.2, ease: 'easeOut' }}
-              />
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 11, color: '#475569' }}>
-              <span>مقبول: <strong style={{ color: '#34d399' }}>{totalAccepted.toLocaleString('ar-EG')}</strong></span>
-              <span>مرفوض: <strong style={{ color: '#fb7185' }}>{totalRejected.toLocaleString('ar-EG')}</strong></span>
-            </div>
-          </motion.div>
-        )}
+        {/* ── TAB 1: TABLES MANAGEMENT & CRUD ── */}
+        {activeTab === 'tables' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 20 }}>
 
-        {/* ── Table Card ── */}
-        <motion.div
-          initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }}
-          className="glass-card"
-          style={{ borderRadius: 24, overflow: 'hidden' }}
-        >
-          {/* Table Header Bar */}
-          <div style={{ padding: '1rem 1.5rem', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid rgba(148,163,184,0.08)', background: 'rgba(255,255,255,0.02)' }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)' }}>
-              <History style={{ width: 17, height: 17, color: '#818cf8' }} />
-            </div>
-            <div>
-              <p style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', margin: 0 }}>جدول الاستيرادات</p>
-              <p style={{ fontSize: 11, color: '#475569', margin: 0 }}>{logs.length} عملية مسجلة</p>
+              {/* CARD 1: وارد التأمينات */}
+              <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 20, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#818cf8' }}>
+                        <Database style={{ width: 20, height: 20 }} />
+                      </div>
+                      <div>
+                        <h3 style={{ fontSize: 16, fontWeight: 800, color: '#ffffff', margin: 0 }}>جدول أرقام وارد التأمين</h3>
+                        <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>incoming_insurance_records</span>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 24, fontWeight: 900, color: '#818cf8', fontFamily: 'monospace' }}>
+                      {stats ? stats.incoming_insurance.total.toLocaleString('ar-EG') : '...'}
+                    </span>
+                  </div>
+
+                  <div style={{ background: 'rgba(15,23,42,0.6)', borderRadius: 12, padding: '12px 16px', marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>سجلات بأرقام تأمينية صالحة:</span>
+                      <strong style={{ color: '#34d399', fontFamily: 'monospace' }}>
+                        {stats ? stats.incoming_insurance.valid_insurance_number.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>سجلات بدون أرقام تأمينية:</span>
+                      <strong style={{ color: '#fb7185', fontFamily: 'monospace' }}>
+                        {stats ? stats.incoming_insurance.null_insurance_number.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <button
+                    disabled={actionLoading === 'sync_incoming'}
+                    onClick={handleSyncIncoming}
+                    style={{ width: '100%', padding: '10px 16px', borderRadius: 10, background: 'rgba(99,102,241,0.18)', border: '1px solid rgba(99,102,241,0.4)', color: '#c7d2fe', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <ArrowRightLeft style={{ width: 16, height: 16 }} />
+                    مزامنة الأرقام التأمينية مع Master الآن
+                  </button>
+
+                  <button
+                    onClick={() => setConfirmClear({ table: 'incoming_insurance', label: 'أرقام وارد التأمين', count: stats?.incoming_insurance.total || 0 })}
+                    style={{ width: '100%', padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <Trash2 style={{ width: 15, height: 15 }} />
+                    مسح كافة سجلات وارد التأمين بالكامل
+                  </button>
+                </div>
+              </div>
+
+              {/* CARD 2: سجل الاستقالات RES */}
+              <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(244,63,94,0.25)', borderRadius: 20, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(244,63,94,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fb7185' }}>
+                        <ShieldAlert style={{ width: 20, height: 20 }} />
+                      </div>
+                      <div>
+                        <h3 style={{ fontSize: 16, fontWeight: 800, color: '#ffffff', margin: 0 }}>جدول ملف الاستقالات (RES.)</h3>
+                        <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>resignation_records</span>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 24, fontWeight: 900, color: '#fb7185', fontFamily: 'monospace' }}>
+                      {stats ? stats.resignation.total.toLocaleString('ar-EG') : '...'}
+                    </span>
+                  </div>
+
+                  <div style={{ background: 'rgba(15,23,42,0.6)', borderRadius: 12, padding: '12px 16px', marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>استقالات مسجل بها تاريخ فعلي:</span>
+                      <strong style={{ color: '#fbbf24', fontFamily: 'monospace' }}>
+                        {stats ? stats.resignation.with_date.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>موظفون مسجلون كمستقيلين في Master:</span>
+                      <strong style={{ color: '#f43f5e', fontFamily: 'monospace' }}>
+                        {stats ? stats.employees_master.resigned_count.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <button
+                    disabled={actionLoading === 'sync_resignation'}
+                    onClick={handleSyncResignations}
+                    style={{ width: '100%', padding: '10px 16px', borderRadius: 10, background: 'rgba(245,158,11,0.18)', border: '1px solid rgba(245,158,11,0.4)', color: '#fde68a', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <ArrowRightLeft style={{ width: 16, height: 16 }} />
+                    مزامنة وتحديث حالة المستقيلين في Master
+                  </button>
+
+                  <button
+                    onClick={() => setConfirmClear({ table: 'resignation', label: 'سجل الاستقالات (RES.)', count: stats?.resignation.total || 0 })}
+                    style={{ width: '100%', padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <Trash2 style={{ width: 15, height: 15 }} />
+                    مسح كافة سجلات الاستقالات بالكامل
+                  </button>
+                </div>
+              </div>
+
+              {/* CARD 3: شيتات غاز مصر المجمعة */}
+              <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(56,189,248,0.25)', borderRadius: 20, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(56,189,248,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#38bdf8' }}>
+                        <Layers style={{ width: 20, height: 20 }} />
+                      </div>
+                      <div>
+                        <h3 style={{ fontSize: 16, fontWeight: 800, color: '#ffffff', margin: 0 }}>شيتات غاز مصر (الـ 13 ورقة)</h3>
+                        <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>sheet_data</span>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 24, fontWeight: 900, color: '#38bdf8', fontFamily: 'monospace' }}>
+                      {stats ? stats.sheet_data.total.toLocaleString('ar-EG') : '...'}
+                    </span>
+                  </div>
+
+                  <div style={{ background: 'rgba(15,23,42,0.6)', borderRadius: 12, padding: '12px 16px', marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>الصفوف النشطة المفعلة (أحدث رفع):</span>
+                      <strong style={{ color: '#38bdf8', fontFamily: 'monospace' }}>
+                        {stats ? stats.sheet_data.active_latest.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>الصفوف المكررة السابقة (غير نشطة):</span>
+                      <strong style={{ color: stats && stats.sheet_data.duplicates_inactive > 0 ? '#fb7185' : '#34d399', fontFamily: 'monospace' }}>
+                        {stats ? stats.sheet_data.duplicates_inactive.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <button
+                    disabled={actionLoading === 'dedup_sheets'}
+                    onClick={handleDeduplicateSheets}
+                    style={{ width: '100%', padding: '10px 16px', borderRadius: 10, background: 'rgba(56,189,248,0.15)', border: '1px solid rgba(56,189,248,0.35)', color: '#bae6fd', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <CheckCircle2 style={{ width: 16, height: 16 }} />
+                    تنظيف المكررات (إبقاء أحدث صف فقط مفعل)
+                  </button>
+
+                  <button
+                    onClick={() => setConfirmClear({ table: 'sheet_data', label: 'صفوف شيت غاز مصر المجمعة (sheet_data)', count: stats?.sheet_data.total || 0 })}
+                    style={{ width: '100%', padding: '10px 16px', borderRadius: 10, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  >
+                    <Trash2 style={{ width: 15, height: 15 }} />
+                    مسح شيتات غاز مصر بالكامل لإعادة الرفع النظيف
+                  </button>
+                </div>
+              </div>
+
+              {/* CARD 4: سجل الموظفين Master */}
+              <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(52,211,153,0.25)', borderRadius: 20, padding: 24, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(52,211,153,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#34d399' }}>
+                        <ShieldCheck style={{ width: 20, height: 20 }} />
+                      </div>
+                      <div>
+                        <h3 style={{ fontSize: 16, fontWeight: 800, color: '#ffffff', margin: 0 }}>الدليل الموحد الشامل Master</h3>
+                        <span style={{ fontSize: 11, color: '#64748b', fontFamily: 'monospace' }}>employees_master</span>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 24, fontWeight: 900, color: '#34d399', fontFamily: 'monospace' }}>
+                      {stats ? stats.employees_master.total.toLocaleString('ar-EG') : '...'}
+                    </span>
+                  </div>
+
+                  <div style={{ background: 'rgba(15,23,42,0.6)', borderRadius: 12, padding: '12px 16px', marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>موظفون برقم تأميني مكتمل:</span>
+                      <strong style={{ color: '#34d399', fontFamily: 'monospace' }}>
+                        {stats ? stats.employees_master.with_insurance_number.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#94a3b8' }}>موظفون بدون رقم تأميني:</span>
+                      <strong style={{ color: stats && stats.employees_master.null_insurance_number > 0 ? '#fb7185' : '#34d399', fontFamily: 'monospace' }}>
+                        {stats ? stats.employees_master.null_insurance_number.toLocaleString('ar-EG') : '—'}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ padding: '12px 16px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.1)', color: '#94a3b8', fontSize: 12, textAlign: 'center' }}>
+                  هذا الجدول هو المرجع النهائي الذي تُبنى عليه كافة تقارير HR Letter والمطابقة واستدعاء الموظف 360°.
+                </div>
+              </div>
+
             </div>
           </div>
+        )}
 
-          {/* Loading */}
-          {loading && (
-            <div style={{ padding: '5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-              <div style={{ position: 'relative', width: 48, height: 48 }}>
-                <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid rgba(99,102,241,0.2)', borderTop: '2px solid #6366f1', animation: 'spin-dual 0.8s linear infinite' }} />
-                <div style={{ position: 'absolute', inset: 8, borderRadius: '50%', border: '2px solid rgba(139,92,246,0.2)', borderBottom: '2px solid #8b5cf6', animation: 'spin-dual 0.6s linear infinite reverse' }} />
+        {/* ── TAB 2: IMPORT BATCHES LOGS & CRUD ── */}
+        {activeTab === 'logs' && (
+          <div style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, overflow: 'hidden' }}>
+            <div style={{ padding: '16px 24px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <History style={{ width: 18, height: 18, color: '#818cf8' }} />
+                <h3 style={{ fontSize: 16, fontWeight: 800, color: '#ffffff', margin: 0 }}>سجل دفعات الاستيراد</h3>
               </div>
-              <span style={{ fontSize: 13, color: '#94a3b8', fontWeight: 600 }}>جارٍ تحميل السجل...</span>
+              <span style={{ fontSize: 12, color: '#64748b' }}>إجمالي {logs.length} عملية استيراد</span>
             </div>
-          )}
 
-          {/* Empty */}
-          {!loading && logs.length === 0 && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ padding: '5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
-              <div style={{ width: 72, height: 72, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.15)', marginBottom: 16 }}>
-                <FileSpreadsheet style={{ width: 36, height: 36, color: '#4f5b7a' }} />
-              </div>
-              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#f1f5f9', margin: '0 0 8px' }}>لا توجد عمليات مسجلة</h3>
-              <p style={{ fontSize: 13, color: '#475569', maxWidth: 360 }}>توجه لصفحة الاستيراد لرفع أول ملف Excel.</p>
-            </motion.div>
-          )}
-
-          {/* Table */}
-          {!loading && logs.length > 0 && (
-            <div className="table-scroll">
-              <table className="table-dark">
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'right', fontSize: 13 }}>
                 <thead>
-                  <tr>
-                    <th>نوع المصدر</th>
-                    <th>اسم الملف</th>
-                    <th>الفترة</th>
-                    <th>الصفحة</th>
-                    <th>إجمالي</th>
-                    <th style={{ color: '#34d399' }}>مقبولة</th>
-                    <th style={{ color: '#fb7185' }}>مرفوضة</th>
-                    <th>تاريخ الرفع</th>
-                    <th style={{ textAlign: 'center' }}>حذف</th>
+                  <tr style={{ background: 'rgba(255,255,255,0.02)', color: '#94a3b8', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    <th style={{ padding: '14px 20px' }}>اسم الملف</th>
+                    <th style={{ padding: '14px 20px' }}>نوع المصدر</th>
+                    <th style={{ padding: '14px 20px' }}>تاريخ الرفع</th>
+                    <th style={{ padding: '14px 20px' }}>السجلات المقبولة</th>
+                    <th style={{ padding: '14px 20px' }}>ملاحظات</th>
+                    <th style={{ padding: '14px 20px', textAlign: 'center' }}>إجراءات</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <AnimatePresence>
-                    {logs.map((log, idx) => {
-                      const src = SOURCE_CFG[log.source_type];
-                      const rejectPct = log.total_rows_read > 0 ? Math.round((log.rows_rejected / log.total_rows_read) * 100) : 0;
-                      return (
-                        <motion.tr
-                          key={log.id}
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, x: -20 }}
-                          transition={{ delay: idx * 0.04 }}
+                  {logs.map((log) => (
+                    <tr key={log.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', transition: 'background 0.2s' }}>
+                      <td style={{ padding: '16px 20px', fontWeight: 800, color: '#f1f5f9' }}>
+                        {log.file_name}
+                      </td>
+                      <td style={{ padding: '16px 20px' }}>
+                        <span style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc' }}>
+                          {SOURCE_CFG[log.source_type]?.label || log.source_type}
+                        </span>
+                      </td>
+                      <td style={{ padding: '16px 20px', color: '#94a3b8', fontSize: 12 }}>
+                        {new Date(log.created_at).toLocaleString('ar-EG')}
+                      </td>
+                      <td style={{ padding: '16px 20px', fontFamily: 'monospace', fontWeight: 800, color: '#34d399' }}>
+                        {(log.rows_accepted || 0).toLocaleString('ar-EG')}
+                      </td>
+                      <td style={{ padding: '16px 20px', color: '#64748b', fontSize: 12, maxWidth: 300 }}>
+                        {log.notes || '—'}
+                      </td>
+                      <td style={{ padding: '16px 20px', textAlign: 'center' }}>
+                        <button
+                          disabled={actionLoading === `delete_${log.id}`}
+                          onClick={() => setConfirmDeleteLog({ id: log.id, fileName: log.file_name })}
+                          style={{ padding: '7px 12px', borderRadius: 8, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}
                         >
-                          <td>
-                            <span className={`${src?.cls ?? 'badge-slate'} font-mono-pro`} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                              {src?.label ?? log.source_type}
-                            </span>
-                          </td>
-                          <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, color: '#f1f5f9' }} title={log.file_name}>
-                            {log.file_name}
-                          </td>
-                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#fff' }}>
-                            {log.period_month && log.period_year ? `${log.period_month}/${log.period_year}` : <span style={{ color: '#334155' }}>—</span>}
-                          </td>
-                          <td style={{ color: '#94a3b8' }}>{log.sheet_name || 'الأولى'}</td>
-                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#94a3b8' }}>{log.total_rows_read.toLocaleString()}</td>
-                          <td className="font-mono-pro" style={{ fontWeight: 800, color: '#34d399' }}>{log.rows_accepted.toLocaleString()}</td>
-                          <td>
-                            <span className="font-mono-pro" style={{ fontWeight: 800, color: '#fb7185' }}>{log.rows_rejected.toLocaleString()}</span>
-                            {rejectPct > 0 && (
-                              <span className="badge-rose font-mono-pro" style={{ fontSize: 10, padding: '1px 6px', borderRadius: 6, marginRight: 6, fontWeight: 700 }}>{rejectPct}%</span>
-                            )}
-                          </td>
-                          <td className="font-mono-pro" style={{ color: '#475569', fontSize: 12, whiteSpace: 'nowrap' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <Calendar style={{ width: 12, height: 12 }} />
-                              {new Date(log.created_at).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' })}
-                            </div>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteClick(log)}
-                              disabled={deletingId === log.id}
-                              className="btn-danger"
-                              style={{ padding: '7px', borderRadius: 10, cursor: deletingId === log.id ? 'not-allowed' : 'pointer', display: 'inline-flex' }}
-                              title="حذف هذه العملية"
-                            >
-                              {deletingId === log.id
-                                ? <span style={{ width: 15, height: 15, borderRadius: '50%', border: '2px solid rgba(251,113,133,0.3)', borderTop: '2px solid #fb7185', display: 'inline-block', animation: 'spin-dual 0.7s linear infinite' }} />
-                                : <Trash2 style={{ width: 15, height: 15 }} />}
-                            </button>
-                          </td>
-                        </motion.tr>
-                      );
-                    })}
-                  </AnimatePresence>
+                          <Trash2 style={{ width: 14, height: 14 }} />
+                          حذف الدفعة
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
-          )}
-        </motion.div>
-
-        {/* Warning footer */}
-        {!loading && logs.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.8 }}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16, color: '#475569' }}
-          >
-            <AlertCircle style={{ width: 13, height: 13, flexShrink: 0 }} />
-            <p style={{ fontSize: 11, margin: 0 }}>تحذير: حذف عملية استيراد يزيل كافة سجلاتها نهائياً.</p>
-          </motion.div>
+          </div>
         )}
 
       </main>
+
+      {/* ── MODAL: Confirm Clear Table ── */}
+      {confirmClear && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#0f172a', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 20, padding: 28, maxWidth: 480, width: '100%', textAlign: 'right' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(239,68,68,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fb7185', marginBottom: 16 }}>
+              <AlertTriangle style={{ width: 26, height: 26 }} />
+            </div>
+            <h3 style={{ fontSize: 18, fontWeight: 900, color: '#ffffff', margin: '0 0 8px' }}>
+              تأكيد مسح {confirmClear.label}
+            </h3>
+            <p style={{ fontSize: 13, color: '#94a3b8', lineHeight: 1.6, margin: '0 0 20px' }}>
+              أنت على وشك مسح <strong>{confirmClear.count.toLocaleString('ar-EG')} سجل</strong> من {confirmClear.label}.
+              هذه العملية نهائية ولا يمكن التراجع عنها. هل أنت متأكد تماماً من رغبتك في المتابعة؟
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                onClick={() => setConfirmClear(null)}
+                style={{ padding: '10px 18px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: '#cbd5e1', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={handleClearTable}
+                style={{ padding: '10px 22px', borderRadius: 10, background: '#ef4444', border: 'none', color: '#ffffff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}
+              >
+                تأكيد المسح النهائي
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: Confirm Delete Single Import Batch ── */}
+      {confirmDeleteLog && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#0f172a', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 20, padding: 28, maxWidth: 480, width: '100%', textAlign: 'right' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'rgba(239,68,68,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fb7185', marginBottom: 16 }}>
+              <Trash2 style={{ width: 26, height: 26 }} />
+            </div>
+            <h3 style={{ fontSize: 18, fontWeight: 900, color: '#ffffff', margin: '0 0 8px' }}>
+              حذف ملف "{confirmDeleteLog.fileName}"
+            </h3>
+            <p style={{ fontSize: 13, color: '#94a3b8', lineHeight: 1.6, margin: '0 0 20px' }}>
+              سيتم حذف سجل العملية وكافة السجلات المرتبطة بها في الجداول التابعة. هل تريد المتابعة؟
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button
+                onClick={() => setConfirmDeleteLog(null)}
+                style={{ padding: '10px 18px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: '#cbd5e1', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={handleDeleteImport}
+                style={{ padding: '10px 22px', borderRadius: 10, background: '#ef4444', border: 'none', color: '#ffffff', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}
+              >
+                تأكيد حذف الملف
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

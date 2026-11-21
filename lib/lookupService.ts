@@ -1,5 +1,210 @@
 import { supabaseServer } from '@/lib/supabaseServer';
 
+export interface S1CalculationInfo {
+  calculatedDate: string | null;
+  formula: string;
+  sourceMonth: number | null;
+  sourceYear: number | null;
+  daysInMonth: number | null;
+  attendanceDays: number | null;
+  recordedDate?: string | null;
+  status: 'calculated' | 'insufficient_data' | 'manual_review';
+  message: string;
+}
+
+export interface S6CalculationInfo {
+  calculatedDate: string | null;
+  formula: string;
+  sourceMonth: number | null;
+  sourceYear: number | null;
+  daysInMonth: number | null;
+  workDays: number | null;
+  recordedDate?: string | null;
+  resignationType?: string | null;
+  status: 'active' | 'calculated' | 'recorded' | 'insufficient_data';
+  message: string;
+}
+
+export function getDaysInMonth(year: number, month: number): number {
+  return new Date(year, month, 0).getDate();
+}
+
+export function computeS1Date(
+  year: number | null | undefined,
+  month: number | null | undefined,
+  rawAttendance: unknown,
+  recordedDate?: string | null
+): S1CalculationInfo {
+  if (!year || !month) {
+    return {
+      calculatedDate: null,
+      formula: '',
+      sourceMonth: null,
+      sourceYear: null,
+      daysInMonth: null,
+      attendanceDays: null,
+      recordedDate: recordedDate || null,
+      status: 'insufficient_data',
+      message: recordedDate ? `مسجل بالدفاتر: ${recordedDate}` : 'لا توجد بيانات شهرية لحساب بداية الاشتراك (يحتاج مراجعة يدوية)',
+    };
+  }
+
+  const daysInMonth = getDaysInMonth(year, month);
+  let att: number | null = null;
+  if (typeof rawAttendance === 'number') {
+    att = rawAttendance;
+  } else if (rawAttendance !== null && rawAttendance !== undefined && String(rawAttendance).trim() !== '') {
+    const cleaned = parseFloat(String(rawAttendance).replace(/[^\d.]/g, ''));
+    if (!isNaN(cleaned)) att = cleaned;
+  }
+
+  if (att === null || att <= 0) {
+    return {
+      calculatedDate: null,
+      formula: '',
+      sourceMonth: month,
+      sourceYear: year,
+      daysInMonth,
+      attendanceDays: 0,
+      recordedDate: recordedDate || null,
+      status: 'insufficient_data',
+      message: recordedDate ? `مسجل بالدفاتر: ${recordedDate}` : `حضور شهر ${month}/${year} غير مسجل أو 0 (يحتاج مراجعة يدوية)`,
+    };
+  }
+
+  if (att > daysInMonth) {
+    return {
+      calculatedDate: null,
+      formula: `${daysInMonth} - ${att} + 1`,
+      sourceMonth: month,
+      sourceYear: year,
+      daysInMonth,
+      attendanceDays: att,
+      recordedDate: recordedDate || null,
+      status: 'manual_review',
+      message: `أيام الحضور (${att}) تتجاوز أيام الشهر (${daysInMonth}) — يحتاج مراجعة يدوية`,
+    };
+  }
+
+  const day = Math.round((daysInMonth - att) + 1);
+  const dayStr = String(day).padStart(2, '0');
+  const monthStr = String(month).padStart(2, '0');
+  const calculatedDate = `${dayStr}/${monthStr}/${year}`;
+  const formula = `${daysInMonth} - ${att} + 1 = ${day} (${calculatedDate})`;
+
+  return {
+    calculatedDate,
+    formula,
+    sourceMonth: month,
+    sourceYear: year,
+    daysInMonth,
+    attendanceDays: att,
+    recordedDate: recordedDate || null,
+    status: 'calculated',
+    message: `محسوب من حضور شهر ${month}/${year} (${att} يوم عمل من أصل ${daysInMonth} يوم)`,
+  };
+}
+
+export function computeS6Date(
+  year: number | null | undefined,
+  month: number | null | undefined,
+  rawAttendance: unknown,
+  isActive: boolean,
+  hasResignation: boolean,
+  recordedEndDate?: string | null,
+  resignationType?: string | null
+): S6CalculationInfo {
+  // If active and no resignation record, S6 does not apply
+  if (isActive && !hasResignation) {
+    return {
+      calculatedDate: null,
+      formula: '',
+      sourceMonth: month || null,
+      sourceYear: year || null,
+      daysInMonth: (year && month) ? getDaysInMonth(year, month) : null,
+      workDays: null,
+      recordedDate: null,
+      resignationType: null,
+      status: 'active',
+      message: 'الموظف مستمر بالخدمة (Active) — لا تنطبق استمارة س6 حالياً',
+    };
+  }
+
+  // If there is an explicit recorded resignation date / last working day
+  if (recordedEndDate) {
+    return {
+      calculatedDate: recordedEndDate,
+      formula: 'تاريخ مسجل بملف الاستقالات (RES)',
+      sourceMonth: month || null,
+      sourceYear: year || null,
+      daysInMonth: (year && month) ? getDaysInMonth(year, month) : null,
+      workDays: null,
+      recordedDate: recordedEndDate,
+      resignationType: resignationType || null,
+      status: 'recorded',
+      message: `مسجل بملف الاستقالات: ${recordedEndDate} ${resignationType ? `(${resignationType})` : ''}`.trim(),
+    };
+  }
+
+  if (!year || !month) {
+    return {
+      calculatedDate: null,
+      formula: '',
+      sourceMonth: null,
+      sourceYear: null,
+      daysInMonth: null,
+      workDays: null,
+      recordedDate: null,
+      resignationType: resignationType || null,
+      status: 'insufficient_data',
+      message: 'لا توجد بيانات لآخر شهر عمل (يحتاج مراجعة يدوية)',
+    };
+  }
+
+  const daysInMonth = getDaysInMonth(year, month);
+  let att: number | null = null;
+  if (typeof rawAttendance === 'number') {
+    att = rawAttendance;
+  } else if (rawAttendance !== null && rawAttendance !== undefined && String(rawAttendance).trim() !== '') {
+    const cleaned = parseFloat(String(rawAttendance).replace(/[^\d.]/g, ''));
+    if (!isNaN(cleaned)) att = cleaned;
+  }
+
+  if (att === null || att <= 0) {
+    return {
+      calculatedDate: null,
+      formula: '',
+      sourceMonth: month,
+      sourceYear: year,
+      daysInMonth,
+      workDays: 0,
+      recordedDate: null,
+      resignationType: resignationType || null,
+      status: 'insufficient_data',
+      message: `أيام العمل في آخر شهر (${month}/${year}) غير مسجلة (يحتاج مراجعة يدوية)`,
+    };
+  }
+
+  const day = Math.min(Math.round(att), daysInMonth);
+  const dayStr = String(day).padStart(2, '0');
+  const monthStr = String(month).padStart(2, '0');
+  const calculatedDate = `${dayStr}/${monthStr}/${year}`;
+  const formula = `تاريخ نهاية العمل = ${day} (${calculatedDate}) وفق فرضية بدء العمل من أول الشهر`;
+
+  return {
+    calculatedDate,
+    formula,
+    sourceMonth: month,
+    sourceYear: year,
+    daysInMonth,
+    workDays: att,
+    recordedDate: null,
+    resignationType: resignationType || null,
+    status: 'calculated',
+    message: `محسوب من آخر شهر عمل ${month}/${year} (${att} يوم عمل)`,
+  };
+}
+
 export interface SearchCandidate {
   id: string;
   national_id: string | null;
@@ -13,6 +218,13 @@ export interface SearchCandidate {
   first_both_m?: number | null;
   attendance_days?: string | null;
   insurance_status?: string | null;
+  insurance_number?: string | null;
+  job_title?: string | null;
+  insurance_job_title?: string | null;
+  phone_number?: string | null;
+  subscription_start_date?: string | null;
+  subscription_end_date?: string | null;
+  hire_date?: string | null;
   status?: string | null;
   has_resignation?: boolean;
   resignation_summary?: string;
@@ -27,6 +239,8 @@ export interface SearchCandidate {
     attendance_days?: string | null;
     statusLabel: string;
   } | null;
+  s1_info?: S1CalculationInfo;
+  s6_info?: S6CalculationInfo;
 }
 
 export async function searchEmployees(
@@ -37,11 +251,11 @@ export async function searchEmployees(
   const q = query.trim();
   if (!q || q.length < 2) return [];
 
-  // 1. Search across all 4 tables in parallel
-  const [insRes, payRes, miRes, resRes] = await Promise.all([
+  // 1. Search across all sources in parallel (Phase 1 legacy tables + Phase 2 Master Directory)
+  const [insRes, payRes, miRes, resRes, masterRes] = await Promise.all([
     supabaseServer
       .from('incoming_insurance_records')
-      .select('id, national_id, employee_code, employee_name, company_account, status, insurance_status')
+      .select('id, national_id, employee_code, employee_name, company_account, status, insurance_status, insurance_number, job_title, insurance_job_title, subscription_start_date, subscription_end_date')
       .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
       .limit(25),
     supabaseServer
@@ -59,6 +273,11 @@ export async function searchEmployees(
       .select('id, national_id, employee_code, employee_name, resignation_date, resignation_type, last_working_day')
       .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
       .limit(15),
+    supabaseServer
+      .from('employees_master')
+      .select('id, national_id, employee_code, employee_name, company_account, current_status, insurance_status, insurance_number, current_job_title, insurance_job_title, insurance_start_date, hire_date, phone_number')
+      .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
+      .limit(25),
   ]);
 
   // 2. Group into unique persons (unifying by national_id or code)
@@ -70,6 +289,13 @@ export async function searchEmployees(
     company_account: string | null;
     status: string | null;
     insurance_status: string | null;
+    insurance_number?: string | null;
+    job_title?: string | null;
+    insurance_job_title?: string | null;
+    subscription_start_date?: string | null;
+    subscription_end_date?: string | null;
+    hire_date?: string | null;
+    phone_number?: string | null;
     sources: Set<string>;
   };
 
@@ -91,6 +317,13 @@ export async function searchEmployees(
       company_account?: string | null;
       status?: string | null;
       insurance_status?: string | null;
+      insurance_number?: string | null;
+      job_title?: string | null;
+      insurance_job_title?: string | null;
+      subscription_start_date?: string | null;
+      subscription_end_date?: string | null;
+      hire_date?: string | null;
+      phone_number?: string | null;
     },
     source: string
   ) => {
@@ -107,6 +340,13 @@ export async function searchEmployees(
         company_account: r.company_account || null,
         status: r.status || null,
         insurance_status: r.insurance_status || null,
+        insurance_number: r.insurance_number || null,
+        job_title: r.job_title || null,
+        insurance_job_title: r.insurance_job_title || null,
+        subscription_start_date: r.subscription_start_date || null,
+        subscription_end_date: r.subscription_end_date || null,
+        hire_date: r.hire_date || null,
+        phone_number: r.phone_number || null,
         sources: new Set([source]),
       });
     } else {
@@ -119,6 +359,13 @@ export async function searchEmployees(
       if (!existing.company_account && r.company_account) existing.company_account = r.company_account;
       if (!existing.status && r.status) existing.status = r.status;
       if (!existing.insurance_status && r.insurance_status) existing.insurance_status = r.insurance_status;
+      if (!existing.insurance_number && r.insurance_number) existing.insurance_number = r.insurance_number;
+      if (!existing.job_title && r.job_title) existing.job_title = r.job_title;
+      if (!existing.insurance_job_title && r.insurance_job_title) existing.insurance_job_title = r.insurance_job_title;
+      if (!existing.subscription_start_date && r.subscription_start_date) existing.subscription_start_date = r.subscription_start_date;
+      if (!existing.subscription_end_date && r.subscription_end_date) existing.subscription_end_date = r.subscription_end_date;
+      if (!existing.hire_date && r.hire_date) existing.hire_date = r.hire_date;
+      if (!existing.phone_number && r.phone_number) existing.phone_number = r.phone_number;
     }
   };
 
@@ -126,6 +373,21 @@ export async function searchEmployees(
   (payRes.data || []).forEach((r) => mergeDraft(r, 'المرتبات'));
   (miRes.data || []).forEach((r) => mergeDraft(r, 'التأمينات'));
   (resRes.data || []).forEach((r) => mergeDraft(r, 'الاستقالات'));
+  (masterRes.data || []).forEach((r) => mergeDraft({
+    id: r.id,
+    national_id: r.national_id,
+    employee_code: r.employee_code,
+    employee_name: r.employee_name,
+    company_account: r.company_account,
+    status: r.current_status,
+    insurance_status: r.insurance_status,
+    insurance_number: r.insurance_number,
+    job_title: r.current_job_title,
+    insurance_job_title: r.insurance_job_title,
+    subscription_start_date: r.insurance_start_date,
+    hire_date: r.hire_date,
+    phone_number: r.phone_number,
+  }, 'سجل الموظفين Master'));
 
   const distinctPeople = Array.from(personMap.values()).slice(0, 15);
 
@@ -146,7 +408,7 @@ export async function searchEmployees(
       let firstBothYear: number | null = null;
       let firstBothM: number | null = null;
       let attendanceDays: string | null = null;
-      let jointPeriods: string[] = [];
+      const jointPeriods: string[] = [];
       let targetMonthStatus: {
         year: number;
         month: number;
@@ -160,11 +422,15 @@ export async function searchEmployees(
       if (orConds.length > 0) {
         const orClause = orConds.join(',');
 
-        const [incomingData, payData, miData, resData] = await Promise.all([
-          // If company_account or status missing, fetch from incoming_insurance
-          (!companyAccount || !insuranceStatus || !status)
-            ? supabaseServer.from('incoming_insurance_records').select('company_account, status, insurance_status, employee_name').or(orClause).limit(1).maybeSingle()
-            : Promise.resolve({ data: null }),
+        const [incomingData, payData, miData, resData, masterData] = await Promise.all([
+          // Fetch from incoming_insurance (ordered latest first)
+          supabaseServer
+            .from('incoming_insurance_records')
+            .select('company_account, status, insurance_status, employee_name, insurance_number, job_title, insurance_job_title, subscription_start_date, subscription_end_date, termination_reason')
+            .or(orClause)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
 
           // Fetch all payroll records ordered ascending
           supabaseServer
@@ -189,6 +455,14 @@ export async function searchEmployees(
             .or(orClause)
             .limit(1)
             .maybeSingle(),
+
+          // Fetch from employees_master
+          supabaseServer
+            .from('employees_master')
+            .select('company_account, current_status, insurance_status, employee_name, insurance_number, current_job_title, insurance_job_title, insurance_start_date, hire_date, phone_number')
+            .or(orClause)
+            .limit(1)
+            .maybeSingle(),
         ]);
 
         if (incomingData.data) {
@@ -198,6 +472,27 @@ export async function searchEmployees(
           if ((!p.employee_name || p.employee_name === 'بدون اسم') && incomingData.data.employee_name) {
             p.employee_name = incomingData.data.employee_name;
           }
+          if (!p.insurance_number && incomingData.data.insurance_number) p.insurance_number = incomingData.data.insurance_number;
+          if (!p.job_title && incomingData.data.job_title) p.job_title = incomingData.data.job_title;
+          if (!p.insurance_job_title && incomingData.data.insurance_job_title) p.insurance_job_title = incomingData.data.insurance_job_title;
+          if (!p.subscription_start_date && incomingData.data.subscription_start_date) p.subscription_start_date = incomingData.data.subscription_start_date;
+          if (!p.subscription_end_date && incomingData.data.subscription_end_date) p.subscription_end_date = incomingData.data.subscription_end_date;
+        }
+
+        // Dynamic fallback from employees_master if fields missing in incoming_insurance
+        if (masterData.data) {
+          if (!companyAccount && masterData.data.company_account) companyAccount = masterData.data.company_account;
+          if (!insuranceStatus && masterData.data.insurance_status) insuranceStatus = masterData.data.insurance_status;
+          if (!status && masterData.data.current_status) status = masterData.data.current_status;
+          if ((!p.employee_name || p.employee_name === 'بدون اسم') && masterData.data.employee_name) {
+            p.employee_name = masterData.data.employee_name;
+          }
+          if (!p.insurance_number && masterData.data.insurance_number) p.insurance_number = masterData.data.insurance_number;
+          if (!p.job_title && masterData.data.current_job_title) p.job_title = masterData.data.current_job_title;
+          if (!p.insurance_job_title && masterData.data.insurance_job_title) p.insurance_job_title = masterData.data.insurance_job_title;
+          if (!p.subscription_start_date && masterData.data.insurance_start_date) p.subscription_start_date = masterData.data.insurance_start_date;
+          if (!p.hire_date && masterData.data.hire_date) p.hire_date = masterData.data.hire_date;
+          if (!p.phone_number && masterData.data.phone_number) p.phone_number = masterData.data.phone_number;
         }
 
         const payrolls = payData.data || [];
@@ -274,6 +569,56 @@ export async function searchEmployees(
             statusLabel: label,
           };
         }
+
+        // ── S1 Calculation (بداية الاشتراك) ──
+        const s1Year = firstBothYear || payrolls[0]?.period_year || (insurances[0]?.period_year as number) || null;
+        const s1Month = firstBothM || payrolls[0]?.period_month || (insurances[0]?.period_month as number) || null;
+        const s1Att = (firstBothYear && firstBothM)
+          ? (payrolls.find(pr => pr.period_year === firstBothYear && pr.period_month === firstBothM)?.attendance_days || attendanceDays)
+          : (payrolls[0]?.attendance_days || attendanceDays);
+        const recordedS1 = (incomingData?.data?.subscription_start_date as string) || (p.subscription_start_date as string) || null;
+        const s1_info = computeS1Date(s1Year, s1Month, s1Att, recordedS1);
+
+        // ── S6 Calculation (نهاية الاشتراك) ──
+        const lastPay = payrolls.length > 0 ? payrolls[payrolls.length - 1] : null;
+        const lastIns = insurances.length > 0 ? insurances[insurances.length - 1] : null;
+        const s6Year = (lastPay?.period_year as number) || (lastIns?.period_year as number) || null;
+        const s6Month = (lastPay?.period_month as number) || (lastIns?.period_month as number) || null;
+        const s6Att = lastPay?.attendance_days;
+        const isEmpActive = !hasResignation && !/استق|منته|resign/i.test(status || '');
+        const recordedEndDate = (resRec?.last_working_day as string) || (resRec?.resignation_date as string) || (incomingData?.data?.subscription_end_date as string) || (p.subscription_end_date as string) || null;
+        const resType = (resRec?.resignation_type as string) || (incomingData?.data?.termination_reason as string) || null;
+        const s6_info = computeS6Date(s6Year, s6Month, s6Att, isEmpActive, hasResignation, recordedEndDate, resType);
+
+        return {
+          id: p.id,
+          national_id: p.national_id,
+          employee_code: p.employee_code,
+          employee_name: p.employee_name || 'بدون اسم',
+          company_account: companyAccount || '—',
+          first_both_month: firstBothMonth || 'غير متوفر',
+          first_both_year: firstBothYear,
+          first_both_m: firstBothM,
+          attendance_days: attendanceDays || '—',
+          insurance_status: insuranceStatus || 'غير مسجل',
+          insurance_number: p.insurance_number || (incomingData?.data?.insurance_number as string) || null,
+          job_title: p.job_title || (incomingData?.data?.job_title as string) || null,
+          insurance_job_title: p.insurance_job_title || (incomingData?.data?.insurance_job_title as string) || null,
+          subscription_start_date: p.subscription_start_date || (incomingData?.data?.subscription_start_date as string) || null,
+          subscription_end_date: p.subscription_end_date || (incomingData?.data?.subscription_end_date as string) || null,
+          hire_date: p.hire_date || null,
+          phone_number: p.phone_number || null,
+          status: status || '—',
+          has_resignation: hasResignation,
+          resignation_summary: resignationSummary,
+          source: 'consolidated',
+          source_label: Array.from(p.sources).join(' • '),
+          sources: Array.from(p.sources),
+          joint_periods: jointPeriods,
+          target_month_status: targetMonthStatus,
+          s1_info,
+          s6_info,
+        };
       }
 
       return {
@@ -287,6 +632,13 @@ export async function searchEmployees(
         first_both_m: firstBothM,
         attendance_days: attendanceDays || '—',
         insurance_status: insuranceStatus || 'غير مسجل',
+        insurance_number: p.insurance_number || null,
+        job_title: p.job_title || null,
+        insurance_job_title: p.insurance_job_title || null,
+        subscription_start_date: p.subscription_start_date || null,
+        subscription_end_date: p.subscription_end_date || null,
+        hire_date: p.hire_date || null,
+        phone_number: p.phone_number || null,
         status: status || '—',
         has_resignation: hasResignation,
         resignation_summary: resignationSummary,
@@ -342,6 +694,113 @@ export async function getAvailableImportedPeriods(): Promise<MonthAvailability[]
   });
 }
 
+export interface UnifiedEmployeeProfile {
+  found: boolean;
+  masterId?: string | null;
+  companyAccount?: string | null;
+  employeeCode?: string | null;
+  employeeName?: string | null;
+  nationalId?: string | null;
+  currentStatus?: string | null;
+  jobTitle?: string | null;
+  region?: string | null;
+  department?: string | null;
+  hireDate?: string | null;
+  phoneNumber?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  
+  // Sheet-specific sections
+  archives?: {
+    contract?: string | null;
+    idCard?: string | null;
+    qualification?: string | null;
+    military?: string | null;
+    birthCertificate?: string | null;
+    workPermit?: string | null;
+    criminalRecord?: string | null;
+    photos?: string | null;
+    skillTest?: string | null;
+    scan?: string | null;
+    completenessScore: number;
+    missingCount: number;
+    availableCount: number;
+    raw?: Record<string, unknown> | null;
+  } | null;
+
+  medical?: {
+    exam111Status?: string | null;
+    medicalCardStatus?: string | null;
+    receiveDate?: string | null;
+    issueDate?: string | null;
+    renewal1?: string | null;
+    renewal2?: string | null;
+    privateMedical?: string | null;
+    batch?: string | null;
+    sendDate?: string | null;
+    raw?: Record<string, unknown> | null;
+  } | null;
+
+  bank?: {
+    saib?: string | null;
+    cib?: string | null;
+    adib?: string | null;
+    dopay?: string | null;
+    bankTransfer?: string | null;
+    primaryBank?: string | null;
+    accountNumber?: string | null;
+    raw?: Record<string, unknown> | null;
+  } | null;
+
+  deductions?: Array<{
+    type?: string | null;
+    amount?: number | string | null;
+    beneficiary?: string | null;
+    department?: string | null;
+    raw?: Record<string, unknown>;
+  }>;
+
+  discrepancies?: Array<{
+    note?: string | null;
+    actualSite?: string | null;
+    region?: string | null;
+    hireDate?: string | null;
+    raw?: Record<string, unknown>;
+  }>;
+
+  requests?: Array<{
+    requestType?: string | null;
+    status?: string | null;
+    date?: string | null;
+    recipient?: string | null;
+    notes?: string | null;
+    raw?: Record<string, unknown>;
+  }>;
+
+  workInsurance?: {
+    month5?: string | number | null;
+    month6?: string | number | null;
+    month7?: string | number | null;
+    totalMonths?: string | number | null;
+    totalSalary?: string | number | null;
+    insuranceSalary?: string | number | null;
+    raw?: Record<string, unknown> | null;
+  } | null;
+
+  socialInsuranceSheet?: {
+    insuranceStatus?: string | null;
+    insuranceNumber?: string | null;
+    insuranceSalary?: string | number | null;
+    insuranceJobTitle?: string | null;
+    subscriptionStartDate?: string | null;
+    supplyMethod?: string | null;
+    crmNumber?: string | null;
+    raw?: Record<string, unknown> | null;
+  } | null;
+
+  allSheetsRaw?: Record<string, Record<string, unknown>>;
+}
+
 export interface EmployeeDetailsResult {
   identifiers: {
     national_id: string | null;
@@ -389,6 +848,9 @@ export interface EmployeeDetailsResult {
     payrollRecord?: Record<string, unknown> | null;
     insuranceRecord?: Record<string, unknown> | null;
   };
+  unifiedProfile?: UnifiedEmployeeProfile;
+  s1_calculation?: S1CalculationInfo;
+  s6_calculation?: S6CalculationInfo;
 }
 
 export async function getEmployeeFullDetails(params: {
@@ -409,7 +871,7 @@ export async function getEmployeeFullDetails(params: {
 
   let incomingRecord: Record<string, unknown> | null = null;
   if (incomingOrConditions.length > 0) {
-    incomingQuery = incomingQuery.or(incomingOrConditions.join(','));
+    incomingQuery = incomingQuery.or(incomingOrConditions.join(',')).order('created_at', { ascending: false });
     const { data } = await incomingQuery.limit(5);
     if (data && data.length > 0) {
       incomingRecord = data[0];
@@ -603,20 +1065,318 @@ export async function getEmployeeFullDetails(params: {
     };
   }
 
+  // 6. Build Unified Employee Profile (ملف الموحد الشامل من جميع أوراق العمل)
+  const targetNid = national_id || (incomingRecord?.national_id as string) || '';
+  const targetCode = employee_code || (incomingRecord?.employee_code as string) || '';
+  const targetName = employee_name || (incomingRecord?.employee_name as string) || '';
+
+  let masterEmp: Record<string, unknown> | null = null;
+  const masterOrConds: string[] = [];
+  if (targetNid) masterOrConds.push(`national_id.eq.${targetNid}`);
+  if (targetCode) masterOrConds.push(`employee_code.eq.${targetCode}`);
+  
+  if (masterOrConds.length > 0) {
+    const { data: mData } = await supabaseServer
+      .from('employees_master')
+      .select('*')
+      .or(masterOrConds.join(','))
+      .limit(1)
+      .maybeSingle();
+    if (mData) masterEmp = mData;
+  }
+
+  // Fetch sheet_data records for this employee
+  const sheetOrConds: string[] = [];
+  if (masterEmp?.id) sheetOrConds.push(`employee_id.eq.${masterEmp.id}`);
+  if (targetNid) sheetOrConds.push(`row_national_id.eq.${targetNid}`);
+  if (targetCode) sheetOrConds.push(`row_code.eq.${targetCode}`);
+
+  let allSheetRecords: Array<{
+    sheet_id: string;
+    row_data: Record<string, unknown>;
+    dynamic_sheets?: { sheet_name: string; display_name: string } | null;
+  }> = [];
+
+  if (sheetOrConds.length > 0) {
+    const { data: sRows } = await supabaseServer
+      .from('sheet_data')
+      .select('sheet_id, row_data, dynamic_sheets(sheet_name, display_name)')
+      .or(sheetOrConds.join(','))
+      .eq('is_latest', true)
+      .order('created_at', { ascending: false });
+    if (sRows) {
+      allSheetRecords = sRows as unknown as typeof allSheetRecords;
+    }
+  }
+
+  // Fallback search in sheet_data if row_code or row_national_id had shifted columns
+  if (allSheetRecords.length === 0 && (targetNid || targetCode)) {
+    // Attempt finding in sheet_data where row_data contains code or nid
+    const { data: fallbackRows } = await supabaseServer
+      .from('sheet_data')
+      .select('sheet_id, row_data, dynamic_sheets(sheet_name, display_name)')
+      .limit(200);
+
+    if (fallbackRows) {
+      const filtered = fallbackRows.filter((r) => {
+        const str = JSON.stringify(r.row_data);
+        return (targetNid && str.includes(targetNid)) || (targetCode && str.includes(`"${targetCode}"`));
+      });
+      if (filtered.length > 0) {
+        allSheetRecords = filtered as unknown as typeof allSheetRecords;
+      }
+    }
+  }
+
+  // Organize by sheet_name
+  const sheetsByName: Record<string, Record<string, unknown>[]> = {};
+  for (const sr of allSheetRecords) {
+    const sName = sr.dynamic_sheets?.sheet_name || 'unknown';
+    if (!sheetsByName[sName]) sheetsByName[sName] = [];
+    sheetsByName[sName].push(sr.row_data);
+  }
+
+  // 1. Database Sheet
+  const dbRow = sheetsByName['Database']?.[0] || {};
+  // Handle shifted columns if present
+  const isShifted = dbRow.employee_name && /^\d{4,6}$/.test(String(dbRow.employee_name));
+  const cleanDbCode = isShifted ? String(dbRow.employee_name) : (dbRow.employee_code ? String(dbRow.employee_code) : targetCode);
+  const cleanDbName = isShifted ? String(dbRow.national_id) : (dbRow.employee_name ? String(dbRow.employee_name) : targetName);
+  const cleanDbNid = isShifted ? String(dbRow.job_title) : (dbRow.national_id ? String(dbRow.national_id) : targetNid);
+  const cleanDbJob = isShifted ? String(dbRow.region) : (dbRow.job_title ? String(dbRow.job_title) : (incomingRecord?.job_title as string) || '');
+  const cleanDbRegion = isShifted ? String(dbRow.department) : (dbRow.region ? String(dbRow.region) : '');
+  const cleanDbDept = isShifted ? String(dbRow.hire_date) : (dbRow.department ? String(dbRow.department) : '');
+  const cleanDbHireDate = isShifted ? String(dbRow.address) : (dbRow.hire_date ? String(dbRow.hire_date) : '');
+  const cleanDbAddress = isShifted ? String(dbRow.phone_number) : (dbRow.address ? String(dbRow.address) : '');
+  const cleanDbPhone = isShifted ? String(dbRow.status) : (dbRow.phone_number ? String(dbRow.phone_number) : (masterEmp?.phone_number ? String(masterEmp.phone_number) : ''));
+  const cleanDbStatus = isShifted ? String(dbRow.note) : (dbRow.status ? String(dbRow.status) : (incomingRecord?.status as string) || 'Active');
+
+  // 2. Archives Sheet (اكتمال مسوغات التعيين)
+  const archRow = sheetsByName['Archives']?.[0] || {};
+  let archivesData: UnifiedEmployeeProfile['archives'] = null;
+  if (Object.keys(archRow).length > 0) {
+    const docFields = [
+      'contract', 'id_card', 'qualification', 'military',
+      'birth_certificate', 'work_permit', 'criminal_record', 'photos', 'skill_test', 'scan'
+    ];
+    let availableCount = 0;
+    let missingCount = 0;
+    const isDocPresent = (val: unknown) => {
+      const s = String(val || '').trim().toLowerCase();
+      return s.includes('يوجد') || s.includes('اصل') || s.includes('أصل') || s.includes('صوره') || s.includes('صورة') || s === 'scan';
+    };
+
+    docFields.forEach((f) => {
+      if (isDocPresent(archRow[f])) availableCount++;
+      else missingCount++;
+    });
+
+    const completenessScore = Math.round((availableCount / docFields.length) * 100);
+
+    archivesData = {
+      contract: (archRow.contract as string) || null,
+      idCard: (archRow.id_card as string) || null,
+      qualification: (archRow.qualification as string) || null,
+      military: (archRow.military as string) || null,
+      birthCertificate: (archRow.birth_certificate as string) || null,
+      workPermit: (archRow.work_permit as string) || null,
+      criminalRecord: (archRow.criminal_record as string) || null,
+      photos: (archRow.photos as string) || null,
+      skillTest: (archRow.skill_test as string) || null,
+      scan: (archRow.scan as string) || null,
+      completenessScore,
+      availableCount,
+      missingCount,
+      raw: archRow,
+    };
+  }
+
+  // 3. Medical Sheet (الكشف الطبي ونماذج 111)
+  const medRow = sheetsByName['Medical']?.[0] || {};
+  let medicalData: UnifiedEmployeeProfile['medical'] = null;
+  if (Object.keys(medRow).length > 0) {
+    medicalData = {
+      exam111Status: (medRow['111'] as string) || (medRow.exam_111 as string) || null,
+      medicalCardStatus: (medRow.medical_card as string) || (medRow['بطاقه علاجيه'] as string) || null,
+      receiveDate: (medRow.receive_date as string) || (medRow['تاريخ الاستلام'] as string) || null,
+      issueDate: (medRow.issue_date as string) || (medRow['تاريخ الإصدار'] as string) || null,
+      renewal1: (medRow.renewal_1 as string) || (medRow['التجديد الأول'] as string) || null,
+      renewal2: (medRow.renewal_2 as string) || (medRow['التجديد التانى'] as string) || null,
+      privateMedical: (medRow.private_medical as string) || (medRow['برايفت ميديكال'] as string) || null,
+      batch: (medRow.batch as string) || (medRow['الدفعه'] as string) || null,
+      sendDate: (medRow.send_date as string) || (medRow['تاريخ الارسال'] as string) || null,
+      raw: medRow,
+    };
+  }
+
+  // 4. Bank ACC. Sheet
+  const bankRow = sheetsByName['Bank ACC.']?.[0] || sheetsByName['Bank ACC']?.[0] || {};
+  let bankData: UnifiedEmployeeProfile['bank'] = null;
+  if (Object.keys(bankRow).length > 0) {
+    const saib = (bankRow.SAIB as string) || (bankRow.saib as string) || null;
+    const cib = (bankRow.CIB as string) || (bankRow.cib as string) || null;
+    const adib = (bankRow.ADIB as string) || (bankRow.adib as string) || null;
+    const dopay = (bankRow.DOPAY as string) || (bankRow.dopay as string) || null;
+    const transfer = (bankRow['Bank Transfer'] as string) || (bankRow.bank_transfer as string) || null;
+
+    let primaryBank = transfer || '';
+    let accountNumber = '';
+    if (saib && saib !== '0') { primaryBank = 'SAIB'; accountNumber = saib; }
+    else if (cib && cib !== '0') { primaryBank = 'CIB'; accountNumber = cib; }
+    else if (adib && adib !== '0') { primaryBank = 'ADIB'; accountNumber = adib; }
+    else if (dopay && dopay !== '0') { primaryBank = 'DOPAY'; accountNumber = dopay; }
+
+    bankData = {
+      saib,
+      cib,
+      adib,
+      dopay,
+      bankTransfer: transfer,
+      primaryBank: primaryBank || 'غير محدد',
+      accountNumber: accountNumber || '—',
+      raw: bankRow,
+    };
+  }
+
+  // 5. Deductions Sheet
+  const deductionRows = sheetsByName['Deductions'] || [];
+  const deductionsList = deductionRows.map((d) => ({
+    type: (d.deduction_type as string) || (d['نوع الاستقطاع'] as string) || 'نفقة',
+    amount: (d.amount as number | string) || (d['المبلغ'] as number | string) || 0,
+    beneficiary: (d.beneficiary as string) || (d['المستفيد'] as string) || '—',
+    department: (d.department as string) || (d['الاداره'] as string) || '',
+    raw: d,
+  }));
+
+  // 6. شيت المنقاضات / Discrepancies
+  const discRows = sheetsByName['المنقاضات'] || sheetsByName['شيت المنقاضات'] || [];
+  const discrepanciesList = discRows.map((dc) => ({
+    note: (dc.note as string) || (dc.NOTE as string) || (dc['ملاحظات'] as string) || 'تنبيه تدقيق',
+    actualSite: (dc.actual_site as string) || (dc['الموقع الفعلى'] as string) || '',
+    region: (dc.region as string) || (dc['المنطقه'] as string) || '',
+    hireDate: (dc.hire_date as string) || (dc['تاريخ استلام العمل'] as string) || '',
+    raw: dc,
+  }));
+
+  // 7. Requests Sheet
+  const reqRows = sheetsByName['Requests'] || [];
+  const requestsList = reqRows.map((rq) => ({
+    requestType: (rq.request as string) || (rq['الطلب'] as string) || 'طلب مستندات',
+    status: (rq.status as string) || (rq['الحاله'] as string) || 'جاري',
+    date: (rq.date as string) || (rq['التاريخ'] as string) || '',
+    recipient: (rq.recipient as string) || (rq['المستلم'] as string) || '',
+    notes: (rq.note as string) || (rq['ملاحضات'] as string) || '',
+    raw: rq,
+  }));
+
+  // 8. شغل تأمينات
+  const workInsRow = sheetsByName['شغل تامينات']?.[0] || sheetsByName['شغل تامينات ']?.[0] || {};
+  let workInsuranceData: UnifiedEmployeeProfile['workInsurance'] = null;
+  if (Object.keys(workInsRow).length > 0) {
+    workInsuranceData = {
+      month5: (workInsRow['شهر 5'] as string | number) || workInsRow.month_5 as string | number || '—',
+      month6: (workInsRow['شهر 6'] as string | number) || workInsRow.month_6 as string | number || '—',
+      month7: (workInsRow['شهر 7'] as string | number) || workInsRow.month_7 as string | number || '—',
+      totalMonths: (workInsRow['عدد اشهر العمل'] as string | number) || workInsRow.work_months as string | number || 0,
+      totalSalary: (workInsRow['الاجر الشامل'] as string | number) || workInsRow.gross_salary as string | number || 0,
+      insuranceSalary: (workInsRow['الاجر التامينى'] as string | number) || workInsRow.insurance_salary as string | number || 0,
+      raw: workInsRow,
+    };
+  }
+
+  // 9. Social.insurance
+  const socialRow = sheetsByName['Social.insurance']?.[0] || {};
+  let socialInsData: UnifiedEmployeeProfile['socialInsuranceSheet'] = null;
+  if (Object.keys(socialRow).length > 0) {
+    socialInsData = {
+      insuranceStatus: (socialRow['الحاله التامينيه'] as string) || (socialRow.insurance_status as string) || '',
+      insuranceNumber: (socialRow['الرقم التامينى'] as string) || (socialRow.insurance_number as string) || '',
+      insuranceSalary: (socialRow['الاجر التامينى'] as string | number) || (socialRow.insurance_salary as string | number) || 0,
+      insuranceJobTitle: (socialRow['الوظيفه في التامينات'] as string) || (socialRow.insurance_job_title as string) || '',
+      subscriptionStartDate: (socialRow['تاريخ بدايه الاشتراك'] as string) || (socialRow.subscription_start_date as string) || '',
+      supplyMethod: (socialRow['طريقه التوريد'] as string) || (socialRow.supply_method as string) || '',
+      crmNumber: (socialRow['رقم ال CRM'] as string) || (socialRow.crm_number as string) || '',
+      raw: socialRow,
+    };
+  }
+
+  const unifiedProfile: UnifiedEmployeeProfile = {
+    found: Boolean(masterEmp || allSheetRecords.length > 0 || incomingRecord),
+    masterId: masterEmp?.id as string || null,
+    companyAccount: (masterEmp?.company_account as string) || (incomingRecord?.company_account as string) || 'E.G',
+    employeeCode: cleanDbCode || targetCode,
+    employeeName: cleanDbName || targetName,
+    nationalId: cleanDbNid || targetNid,
+    currentStatus: cleanDbStatus,
+    jobTitle: cleanDbJob,
+    region: cleanDbRegion,
+    department: cleanDbDept,
+    hireDate: cleanDbHireDate,
+    phoneNumber: cleanDbPhone,
+    address: cleanDbAddress,
+    notes: (dbRow.note as string) || '',
+    archives: archivesData,
+    medical: medicalData,
+    bank: bankData,
+    deductions: deductionsList,
+    discrepancies: discrepanciesList,
+    requests: requestsList,
+    workInsurance: workInsuranceData,
+    socialInsuranceSheet: socialInsData,
+    allSheetsRaw: Object.fromEntries(
+      Object.entries(sheetsByName).map(([k, v]) => [k, v[0] || {}])
+    ),
+  };
+
   // Company account rule: Sharka in incoming insurance
-  const companyAccount = incomingRecord ? (incomingRecord.company_account as string) || null : null;
+  const companyAccount = incomingRecord ? (incomingRecord.company_account as string) || null : (masterEmp?.company_account as string) || null;
+
+  // ── S1 Calculation (استمارة س1 - بداية الاشتراك) ──
+  const s1Year = firstBoth?.year || firstPayroll?.year || (monthlyInsRecords[0]?.period_year as number) || null;
+  const s1Month = firstBoth?.month || firstPayroll?.month || (monthlyInsRecords[0]?.period_month as number) || null;
+  const matchFirstPay = (s1Year && s1Month)
+    ? payrollRecords.find(p => p.period_year === s1Year && p.period_month === s1Month)
+    : payrollRecords[0];
+  const s1Attendance = matchFirstPay?.attendance_days || workInsuranceData?.month5;
+  const recordedS1Date = (incomingRecord?.subscription_start_date as string) || (masterEmp?.insurance_start_date as string) || (socialInsData?.subscriptionStartDate as string) || null;
+  const s1_calculation = computeS1Date(s1Year, s1Month, s1Attendance, recordedS1Date);
+
+  // ── S6 Calculation (استمارة س6 - نهاية الاشتراك) ──
+  const lastPayroll = payrollRecords.length > 0 ? payrollRecords[payrollRecords.length - 1] : null;
+  const lastInsurance = monthlyInsRecords.length > 0 ? monthlyInsRecords[monthlyInsRecords.length - 1] : null;
+  const s6Year = (lastPayroll?.period_year as number) || (lastInsurance?.period_year as number) || null;
+  const s6Month = (lastPayroll?.period_month as number) || (lastInsurance?.period_month as number) || null;
+  const s6WorkDays = lastPayroll?.attendance_days;
+  const hasResignation = resignationRecords.length > 0;
+  const empStatusStr = (masterEmp?.current_status as string) || (incomingRecord?.status as string) || 'Active';
+  const isActive = !hasResignation && !/استق|منته|resign/i.test(empStatusStr);
+  const recordedEndDate = (resignationRecords[0]?.last_working_day as string) || (resignationRecords[0]?.resignation_date as string) || (incomingRecord?.subscription_end_date as string) || null;
+  const resignationType = (resignationRecords[0]?.resignation_type as string) || (incomingRecord?.termination_reason as string) || null;
+  const s6_calculation = computeS6Date(s6Year, s6Month, s6WorkDays, isActive, hasResignation, recordedEndDate, resignationType);
 
   return {
     identifiers: {
-      national_id: national_id || (incomingRecord?.national_id as string) || null,
-      employee_code: employee_code || (incomingRecord?.employee_code as string) || null,
-      employee_name: employee_name || (incomingRecord?.employee_name as string) || null,
+      national_id: national_id || (incomingRecord?.national_id as string) || cleanDbNid || null,
+      employee_code: employee_code || (incomingRecord?.employee_code as string) || cleanDbCode || null,
+      employee_name: employee_name || (incomingRecord?.employee_name as string) || cleanDbName || null,
     },
     conflicts,
     incomingInsurance: {
-      found: Boolean(incomingRecord),
-      record: incomingRecord,
-      company_account: companyAccount,
+      found: Boolean(incomingRecord || masterEmp || socialInsData),
+      record: {
+        ...(incomingRecord || {}),
+        insurance_number: (incomingRecord?.insurance_number as string) || (masterEmp?.insurance_number as string) || (socialInsData?.insuranceNumber as string) || null,
+        job_title: (incomingRecord?.job_title as string) || (masterEmp?.current_job_title as string) || cleanDbJob || null,
+        insurance_job_title: (incomingRecord?.insurance_job_title as string) || (masterEmp?.insurance_job_title as string) || (socialInsData?.insuranceJobTitle as string) || null,
+        status: (incomingRecord?.status as string) || (masterEmp?.current_status as string) || cleanDbStatus || 'Active',
+        insurance_status: (incomingRecord?.insurance_status as string) || (masterEmp?.insurance_status as string) || (socialInsData?.insuranceStatus as string) || null,
+        subscription_start_date: (incomingRecord?.subscription_start_date as string) || (masterEmp?.insurance_start_date as string) || (socialInsData?.subscriptionStartDate as string) || null,
+        company_account: companyAccount || (masterEmp?.company_account as string) || 'E.G',
+        employee_code: (incomingRecord?.employee_code as string) || (masterEmp?.employee_code as string) || cleanDbCode || targetCode || null,
+        national_id: (incomingRecord?.national_id as string) || (masterEmp?.national_id as string) || cleanDbNid || targetNid || null,
+        employee_name: (incomingRecord?.employee_name as string) || (masterEmp?.employee_name as string) || cleanDbName || targetName || 'بدون اسم',
+      },
+      company_account: companyAccount || (masterEmp?.company_account as string) || 'E.G',
     },
     resignation: {
       found: resignationRecords.length > 0,
@@ -635,5 +1395,8 @@ export async function getEmployeeFullDetails(params: {
     },
     allMonthsHistory,
     selectedMonthStatus,
+    unifiedProfile,
+    s1_calculation,
+    s6_calculation,
   };
 }

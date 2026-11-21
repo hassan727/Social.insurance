@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 
-export type SourceType = 'incoming_insurance' | 'res' | 'monthly_payroll' | 'monthly_insurance';
+export type SourceType = 'incoming_insurance' | 'res' | 'monthly_payroll' | 'monthly_insurance' | 'official_insurance_print';
 
 export interface ExpectedColumn {
   key: string;
@@ -10,6 +10,20 @@ export interface ExpectedColumn {
 }
 
 export const SOURCE_COLUMNS: Record<SourceType, ExpectedColumn[]> = {
+  official_insurance_print: [
+    { key: 'national_id', label: 'الرقم القومي', required: true, aliases: ['الرقم القومى 2', 'الرقم القومي', 'القومي', 'national_id', 'الرقم القومى'] },
+    { key: 'employee_name', label: 'اسم المؤمن عليه', required: true, aliases: ['اسم المؤمن عليه', 'اسم المؤمن عليه ', 'الاسم', 'اسم الموظف', 'name'] },
+    { key: 'insurance_job_title', label: 'المهنة بالتأمينات', required: true, aliases: ['المهنة', 'المهنه', 'الوظيفة في التأمينات', 'الوظيفه في التامينات', 'insurance_job_title'] },
+    { key: 'insurance_number', label: 'الرقم التأميني', required: false, aliases: ['الرقم التأميني للمؤمن علية', 'الرقم التاميني للمؤمن علية', 'الرقم التأميني', 'الرقم التاميني', 'insurance_number'] },
+    { key: 'insurance_salary', label: 'قيمة الأجر التأميني', required: false, aliases: ['قيمة الاجر', 'قيمة الأجر', 'الاجر التأمينى', 'الاجر التأميني', 'الاجر التاميني', 'insurance_salary'] },
+    { key: 'company_account', label: 'الشركة (Account)', required: false, aliases: ['الشركه', 'الشركة', 'الشركه ', 'company', 'account'] },
+    { key: 'employee_code', label: 'رقم الأداء / الكود', required: false, aliases: ['رقم الاداء', 'رقم الأداء', 'الكود', 'كود', 'code', 'emp_code'] },
+    { key: 'subscription_start_date', label: 'تاريخ بداية المدة', required: false, aliases: ['تاريخ بداية المده', 'تاريخ بداية المدة', 'تاريخ بداية الاشتراك', 'subscription_start_date'] },
+    { key: 'wage_start_date', label: 'تاريخ بداية الأجر', required: false, aliases: ['تاريخ بداية الاجر', 'تاريخ بداية الأجر', 'wage_start_date'] },
+    { key: 'status', label: 'الحالة', required: false, aliases: ['الحاله', 'الحالة', 'الحاله ', 'status'] },
+    { key: 'facility_number', label: 'رقم المنشأة', required: false, aliases: ['رقم المنشأة', 'رقم المنشأه', 'رقم المنشاه'] },
+    { key: 'facility_name', label: 'اسم المنشأة', required: false, aliases: ['اسم المنشأة', 'اسم المنشأه', 'اسم المنشاه', 'اسم المنشأة '] },
+  ],
   incoming_insurance: [
     { key: 'employee_code', label: 'الكود', required: false, aliases: ['الكود', 'كود', 'code', 'emp_code'] },
     { key: 'employee_name', label: 'الاسم', required: true, aliases: ['الاسم', 'اسم الموظف', 'name'] },

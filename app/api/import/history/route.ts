@@ -66,6 +66,15 @@ export async function DELETE(request: Request) {
       await supabaseServer.from('incoming_insurance_records').delete().eq('import_id', id);
     } else if (source_type === 'res') {
       await supabaseServer.from('resignation_records').delete().eq('import_id', id);
+    } else if (source_type === 'multi_sheet_import') {
+      await Promise.all([
+        supabaseServer.from('sheet_data').delete().eq('import_id', id),
+        supabaseServer.from('incoming_insurance_records').delete().eq('import_id', id),
+        supabaseServer.from('resignation_records').delete().eq('import_id', id),
+        supabaseServer.from('monthly_payroll_records').delete().eq('import_id', id),
+        supabaseServer.from('monthly_insurance_records').delete().eq('import_id', id),
+        supabaseServer.from('employee_history').delete().eq('import_id', id),
+      ]);
     }
 
     // 3. Delete the log entry itself

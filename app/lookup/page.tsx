@@ -1,15 +1,18 @@
 'use client';
 
 import { useState, useEffect, useRef, useTransition } from 'react';
-import Navbar from '@/components/Navbar';
 import {
   Search, User, Calendar, AlertTriangle, CheckCircle2, XCircle,
   FileText, Clock, Building2, FileSpreadsheet, AlertCircle, Briefcase,
-  History, Layers, Copy, Sparkles, ShieldCheck, X, ChevronLeft,
+  History, Layers, Copy, Sparkles, ShieldCheck, X, ChevronLeft, Download,
+  CreditCard, HeartPulse, FolderCheck, AlertOctagon, HelpCircle, FileCheck, Check,
+  Phone, MapPin, Building, Award, ShieldAlert, BadgeCheck, Stethoscope, Landmark
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { SearchCandidate, EmployeeDetailsResult, MonthAvailability } from '@/lib/lookupService';
+import UnifiedEmployeeCard from '@/components/UnifiedEmployeeCard';
+import EmployeeChecklistPanel from '@/components/EmployeeChecklistPanel';
 
 /* ─── Status helpers ─── */
 function getStatusCfg(status: string) {
@@ -71,11 +74,14 @@ export default function LookupPage() {
   const [searchTargetPeriod,  setSearchTargetPeriod]  = useState<string>('auto'); // 'auto' or 'YYYY-M'
   const [selectedCandidate,   setSelectedCandidate]   = useState<SearchCandidate | null>(null);
   const [details,             setDetails]             = useState<EmployeeDetailsResult | null>(null);
+  const [activeProfileTab,    setActiveProfileTab]    = useState<'unified' | 'timeline'>('unified');
   const [loadingDetails,      setLoadingDetails]      = useState(false);
   const [availablePeriods,    setAvailablePeriods]    = useState<MonthAvailability[]>([]);
   const [selectedYear,        setSelectedYear]        = useState<number>(new Date().getFullYear());
   const [selectedMonth,       setSelectedMonth]       = useState<number>(new Date().getMonth() + 1);
   const [, startTransition]                           = useTransition();
+  const [exportingHistory, setExportingHistory]       = useState(false);
+  const [searchPurpose, setSearchPurpose]             = useState<'general' | 's1' | 's6' | 'details'>('general');
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
@@ -105,7 +111,7 @@ export default function LookupPage() {
   }, []);
 
   const buildSearchUrl = (val: string, periodVal: string = searchTargetPeriod) => {
-    let url = `/api/lookup/search?q=${encodeURIComponent(val.trim())}`;
+    let url = `/api/lookup/search?q=${encodeURIComponent(val.trim())}&purpose=${encodeURIComponent(searchPurpose)}`;
     if (periodVal !== 'auto') {
       const [y, m] = periodVal.split('-');
       if (y && m) url += `&year=${y}&month=${m}`;
@@ -279,6 +285,48 @@ export default function LookupPage() {
     toast.info('تم تفريغ الشاشة والعودة للوضع الافتراضي (أول ظهور تلقائي)');
   };
 
+  const handleExportSearchHistory = async () => {
+    setExportingHistory(true);
+    toast.info('جاري تجهيز ملف Excel...');
+    
+    try {
+      const purposeSuffix = searchPurpose !== 'general' ? `_${searchPurpose}` : '';
+      const now = new Date();
+      const hours = now.getHours().toString().padStart(2, '0');
+      const mins = now.getMinutes().toString().padStart(2, '0');
+      const response = await fetch(`/api/lookup/export-search-history?unique=true&purpose=${searchPurpose}`);
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'فشل تصدير سجل البحث');
+      }
+
+      // Get the file blob
+      const blob = await response.blob();
+      
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const purposeLabel = searchPurpose === 's1' ? 'س1' : searchPurpose === 's6' ? 'س6' : searchPurpose === 'details' ? 'تفاصيل' : '';
+      const dateStr = new Date().toISOString().split('T')[0];
+      a.download = `سجل_البحث${purposeLabel ? '_' + purposeLabel : ''}${purposeSuffix}_${dateStr}_${hours}-${mins}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Cleanup
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      toast.success('تم تصدير سجل البحث بنجاح!');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'حدث خطأ أثناء التصدير';
+      toast.error(message);
+    } finally {
+      setExportingHistory(false);
+    }
+  };
+
   // Check if current active candidate or search results have joint data (in both sheets) for a given year & month
   const isPeriodBothAvailable = (year: number, month: number): boolean => {
     const key = `${year}-${month}`;
@@ -316,10 +364,9 @@ export default function LookupPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#080d1a', position: 'relative' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <div className="orb orb-tl" style={{ opacity: 0.12 }} />
       <div className="orb orb-bl" style={{ opacity: 0.08 }} />
-      <Navbar />
 
       <main style={{ width: '94%', maxWidth: 1800, margin: '0 auto', padding: '2rem 1rem', flex: 1, position: 'relative', zIndex: 10 }}>
 
@@ -342,12 +389,44 @@ export default function LookupPage() {
               محرك الاستعلام والتدقيق الفوري
             </span>
 
-            <h1 style={{ fontSize: 28, fontWeight: 900, color: '#fff', letterSpacing: '-0.3px', margin: '0 0 8px' }}>
-              استدعاء وفحص ملف الموظف
-            </h1>
-            <p style={{ fontSize: 13, color: '#94a3b8', margin: '0 0 20px', maxWidth: 640 }}>
-              ابحث بالرقم القومي أو كود الموظف أو الاسم — النتائج تظهر فوراً مع فحص تطابق المصادر
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
+              <div>
+                <h1 style={{ fontSize: 28, fontWeight: 900, color: '#fff', letterSpacing: '-0.3px', margin: '0 0 8px' }}>
+                  استدعاء وفحص ملف الموظف
+                </h1>
+                <p style={{ fontSize: 13, color: '#94a3b8', margin: 0, maxWidth: 640 }}>
+                  ابحث بالرقم القومي أو كود الموظف أو الاسم — النتائج تظهر فوراً مع فحص تطابق المصادر
+                </p>
+              </div>
+              
+              {/* Export Search History Button */}
+              <button
+                type="button"
+                onClick={handleExportSearchHistory}
+                disabled={exportingHistory}
+                className="btn-success"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '10px 18px',
+                  borderRadius: 12,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: exportingHistory ? 'not-allowed' : 'pointer',
+                  opacity: exportingHistory ? 0.6 : 1,
+                  border: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+                title="تصدير كل الموظفين الذين تم البحث عنهم مع حالة التأمين"
+              >
+                <Download style={{ width: 16, height: 16 }} />
+                <span>{exportingHistory ? 'جاري التصدير...' : 'تصدير سجل البحث'}</span>
+                <span className="badge-slate" style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4 }}>
+                  {searchPurpose === 's1' ? 'س1' : searchPurpose === 's6' ? 'س6' : searchPurpose === 'details' ? 'تفاصيل' : 'Excel'}
+                </span>
+              </button>
+            </div>
 
             {/* Target Month Mode Filter */}
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18 }}>
@@ -442,8 +521,51 @@ export default function LookupPage() {
               </div>
             </div>
 
-            {/* Search Input Container */}
-            <div
+            {/* ─── Search Purpose Selector ─── */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
+                <FileText style={{ width: 14, height: 14, color: '#818cf8' }} />
+                <span>غرض البحث:</span>
+              </div>
+              {([
+                { key: 'general',  label: 'بحث عام',                   emoji: '🔍', border: '#818cf8' },
+                { key: 's1',       label: 'س1 — تسجيل تأمين جديد',    emoji: '📋', border: '#38bdf8' },
+                { key: 's6',       label: 'س6 — إنهاء اشتراك',        emoji: '🔴', border: '#fda4af' },
+                { key: 'details',  label: 'تفاصيل موظف كاملة',         emoji: '👤', border: '#34d399' },
+              ] as const).map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => setSearchPurpose(p.key)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '6px 14px', borderRadius: 10, fontSize: 12,
+                    fontWeight: searchPurpose === p.key ? 800 : 600,
+                    background: searchPurpose === p.key ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.03)',
+                    border: searchPurpose === p.key ? `1.5px solid ${p.border}` : '1px solid rgba(255,255,255,0.08)',
+                    color: searchPurpose === p.key ? '#ffffff' : '#94a3b8',
+                    cursor: 'pointer', transition: 'all 0.15s ease',
+                    boxShadow: searchPurpose === p.key ? `0 0 10px ${p.border}44` : 'none',
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>{p.emoji}</span>
+                  {p.label}
+                  {searchPurpose === p.key && <CheckCircle2 style={{ width: 12, height: 12, color: p.border }} />}
+                </button>
+              ))}
+              {searchPurpose === 's1' && (
+                <span style={{ fontSize: 11, color: '#38bdf8', background: 'rgba(56,189,248,0.1)', border: '1px solid rgba(56,189,248,0.3)', borderRadius: 8, padding: '3px 10px', marginRight: 'auto' }}>
+                  📌 سيظهر مؤشر جاهزية س1 في النتائج والتقرير
+                </span>
+              )}
+              {searchPurpose === 's6' && (
+                <span style={{ fontSize: 11, color: '#fda4af', background: 'rgba(253,164,175,0.1)', border: '1px solid rgba(253,164,175,0.3)', borderRadius: 8, padding: '3px 10px', marginRight: 'auto' }}>
+                  📌 سيظهر مؤشر جاهزية س6 في النتائج والتقرير
+                </span>
+              )}
+            </div>
+
+            {/* Search Input Container */}            <div
               ref={searchContainerRef}
               className="search-glow"
               style={{ position: 'relative', maxWidth: 780, borderRadius: 18 }}
@@ -742,22 +864,30 @@ export default function LookupPage() {
                 <table className="table-dark">
                   <thead>
                     <tr>
-                      <th style={{ color: '#ffffff', width: 45, textAlign: 'center' }}>#</th>
+                      <th style={{ color: '#ffffff', width: 40, textAlign: 'center' }}>#</th>
                       <th style={{ color: '#ffffff' }}>اسم الموظف</th>
                       <th style={{ color: '#ffffff' }}>كود الموظف</th>
                       <th style={{ color: '#ffffff' }}>الرقم القومي</th>
+                      <th style={{ color: '#ffffff' }}>رقم التأمين</th>
+                      <th style={{ color: '#ffffff' }}>الوظيفة</th>
                       <th style={{ color: '#ffffff' }}>الشركة (Account)</th>
                       <th style={{ color: '#ffffff' }}>
                         {searchTargetPeriod !== 'auto'
-                          ? 'مسجل في كلا الشيتين ✓'
-                          : 'أول شهر ظهور (مرتبات + تأمينات)'}
+                          ? 'حالة الشهر المستهدف'
+                          : 'أول ظهور (مرتبات + تأمينات)'}
                       </th>
-                      <th style={{ color: '#ffffff', textAlign: 'center' }}>
-                        {searchTargetPeriod !== 'auto' ? 'حضور الشهر المستهدف' : 'أيام الحضور'}
-                      </th>
+                      <th style={{ color: '#ffffff', textAlign: 'center' }}>أيام الحضور</th>
+                      <th style={{ color: '#38bdf8' }}>بداية الاشتراك (س1)</th>
+                      <th style={{ color: '#fda4af' }}>نهاية الاشتراك (س6)</th>
+                      <th style={{ color: '#a3e635' }}>رقم الهاتف</th>
+                      {(searchPurpose === 's1' || searchPurpose === 's6') && (
+                        <th style={{ color: searchPurpose === 's1' ? '#38bdf8' : '#fda4af', whiteSpace: 'nowrap' }}>
+                          {searchPurpose === 's1' ? 'جاهزية س1 ✓' : 'جاهزية س6 ✓'}
+                        </th>
+                      )}
                       <th style={{ color: '#ffffff' }}>حالة التأمين</th>
                       <th style={{ color: '#ffffff' }}>الحالة</th>
-                      <th style={{ color: '#ffffff' }}>شيت الاستقالات (RES)</th>
+                      <th style={{ color: '#ffffff' }}>الاستقالات (RES)</th>
                       <th style={{ width: 40, textAlign: 'center' }}></th>
                     </tr>
                   </thead>
@@ -768,6 +898,9 @@ export default function LookupPage() {
                       const targetMonthLabel = searchTargetPeriod !== 'auto'
                         ? `حالة شهر (${searchTargetPeriod.split('-')[1]}/${searchTargetPeriod.split('-')[0]})`
                         : '';
+                      const s1Date = c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
+                      const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر' : null);
+
                       return (
                         <tr
                           key={`${c.id}_${idx}`}
@@ -779,11 +912,36 @@ export default function LookupPage() {
                           <td style={{ fontWeight: 800, color: '#ffffff', fontSize: 14 }}>
                             {c.employee_name || 'بدون اسم'}
                           </td>
-                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#ffffff', fontSize: 13 }}>
+                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#818cf8', fontSize: 13 }}>
                             {c.employee_code || '—'}
                           </td>
-                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#ffffff', fontSize: 13 }}>
+                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#38bdf8', fontSize: 13 }}>
                             {c.national_id || '—'}
+                          </td>
+                          <td className="font-mono-pro" style={{ fontWeight: 700, color: '#34d399', fontSize: 13 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span>{c.insurance_number || '—'}</span>
+                              {c.insurance_number && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(c.insurance_number!);
+                                    toast.success(`تم نسخ الرقم التأميني: ${c.insurance_number}`);
+                                  }}
+                                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: '#34d399' }}
+                                  title="نسخ الرقم التأميني"
+                                >
+                                  <Copy style={{ width: 12, height: 12 }} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td style={{ fontSize: 12, color: '#cbd5e1' }}>
+                            <div>{c.job_title || '—'}</div>
+                            {c.insurance_job_title && c.insurance_job_title !== c.job_title && (
+                              <div style={{ fontSize: 10, color: '#94a3b8' }}>تأمين: {c.insurance_job_title}</div>
+                            )}
                           </td>
                           <td>
                             {c.company_account && c.company_account !== '—' ? (
@@ -836,6 +994,108 @@ export default function LookupPage() {
                               </span>
                             )}
                           </td>
+                          {/* S1: بداية الاشتراك */}
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span 
+                                className="font-mono-pro" 
+                                style={{ 
+                                  fontWeight: 800, 
+                                  fontSize: 12, 
+                                  color: c.s1_info?.calculatedDate ? '#38bdf8' : c.s1_info?.recordedDate ? '#ffffff' : '#94a3b8' 
+                                }}
+                                title={c.s1_info?.formula ? `المعادلة: ${c.s1_info.formula}\n${c.s1_info.message}` : c.s1_info?.message}
+                              >
+                                {s1Date || '—'}
+                              </span>
+                              {s1Date && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(s1Date);
+                                    toast.success(`تم نسخ تاريخ بداية الاشتراك: ${s1Date}`);
+                                  }}
+                                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: '#38bdf8' }}
+                                  title="نسخ تاريخ س1"
+                                >
+                                  <Copy style={{ width: 12, height: 12 }} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          {/* S6: نهاية الاشتراك */}
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span 
+                                className="font-mono-pro" 
+                                style={{ 
+                                  fontWeight: 800, 
+                                  fontSize: 12, 
+                                  color: c.s6_info?.calculatedDate ? '#fda4af' : c.s6_info?.status === 'active' ? '#34d399' : '#94a3b8' 
+                                }}
+                                title={c.s6_info?.formula ? `المعادلة: ${c.s6_info.formula}\n${c.s6_info.message}` : c.s6_info?.message}
+                              >
+                                {s6Date || '—'}
+                              </span>
+                              {c.s6_info?.calculatedDate && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(c.s6_info!.calculatedDate!);
+                                    toast.success(`تم نسخ تاريخ نهاية الاشتراك: ${c.s6_info!.calculatedDate!}`);
+                                  }}
+                                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: '#fda4af' }}
+                                  title="نسخ تاريخ س6"
+                                >
+                                  <Copy style={{ width: 12, height: 12 }} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          {/* Phone Number */}
+                          <td className="font-mono-pro" style={{ fontSize: 12, color: c.phone_number ? '#a3e635' : '#475569', fontWeight: c.phone_number ? 700 : 400 }}>
+                            {c.phone_number || '—'}
+                          </td>
+                          {/* s1/s6 Readiness Indicator */}
+                          {(searchPurpose === 's1' || searchPurpose === 's6') && (
+                            <td>
+                              {searchPurpose === 's1' && (() => {
+                                const st = c.s1_info?.status;
+                                const dt = c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
+                                if (st === 'calculated' || c.s1_info?.recordedDate) return (
+                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(56,189,248,0.15)', border: '1px solid rgba(56,189,248,0.4)', color: '#38bdf8', whiteSpace: 'nowrap' }}>
+                                    ✅ جاهز ({dt})
+                                  </span>
+                                );
+                                return (
+                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24', whiteSpace: 'nowrap' }}>
+                                    ⚠ يراجع
+                                  </span>
+                                );
+                              })()}
+                              {searchPurpose === 's6' && (() => {
+                                const st = c.s6_info?.status;
+                                const dt = c.s6_info?.calculatedDate;
+                                if (st === 'active') return (
+                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.4)', color: '#34d399', whiteSpace: 'nowrap' }}>
+                                    🟢 مستمر
+                                  </span>
+                                );
+                                if (st === 'calculated' || st === 'recorded') return (
+                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(253,164,175,0.15)', border: '1px solid rgba(253,164,175,0.4)', color: '#fda4af', whiteSpace: 'nowrap' }}>
+                                    ✅ جاهز ({dt})
+                                  </span>
+                                );
+                                return (
+                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24', whiteSpace: 'nowrap' }}>
+                                    ⚠ يراجع
+                                  </span>
+                                );
+                              })()}
+                            </td>
+                          )}
                           <td>
                             {(() => {
                               const ins = c.insurance_status || '';
@@ -928,8 +1188,8 @@ export default function LookupPage() {
                         )}
                       </div>
 
-                      {/* Identifiers: Code & National ID */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      {/* Identifiers: Code, National ID & Insurance Number */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
                         <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
                           <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 2 }}>كود الموظف</div>
                           <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: '#ffffff' }}>
@@ -942,7 +1202,122 @@ export default function LookupPage() {
                             {c.national_id || '—'}
                           </div>
                         </div>
+                        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
+                          <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 2, display: 'flex', justifyContent: 'space-between' }}>
+                            <span>الرقم التأميني</span>
+                            {c.insurance_number && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigator.clipboard.writeText(c.insurance_number!);
+                                  toast.success(`تم نسخ الرقم التأميني: ${c.insurance_number}`);
+                                }}
+                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#818cf8' }}
+                                title="نسخ الرقم التأميني"
+                              >
+                                <Copy style={{ width: 11, height: 11 }} />
+                              </button>
+                            )}
+                          </div>
+                          <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: c.insurance_number ? '#38bdf8' : '#94a3b8' }}>
+                            {c.insurance_number || '—'}
+                          </div>
+                        </div>
+                        {/* Phone Number */}
+                        {c.phone_number && (
+                          <div style={{ background: 'rgba(163,230,53,0.05)', border: '1px solid rgba(163,230,53,0.2)', borderRadius: 10, padding: '8px 10px' }}>
+                            <div style={{ fontSize: 10, color: '#a3e635', marginBottom: 2 }}>رقم الهاتف 📞</div>
+                            <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: '#a3e635' }}>
+                              {c.phone_number}
+                            </div>
+                          </div>
+                        )}
                       </div>
+
+                      {/* Job Title */}
+                      {(c.job_title || c.insurance_job_title) && (
+                        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
+                          <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 2 }}>الوظيفة</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: '#ffffff' }}>
+                            {c.job_title || '—'}
+                          </div>
+                          {c.insurance_job_title && c.insurance_job_title !== c.job_title && (
+                            <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>تأمينياً: {c.insurance_job_title}</div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Insurance Forms Dates (S1 & S6) Reference */}
+                      {(() => {
+                        const s1Date = c.s1_info?.calculatedDate || c.subscription_start_date || (c.s1_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
+                        const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر (Active)' : c.subscription_end_date) || (c.s6_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
+                        return (
+                          <div style={{
+                            display: 'grid',
+                            gridTemplateColumns: '1fr 1fr',
+                            gap: 8,
+                            background: 'rgba(56, 189, 248, 0.04)',
+                            border: '1px solid rgba(56, 189, 248, 0.2)',
+                            borderRadius: 12,
+                            padding: '10px 12px'
+                          }}>
+                            <div>
+                              <div style={{ fontSize: 10, color: '#38bdf8', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>بداية الاشتراك (س1)</span>
+                                {c.s1_info?.calculatedDate && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      navigator.clipboard.writeText(c.s1_info!.calculatedDate!);
+                                      toast.success(`تم نسخ تاريخ س1: ${c.s1_info!.calculatedDate!}`);
+                                    }}
+                                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#38bdf8' }}
+                                    title="نسخ"
+                                  >
+                                    <Copy style={{ width: 11, height: 11 }} />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: '#ffffff' }} title={c.s1_info?.formula}>
+                                {s1Date || '—'}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div style={{ fontSize: 10, color: '#fda4af', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>نهاية الاشتراك (س6)</span>
+                                {c.s6_info?.calculatedDate && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      navigator.clipboard.writeText(c.s6_info!.calculatedDate!);
+                                      toast.success(`تم نسخ تاريخ س6: ${c.s6_info!.calculatedDate!}`);
+                                    }}
+                                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#fda4af' }}
+                                    title="نسخ"
+                                  >
+                                    <Copy style={{ width: 11, height: 11 }} />
+                                  </button>
+                                )}
+                              </div>
+                              <div 
+                                className="font-mono-pro" 
+                                style={{ 
+                                  fontSize: 12, 
+                                  fontWeight: 800, 
+                                  color: c.s6_info?.calculatedDate ? '#fda4af' : c.s6_info?.status === 'active' ? '#34d399' : '#ffffff' 
+                                }}
+                                title={c.s6_info?.formula || c.s6_info?.message}
+                              >
+                                {s6Date || '—'}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Appearance Status: Target Month or First Joint */}
                       {isTargetMode ? (
@@ -1169,18 +1544,56 @@ export default function LookupPage() {
                       { icon: '💼', label: 'الوظيفة', value: details.incomingInsurance.record?.job_title },
                       { icon: '🏢', label: 'الحالة الوظيفية', value: details.incomingInsurance.record?.status, colorFn: (v: string) => /غير|not active|منته|ملغ/i.test(v) ? '#fda4af' : /مستمر|active|نشط/i.test(v) ? '#6ee7b7' : '#e2e8f0' },
                       { icon: '🛡️', label: 'الحالة التأمينية', value: details.incomingInsurance.record?.insurance_status, colorFn: (v: string) => /غير مؤمن|ملغ|منته|not/i.test(v) ? '#fda4af' : /مؤمن|active|مشترك/i.test(v) ? '#c4b5fd' : '#e2e8f0' },
-                      { icon: '🔢', label: 'الرقم التأميني', value: details.incomingInsurance.record?.insurance_number, mono: true },
-                      { icon: '📅', label: 'بداية الاشتراك', value: details.incomingInsurance.record?.subscription_start_date, mono: true },
-                      { icon: '📅', label: 'نهاية الاشتراك', value: details.incomingInsurance.record?.subscription_end_date, mono: true },
+                      { 
+                        icon: '🔢', 
+                        label: 'الرقم التأميني', 
+                        value: details.incomingInsurance.record?.insurance_number, 
+                        mono: true,
+                        copy: !!details.incomingInsurance.record?.insurance_number 
+                      },
+                      { 
+                        icon: '📅', 
+                        label: 'بداية الاشتراك (س1)', 
+                        value: details.s1_calculation?.calculatedDate || details.incomingInsurance.record?.subscription_start_date || (details.s1_calculation?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null), 
+                        mono: true,
+                        colorFn: () => '#38bdf8',
+                        tooltip: details.s1_calculation?.formula,
+                        copy: !!(details.s1_calculation?.calculatedDate || details.incomingInsurance.record?.subscription_start_date)
+                      },
+                      { 
+                        icon: '📅', 
+                        label: 'نهاية الاشتراك (س6)', 
+                        value: details.s6_calculation?.calculatedDate || (details.s6_calculation?.status === 'active' ? 'مستمر بالخدمة (Active)' : details.incomingInsurance.record?.subscription_end_date) || (details.s6_calculation?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null), 
+                        mono: true,
+                        colorFn: () => details.s6_calculation?.status === 'active' ? '#34d399' : '#fda4af',
+                        tooltip: details.s6_calculation?.formula || details.s6_calculation?.message,
+                        copy: !!details.s6_calculation?.calculatedDate
+                      },
                     ].filter(f => f.value).map((f, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                        <span style={{ fontSize: 13 }}>{f.icon}</span>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 9, color: '#64748b', fontWeight: 700, marginBottom: 1 }}>{f.label}</div>
-                          <div className={f.mono ? 'font-mono-pro' : ''} style={{ fontSize: 11, fontWeight: 800, color: f.colorFn ? f.colorFn(String(f.value)) : '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {String(f.value || '—')}
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} title={f.tooltip}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                          <span style={{ fontSize: 13 }}>{f.icon}</span>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 9, color: '#64748b', fontWeight: 700, marginBottom: 1 }}>{f.label}</div>
+                            <div className={f.mono ? 'font-mono-pro' : ''} style={{ fontSize: 11, fontWeight: 800, color: f.colorFn ? f.colorFn(String(f.value)) : '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {String(f.value || '—')}
+                            </div>
                           </div>
                         </div>
+                        {f.copy && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard.writeText(String(f.value));
+                              toast.success(`تم نسخ ${f.label}: ${f.value}`);
+                            }}
+                            style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 2, color: '#818cf8', flexShrink: 0 }}
+                            title={`نسخ ${f.label}`}
+                          >
+                            <Copy style={{ width: 11, height: 11 }} />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1197,6 +1610,94 @@ export default function LookupPage() {
                   </div>
                 )}
 
+                {/* ═══ MASTER PROFILE TABS SWITCHER ═══ */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '6px',
+                  borderRadius: 16,
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                }}>
+                  <button
+                    type="button"
+                    onClick={() => setActiveProfileTab('unified')}
+                    style={{
+                      flex: 1,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      padding: '12px 20px',
+                      borderRadius: 12,
+                      fontSize: 14,
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      border: 'none',
+                      transition: 'all 0.2s ease',
+                      background: activeProfileTab === 'unified'
+                        ? 'linear-gradient(135deg, #4f46e5 0%, #6366f1 100%)'
+                        : 'transparent',
+                      color: activeProfileTab === 'unified' ? '#ffffff' : '#94a3b8',
+                      boxShadow: activeProfileTab === 'unified' ? '0 4px 20px rgba(99,102,241,0.45)' : 'none',
+                    }}
+                  >
+                    <Sparkles style={{ width: 18, height: 18, color: activeProfileTab === 'unified' ? '#fde047' : '#818cf8' }} />
+                    <span>الملف الموحد الشامل (360° Profile)</span>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 9999, background: activeProfileTab === 'unified' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.06)', fontWeight: 800 }}>
+                      بيانات الـ 13 ورقة
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveProfileTab('timeline')}
+                    style={{
+                      flex: 1,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      padding: '12px 20px',
+                      borderRadius: 12,
+                      fontSize: 14,
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      border: 'none',
+                      transition: 'all 0.2s ease',
+                      background: activeProfileTab === 'timeline'
+                        ? 'linear-gradient(135deg, #0284c7 0%, #0ea5e9 100%)'
+                        : 'transparent',
+                      color: activeProfileTab === 'timeline' ? '#ffffff' : '#94a3b8',
+                      boxShadow: activeProfileTab === 'timeline' ? '0 4px 20px rgba(14,165,233,0.45)' : 'none',
+                    }}
+                  >
+                    <Clock style={{ width: 18, height: 18, color: activeProfileTab === 'timeline' ? '#ffffff' : '#38bdf8' }} />
+                    <span>فحص الشهور والجدول الزمني (Timeline)</span>
+                    <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 9999, background: activeProfileTab === 'timeline' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.06)', fontWeight: 800 }}>
+                      المرتبات والتأمينات
+                    </span>
+                  </button>
+                </div>
+
+                {/* ═══ TAB 1: UNIFIED 360° PROFILE ═══ */}
+                {activeProfileTab === 'unified' && (
+                  <UnifiedEmployeeCard
+                    details={details}
+                    onSwitchToTimeline={() => setActiveProfileTab('timeline')}
+                  />
+                )}
+
+                {/* ═══ قائمة التأشيرات (Checklist Panel) ═══ */}
+                {activeProfileTab === 'unified' && (
+                  <EmployeeChecklistPanel details={details} />
+                )}
+
+                {/* ═══ TAB 2: MONTHLY TIMELINE ═══ */}
+                {activeProfileTab === 'timeline' && (
+                  <>
                 {/* Quick Timeline Selector & Month Switcher */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '14px 18px', borderRadius: 18, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(148,163,184,0.1)' }}>
                   {/* Quick Pills for All Imported Months */}
@@ -1685,6 +2186,8 @@ export default function LookupPage() {
                     </>
                   )}
                 </div>
+                  </>
+                )}
 
               </div>
             </motion.div>

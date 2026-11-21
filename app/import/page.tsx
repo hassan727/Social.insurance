@@ -1,11 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import Navbar from '@/components/Navbar';
 import {
   UploadCloud, FileSpreadsheet, CheckCircle2, AlertTriangle,
   RefreshCw, AlertCircle, Table, Check, Sparkles,
-  Database, Calendar, FileText, FileCheck, ShieldAlert, X,
+  Database, Calendar, FileText, FileCheck, ShieldAlert, ShieldCheck, X,
   ArrowLeft, ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -14,6 +13,16 @@ import type { SourceType, ExpectedColumn } from '@/lib/excelParser';
 
 /* ── Source type config ── */
 const SOURCE_TYPES = [
+  {
+    id: 'official_insurance_print' as SourceType,
+    title: 'برنت التأمينات الاجتماعية',
+    desc: 'برنت سيستم التأمينات المعتمد (المؤسسة العربية للتوريدات)',
+    icon: ShieldCheck,
+    color: '#06b6d4',
+    bg: 'rgba(6,182,212,0.12)',
+    border: 'rgba(6,182,212,0.35)',
+    activeBg: 'rgba(6,182,212,0.22)',
+  },
   {
     id: 'incoming_insurance' as SourceType,
     title: 'أرقام وارد التأمين',
@@ -178,10 +187,9 @@ export default function ImportPage() {
 
   /* ══════════════════════════════════════ RENDER ══════════════════════════════════════ */
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#080d1a', position: 'relative' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <div className="orb orb-tl" style={{ opacity: 0.12 }} />
       <div className="orb orb-bl" style={{ opacity: 0.08 }} />
-      <Navbar />
 
       <main style={{ width: '94%', maxWidth: 1800, margin: '0 auto', padding: '2rem 1rem', flex: 1, position: 'relative', zIndex: 10 }}>
 
