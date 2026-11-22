@@ -47,10 +47,182 @@ export const REGISTERED_ACCOUNTS: Record<string, CompanyAccountDefinition> = {
  * الحصول على المعرف الفريد المركب للموظف داخل الشركة
  * يمنع تكرار كود الأداء بين الشركات المختلفة
  */
-export function getCompositeEmployeeKey(companyCode: string | null | undefined, empCode: string | null | undefined): string {
-  const comp = (companyCode || 'EG').toUpperCase().trim();
-  const code = (empCode || '').trim();
-  return `${comp}#${code}`;
+export function getCompositeEmployeeKey(
+  companyCode: string | null | undefined,
+  empCode: string | null | undefined,
+  nationalId?: string | null | undefined
+): string {
+  const comp = (companyCode || 'EG').toUpperCase().trim().replace(/[^A-Z0-9._-]/g, '') || 'EG';
+  const cleanCode = (empCode || '').trim();
+  if (cleanCode && cleanCode !== '-' && cleanCode !== '—' && cleanCode !== 'null' && cleanCode !== 'NULL') {
+    return `${comp}#${cleanCode}`;
+  }
+  const cleanNid = (nationalId || '').trim();
+  if (cleanNid.length >= 6) {
+    return `${comp}#NID-${cleanNid.slice(-6)}`;
+  }
+  return `${comp}#REC`;
+}
+
+/**
+ * دالة ذكية لتحليل كافة صيغ التواريخ المصرية الشائعة (DD/MM/YYYY, ISO, Excel serial)
+ * تضمن عدم إرجاع NaN للتواريخ المصرية كـ 24/10/2026
+ */
+export function parseEgyptianDate(val: unknown): Date | null {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'number') {
+    if (val > 20000 && val < 60000) {
+      const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+  const s = String(val).trim();
+  if (!s || s.toLowerCase() === 'null' || s === '-' || s === '—') return null;
+
+  // استبدال الأرقام الهندية/العربية بالأرقام اللاتينية
+  const normalizedStr = s.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+
+  // صيغة DD/MM/YYYY أو DD-MM-YYYY أو DD.MM.YYYY
+  const dmyMatch = normalizedStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const month = parseInt(dmyMatch[2], 10) - 1;
+    const year = parseInt(dmyMatch[3], 10);
+    if (month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+      const d = new Date(year, month, day);
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+
+  // صيغة YYYY/MM/DD أو YYYY-MM-DD
+  const isoMatch = normalizedStr.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    if (month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+      const d = new Date(year, month, day);
+      return isNaN(d.getTime()) ? null : d;
+    }
+  }
+
+  const fallback = new Date(normalizedStr);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+
+/**
+ * تنظيف المسمى الوظيفي والتأكد من أنه ليس فراغاً أو قيمة ملغية
+ */
+export function cleanJobTitle(val: unknown): string {
+  if (!val) return '';
+  const s = String(val).trim();
+  if (!s || s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined' || s === '—' || s === '-' || s === '0') {
+    return '';
+  }
+  return s;
+}
+
+/**
+ * تنظيف النص العربي وتجريده من الكشيدة وعلامات التشكيل
+ */
+export function normalizeJobText(text: string): string {
+  return (text || '')
+    .replace(/[ـًٌٍَُِّْ]/g, '') // إزالة التشكيل والكشيدة
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[^\w\s\u0600-\u06FF]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * دليل المواءمة والتكافؤ المهني وفقاً لمعايير التأمينات الاجتماعية وقانون العمل المصري
+ * يمنع التعارضات الوهمية بين التوصيف الداخلي وتوصيف استمارة 1 النمطية
+ */
+export function evaluateJobEquivalence(actualJob: string, insJob: string): {
+  status: 'متطابق' | 'تعارض مسميات' | 'غير محدد';
+  details: string;
+} {
+  const cleanAct = cleanJobTitle(actualJob);
+  const cleanIns = cleanJobTitle(insJob);
+
+  if (!cleanAct || !cleanIns) {
+    return {
+      status: 'غير محدد',
+      details: !cleanIns ? 'المهنة غير مسجلة ببرنت التأمينات' : 'الوظيفة غير محددة بالمرتبات',
+    };
+  }
+
+  const normAct = normalizeJobText(cleanAct);
+  const normIns = normalizeJobText(cleanIns);
+
+  // 1. التطابق التام أو التطابق الجزئي المباشر
+  if (normAct === normIns || normAct.includes(normIns) || normIns.includes(normAct)) {
+    return {
+      status: 'متطابق',
+      details: 'المسمى الفعلي متطابق مع المهنة التأمينية',
+    };
+  }
+
+  // 2. عائلات التكافؤ المهني في قطاع المقاولات والغاز والتوريدات (Occupational Families)
+  const OCCUPATIONAL_FAMILIES = [
+    {
+      family: 'تشغيل معادن وتركيبات ولحام وبرادة',
+      keywords: ['براد', 'لحام', 'تركيبات', 'مواسير', 'حديد', 'خراط', 'صاج', 'معادن', 'شبكات', 'تشغيل'],
+      genericInsKeywords: ['عامل', 'فني', 'عامل تشغيل', 'عامل عادي', 'عامل مهني', 'مهني'],
+    },
+    {
+      family: 'حفر وإنشاءات وبناء ومساعدين',
+      keywords: ['حفار', 'بناء', 'مساعد', 'معاون', 'نجار', 'سباك', 'محارة', 'مد شبكات'],
+      genericInsKeywords: ['عامل', 'عامل عادي', 'عامل بناء', 'فني تشغيل'],
+    },
+    {
+      family: 'حركة وسيارات ومعدات',
+      keywords: ['سائق', 'سواق', 'معدة', 'لودر', 'حفار معدة', 'ونش', 'سيارة', 'نقل', 'جرار'],
+      genericInsKeywords: ['سائق', 'عامل قيادة', 'عامل تشغيل سيارات', 'فني تشغيل'],
+    },
+    {
+      family: 'أمن وحراسة وسلامة مهنية',
+      keywords: ['امن', 'حارس', 'حراسة', 'خفير', 'سلامة', 'صحة مهنية', 'مراقب'],
+      genericInsKeywords: ['حارس', 'خفير', 'حارس امن', 'مراقب', 'مشرف'],
+    },
+    {
+      family: 'خدمات وبوفيه ونظافة',
+      keywords: ['خدمات', 'بوفيه', 'نظافة', 'ساعي', 'اوفيس', 'فراش'],
+      genericInsKeywords: ['عامل', 'عامل خدمات', 'عامل نظافة', 'فراش'],
+    },
+    {
+      family: 'وظائف مالية ومحاسبية وإدارية',
+      keywords: ['محاسب', 'مالي', 'خزينة', 'حسابات', 'مشتريات', 'مخازن', 'امين مخزن', 'اداري', 'كاتب', 'مدخل بيانات'],
+      genericInsKeywords: ['محاسب', 'كاتب', 'موظف كتابي', 'اداري', 'امين مخزن'],
+    },
+    {
+      family: 'وظائف هندسية وإشراف فني',
+      keywords: ['مهندس', 'موقع', 'جودة', 'مكتب فني', 'كهرباء', 'ميكانيكا', 'مدني', 'مشرف فني'],
+      genericInsKeywords: ['مهندس', 'مشرف', 'ملاحظ فني', 'فني اول'],
+    },
+  ];
+
+  for (const fam of OCCUPATIONAL_FAMILIES) {
+    const actMatch = fam.keywords.some((k) => normAct.includes(k));
+    const insMatch = fam.keywords.some((k) => normIns.includes(k)) || fam.genericInsKeywords.some((k) => normIns.includes(k));
+
+    if (actMatch && insMatch) {
+      return {
+        status: 'متطابق',
+        details: `مسمى مكافئ مهنياً معتمد بالتأمينات (${cleanAct} ↔ ${cleanIns}) ضمن عائلة ${fam.family}`,
+      };
+    }
+  }
+
+  // 3. تعارض حقيقي جوهري يستلزم استمارة تعديل مهنة (س2)
+  return {
+    status: 'تعارض مسميات',
+    details: `تعارض جوهري: المسمى الفعلي (${cleanAct}) يختلف كلياً عن التأميني (${cleanIns})`,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -178,10 +350,36 @@ async function fetchAllRows<T = Record<string, any>>(tableName: string, selectFi
   return all;
 }
 
-export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g' | 'ALL' = 'ALL'): Promise<{
+// In-memory cache for fast interactive dashboard filtering (3-minute TTL)
+interface CachedAuditResult {
+  account: string;
+  timestamp: number;
+  data: {
+    summary: ForensicAuditSummary;
+    records: MatchedForensicRecord[];
+  };
+}
+
+const auditCache = new Map<string, CachedAuditResult>();
+
+export function invalidateForensicAuditCache() {
+  auditCache.clear();
+}
+
+export async function runOfficialPrintForensicAudit(
+  targetAccount: 'E.G' | 'm.g' | 'ALL' = 'ALL',
+  forceRefresh = false
+): Promise<{
   summary: ForensicAuditSummary;
   records: MatchedForensicRecord[];
 }> {
+  const cacheKey = targetAccount.toUpperCase();
+  const now = Date.now();
+  const cached = auditCache.get(cacheKey);
+  if (!forceRefresh && cached && now - cached.timestamp < 180000) {
+    return cached.data;
+  }
+
   const PRINT_CUTOFF_DATE = new Date('2026-09-22');
 
   // جلب كافة مصادر البيانات بالتوازي مع جلب كامل السجلات دون اقتطاع
@@ -390,7 +588,7 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
       continue;
     }
 
-    const compositeKey = getCompositeEmployeeKey(compAccount, empCode);
+    const compositeKey = getCompositeEmployeeKey(compAccount, empCode, nid);
 
     // التحقق من الاسم وتحديد درجة التطابق
     let nameConfidence: MatchedForensicRecord['nameMatchConfidence'] = 'متطابق تماماً';
@@ -402,7 +600,7 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
       if (normEmpName === normPrintName) {
         nameConfidence = 'متطابق تماماً';
       } else {
-        // فحص التشابه: إذا كان يتطابق في 3 مقاطع على الأقل
+        // فحص التشابه: إذا كان يتطابق في مقطعين أو أكثر
         const p1 = normEmpName.split(' ').filter(Boolean);
         const p2 = normPrintName.split(' ').filter(Boolean);
         const commonWords = p1.filter((w) => p2.includes(w)).length;
@@ -415,28 +613,21 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
       }
     }
 
-    // الوظائف
-    const actualJob = masterRec?.current_job_title || payRec?.jobTitle || incomingRec?.job_title || '';
-    const insJob = printRec?.insurance_job_title || masterRec?.insurance_job_title || incomingRec?.insurance_job_title || '';
-    let jobConflictStatus: MatchedForensicRecord['jobConflictStatus'] = 'غير محدد';
-    let jobConflictDetails = '';
+    // ── الفحص الذكي للوظائف والمواءمة المهنية المعتمدة ──
+    const actualJob = cleanJobTitle(masterRec?.current_job_title || payRec?.jobTitle || incomingRec?.job_title);
+    const insJob = cleanJobTitle(printRec?.insurance_job_title || masterRec?.insurance_job_title || incomingRec?.insurance_job_title);
+    
+    const jobEval = evaluateJobEquivalence(actualJob, insJob);
+    const jobConflictStatus: MatchedForensicRecord['jobConflictStatus'] = jobEval.status;
+    const jobConflictDetails = jobEval.details;
 
-    if (actualJob && insJob) {
-      const normAct = normalizeArabicText(actualJob);
-      const normIns = normalizeArabicText(insJob);
-      if (normAct === normIns || normAct.includes(normIns) || normIns.includes(normAct)) {
-        jobConflictStatus = 'متطابق';
-        jobConflictDetails = 'الوظيفة الفعلية متطابقة مع المهنة بالتأمينات';
-      } else {
-        jobConflictStatus = 'تعارض مسميات';
-        jobConflictDetails = `المسمى الفعلي (${actualJob}) يختلف عن المهنة بالتأمينات (${insJob})`;
-        jobTitleConflictCount++;
-      }
+    if (jobConflictStatus === 'تعارض مسميات') {
+      jobTitleConflictCount++;
     }
 
     // الأرقام التأمينية
-    const insNumPrint = printRec?.insurance_number || '';
-    const insNumMaster = masterRec?.insurance_number || incomingRec?.insurance_number || '';
+    const insNumPrint = cleanJobTitle(printRec?.insurance_number);
+    const insNumMaster = cleanJobTitle(masterRec?.insurance_number || incomingRec?.insurance_number);
     let insNumberMatch: MatchedForensicRecord['insNumberMatch'] = 'متطابق';
 
     if (insNumPrint && insNumMaster) {
@@ -452,14 +643,14 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
       insNumberMatch = 'مفقود بالبرنت';
     }
 
-    // تواريخ التعيين
-    const hireDateStr = masterRec?.hire_date || payRec?.hireDate || '';
+    // ── التحليل الزمني الدقيق للتعيينات (تجاوز مشكلة التاريخ المصري والـ NaN) ──
+    const rawHire = masterRec?.hire_date || payRec?.hireDate || (incomingRec?.raw_data as Record<string, string>)?.['تاريخ استلام العمل'] || (masterRec?.consolidated_data as Record<string, string>)?.['تاريخ التعيين'] || '';
+    const parsedHire = parseEgyptianDate(rawHire);
     let isHiredAfterCutoff = false;
-    if (hireDateStr) {
-      const d = new Date(hireDateStr);
-      if (!isNaN(d.getTime()) && d > PRINT_CUTOFF_DATE) {
-        isHiredAfterCutoff = true;
-      }
+    let formattedHireDate = rawHire ? String(rawHire).trim() : '—';
+    if (parsedHire) {
+      isHiredAfterCutoff = parsedHire.getTime() > PRINT_CUTOFF_DATE.getTime();
+      formattedHireDate = `${parsedHire.getFullYear()}-${String(parsedHire.getMonth() + 1).padStart(2, '0')}-${String(parsedHire.getDate()).padStart(2, '0')}`;
     }
 
     // تجهيز تفاصيل وارد التأمين إن وجدت
@@ -467,11 +658,11 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
     if (incomingRec) {
       const rawInc = (incomingRec.raw_data as Record<string, string>) || {};
       incDetails = {
-        formType: incomingRec.form_type || rawInc['نوع الاستماره'] || undefined,
-        crmNumber: incomingRec.crm_number || rawInc['رقم ال CRM'] || undefined,
-        supplyMethod: incomingRec.supply_method || rawInc['طريقه التوريد'] || undefined,
+        formType: incomingRec.form_type || rawInc['نوع الاستماره'] || rawInc['نوع الاستمارة'] || undefined,
+        crmNumber: incomingRec.crm_number || rawInc['رقم ال CRM'] || rawInc['رقم CRM'] || undefined,
+        supplyMethod: incomingRec.supply_method || rawInc['طريقه التوريد'] || rawInc['طريقة التوريد'] || undefined,
         recordDate: incomingRec.record_date || rawInc['التاريخ'] || undefined,
-        insuranceStatus: incomingRec.insurance_status || rawInc['الحاله التامينية'] || undefined,
+        insuranceStatus: incomingRec.insurance_status || rawInc['الحاله التامينية'] || rawInc['الحالة التأمينية'] || undefined,
       };
     }
 
@@ -480,9 +671,9 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
     if (resRec) {
       const rawRes = (resRec.raw_data as Record<string, string>) || {};
       resDetails = {
-        resignationDate: resRec.resignation_date || rawRes['تاريخ الاستقاله'] || undefined,
-        lastWorkingDay: resRec.last_working_day || rawRes['اخر يوم عمل'] || undefined,
-        resignationType: resRec.resignation_type || rawRes['نوع الاستقاله'] || undefined,
+        resignationDate: resRec.resignation_date || rawRes['تاريخ الاستقاله'] || rawRes['تاريخ الاستقالة'] || undefined,
+        lastWorkingDay: resRec.last_working_day || rawRes['اخر يوم عمل'] || rawRes['آخر يوم عمل'] || undefined,
+        resignationType: resRec.resignation_type || rawRes['نوع الاستقاله'] || rawRes['نوع الاستقالة'] || undefined,
       };
     }
 
@@ -492,8 +683,15 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
 
     const inPrint = !!printRec;
     const inPay = !!payRec && payRec.latestSalary > 0;
-    const hasIncomingS1 = !!(incDetails?.formType?.includes('1') || incDetails?.crmNumber || incDetails?.insuranceStatus?.includes('توريد'));
-    const isResigned = !!(resRec || masterRec?.current_status === 'Resigned');
+    const hasIncomingS1 = !!(
+      incDetails?.formType?.includes('1') ||
+      incDetails?.crmNumber ||
+      incDetails?.insuranceStatus?.includes('توريد') ||
+      incDetails?.insuranceStatus?.includes('تأمين') ||
+      incDetails?.insuranceStatus?.includes('تامين') ||
+      incomingRec
+    );
+    const isResigned = !!(resRec || masterRec?.current_status === 'Resigned' || masterRec?.current_status === 'مستقيل');
 
     if (inPrint && inPay) {
       if (jobConflictStatus === 'تعارض مسميات') {
@@ -560,7 +758,7 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
       salaryNotes: printRec?.insurance_salary && payRec?.latestSalary
         ? `أجر التأمين: ${printRec.insurance_salary} ج.م | الراتب الفعلي: ${payRec.latestSalary} ج.م`
         : '—',
-      hireDate: hireDateStr || '—',
+      hireDate: formattedHireDate,
       insuranceStartDate: printRec?.subscription_start_date || masterRec?.insurance_start_date || '—',
       dateNotes: isHiredAfterCutoff ? 'تعيين بعد تاريخ البرنت' : '—',
       foundInPrint: inPrint,
@@ -600,7 +798,10 @@ export async function runOfficialPrintForensicAudit(targetAccount: 'E.G' | 'm.g'
     duplicateNationalIdsCount: 0,
   };
 
-  return { summary, records };
+  const result = { summary, records };
+  auditCache.set(cacheKey, { account: targetAccount, timestamp: Date.now(), data: result });
+
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

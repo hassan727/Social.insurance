@@ -95,10 +95,10 @@ export default function MatchingReviewPage() {
               </div>
               <div>
                 <h1 style={{ fontSize: 24, fontWeight: 900, margin: 0, color: '#ffffff' }}>
-                  مركز مراجعة المطابقة والربط الذكي
+                  مركز مراجعة المطابقة والربط
                 </h1>
                 <p style={{ fontSize: 13, color: '#94a3b8', margin: '4px 0 0' }}>
-                  حل حالات الالتباس وتأكيد الدمج لمنع التكرار والحفاظ على دقة قاعدة البيانات الموحدة
+                  ماتشينج هرمي بالبيانات الحقيقية: رقم قومي → كود+حساب → تأمين → اسم — بدون أي ذكاء اصطناعي
                 </p>
               </div>
             </div>
@@ -213,13 +213,20 @@ export default function MatchingReviewPage() {
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <span style={{ fontSize: 11, fontWeight: 800, background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', padding: '3px 10px', borderRadius: 6 }}>
                         ورقة: {c.sheet_name}
                       </span>
                       {c.row_number && (
                         <span style={{ fontSize: 11, color: '#64748b' }}>
                           صف رقم: #{c.row_number}
+                        </span>
+                      )}
+                      {c.match_type && (
+                        <span style={{ fontSize: 10, fontWeight: 700, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', padding: '2px 8px', borderRadius: 5, border: '1px solid rgba(245,158,11,0.3)' }}>
+                          {c.match_type === 'candidate_name_plus_data' ? '🔗 اسم + بيانات داعمة'
+                           : c.match_type === 'candidate_name' ? '🔤 تشابه اسم'
+                           : c.match_type}
                         </span>
                       )}
                     </div>
@@ -309,6 +316,11 @@ export default function MatchingReviewPage() {
                   </div>
 
                   {/* Actions Bar */}
+                  {c.notes && (
+                    <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 7, border: '1px solid rgba(255,255,255,0.06)' }}>
+                      🔎 سبب الترشيح: {c.notes}
+                    </div>
+                  )}
                   {c.status === 'pending' && (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
                       {emp && (

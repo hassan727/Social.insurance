@@ -108,7 +108,7 @@ export default function HomePage() {
             لوحة القيادة الذكية والمؤشرات التنفيذية
           </h1>
           <p style={{ fontSize: 15, color: '#94a3b8', margin: 0, maxWidth: 800, lineHeight: 1.6 }}>
-            قاعدة بيانات موحدة تربط كافة ملفات الإكسيل (Database, Social Insurance, Medical, Payroll, Archives) في سجل متكامل لكل موظف مع كشف التعارضات آنياً ومطابقة آلية ذكية.
+            قاعدة بيانات موحدة تربط كافة ملفات الإكسيل (Database, Social Insurance, Medical, Payroll, Archives) في سجل متكامل لكل موظف مع كشف التعارضات آنياً ومطابقة هرمية بالبيانات (رقم قومي / كود / تأمين / اسم).
           </p>
         </div>
 

@@ -96,7 +96,7 @@ export async function matchIncomingRow(params: {
   const rawName = params.employee_name?.trim() || '';
   const normName = normalizeArabicText(rawName);
 
-  // ── PRIORITY 1: Exact National ID (14 digits) ──
+  // ── PRIORITY 1: Exact National ID (14 digits) ── Global Unique Identifier
   if (natId && natId.length === 14) {
     const { data: byNatId } = await supabaseServer
       .from('employees_master')
@@ -104,7 +104,7 @@ export async function matchIncomingRow(params: {
       .eq('national_id', natId)
       .limit(2);
 
-    if (byNatId && byNatId.length === 1) {
+    if (byNatId && byNatId.length >= 1) {
       const emp = byNatId[0];
       return {
         matched: true,
@@ -118,29 +118,7 @@ export async function matchIncomingRow(params: {
     }
   }
 
-  // ── PRIORITY 2: Exact Company Account + Employee Code ──
-  if (code && account) {
-    const { data: byCode } = await supabaseServer
-      .from('employees_master')
-      .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
-      .eq('company_account', account)
-      .eq('employee_code', code)
-      .maybeSingle();
-
-    if (byCode) {
-      return {
-        matched: true,
-        employee_id: byCode.id,
-        confidence: 'exact_account_code',
-        confidence_score: 0.98,
-        match_rule: `كود الموظف مطابق مع الحساب (${account} - ${code})`,
-        requires_review: false,
-        existing_employee: byCode,
-      };
-    }
-  }
-
-  // ── PRIORITY 3: Insurance Number (Unique) ──
+  // ── PRIORITY 2: Insurance Number (Unique State Insurance ID) ──
   if (insNo && insNo.length >= 7) {
     const { data: byIns } = await supabaseServer
       .from('employees_master')
@@ -148,13 +126,13 @@ export async function matchIncomingRow(params: {
       .eq('insurance_number', insNo)
       .limit(2);
 
-    if (byIns && byIns.length === 1) {
+    if (byIns && byIns.length >= 1) {
       const emp = byIns[0];
       return {
         matched: true,
         employee_id: emp.id,
         confidence: 'exact_insurance_no',
-        confidence_score: 0.92,
+        confidence_score: 0.95,
         match_rule: `الرقم التأميني مطابق (${insNo})`,
         requires_review: false,
         existing_employee: emp,
@@ -162,12 +140,56 @@ export async function matchIncomingRow(params: {
     }
   }
 
+  // ── PRIORITY 3: Employee Code (Universal Code Match) ──
+  if (code) {
+    // First, search by employee code across all accounts
+    const { data: byCodeAll } = await supabaseServer
+      .from('employees_master')
+      .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
+      .eq('employee_code', code)
+      .limit(5);
+
+    if (byCodeAll && byCodeAll.length === 1) {
+      const emp = byCodeAll[0];
+      // If code is unique in master, it's the same employee regardless of whether sheet says E.G or M.G
+      return {
+        matched: true,
+        employee_id: emp.id,
+        confidence: 'exact_account_code',
+        confidence_score: 0.92,
+        match_rule: `كود الموظف فريد ومطابق (${code})`,
+        requires_review: false,
+        existing_employee: emp,
+      };
+    } else if (byCodeAll && byCodeAll.length > 1) {
+      // If multiple employees share the code, match with account or name similarity
+      const sameAccount = byCodeAll.find(e => e.company_account.toLowerCase() === account.toLowerCase());
+      if (sameAccount) {
+        return {
+          matched: true,
+          employee_id: sameAccount.id,
+          confidence: 'exact_account_code',
+          confidence_score: 0.90,
+          match_rule: `كود الموظف مطابق مع الحساب (${account} - ${code})`,
+          requires_review: false,
+          existing_employee: sameAccount,
+        };
+      }
+    }
+  }
+
   // ── PRIORITY 4 & 5: Name Similarity + Corroborating Data (Candidate Review) ──
-  if (normName && normName.length >= 8) {
+  // Uses DB-side filtering with ILIKE on first word of name for efficiency,
+  // then refines with normalized Arabic comparison in JS. No AI — pure data matching.
+  if (normName && normName.length >= 4) {
+    // Extract first word of the normalized name to use as a DB filter anchor
+    const firstWord = normName.split(' ')[0] || normName;
+
     const { data: candidateEmps } = await supabaseServer
       .from('employees_master')
       .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
-      .limit(100);
+      .ilike('employee_name', `%${firstWord.slice(0, 6)}%`)
+      .limit(200);
 
     type CandidateEmp = {
       id: string;
@@ -187,14 +209,17 @@ export async function matchIncomingRow(params: {
       if (!cNorm) continue;
 
       if (cNorm === normName) {
+        // Exact normalized name match
         let score = 0.70;
-        if (c.company_account === account) score += 0.10;
+        if (c.company_account === account) score += 0.10; // same account bonus
         if (highestScore < score) {
           highestScore = score;
           bestCandidate = c;
         }
       } else if (cNorm.includes(normName) || normName.includes(cNorm)) {
-        const score = 0.55;
+        // Partial name containment
+        let score = 0.55;
+        if (c.company_account === account) score += 0.05;
         if (highestScore < score) {
           highestScore = score;
           bestCandidate = c;

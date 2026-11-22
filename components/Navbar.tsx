@@ -102,9 +102,9 @@ const NAV_GROUPS: NavGroup[] = [
       {
         href: '/matching-review',
         label: 'مطابقة السجلات العالقة',
-        desc: 'مراجعة وحسم التعارضات والأسطر غير المتطابقة بالذكاء الاصطناعي',
+        desc: 'مراجعة وحسم التعارضات والأسطر غير المتطابقة — ماتشينج هرمي بالبيانات الحقيقية',
         icon: GitMerge,
-        badge: 'AI Review',
+        badge: 'مطابقة',
         badgeColor: '#ec4899',
       },
       {

@@ -71,26 +71,42 @@ function getStatusBadge(status: MatchedForensicRecord['finalForensicStatus']): {
 // Summary Card
 // ─────────────────────────────────────────────────────────────────────────────
 function SummaryCard({
-  label, value, color, bg, border, icon, subtitle,
+  label, value, color, bg, border, icon, subtitle, onClick, isActive,
 }: {
   label: string; value: number | string; color: string; bg: string; border: string;
-  icon: React.ReactNode; subtitle?: string;
+  icon: React.ReactNode; subtitle?: string; onClick?: () => void; isActive?: boolean;
 }) {
   return (
-    <div style={{
-      background: bg,
-      border: `1px solid ${border}`,
-      borderRadius: 14,
-      padding: '1rem 1.25rem',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 6,
-      minWidth: 140,
-      flex: 1,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color }}>
-        {icon}
-        <span style={{ fontSize: '0.78rem', fontWeight: 700, opacity: 0.9 }}>{label}</span>
+    <div
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      style={{
+        background: isActive ? `linear-gradient(135deg, ${bg}, rgba(255,255,255,0.05))` : bg,
+        border: isActive ? `2px solid ${color}` : `1px solid ${border}`,
+        boxShadow: isActive ? `0 0 16px ${color}33, 0 4px 12px rgba(0,0,0,0.3)` : 'none',
+        borderRadius: 14,
+        padding: '1rem 1.25rem',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        minWidth: 140,
+        flex: 1,
+        cursor: onClick ? 'pointer' : 'default',
+        transform: isActive ? 'scale(1.02)' : 'none',
+        transition: 'all 0.2s ease',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {icon}
+          <span style={{ fontSize: '0.78rem', fontWeight: 700, opacity: 0.9 }}>{label}</span>
+        </div>
+        {isActive && (
+          <span style={{ fontSize: '0.65rem', background: color, color: '#0f172a', padding: '1px 6px', borderRadius: 6, fontWeight: 900 }}>
+            نشط
+          </span>
+        )}
       </div>
       <div style={{
         fontSize: '2rem', fontWeight: 900, color,
@@ -111,6 +127,7 @@ function SummaryCard({
 // ─────────────────────────────────────────────────────────────────────────────
 export default function OfficialPrintAuditPanel() {
   const [account, setAccount] = useState<AccountFilter>('ALL');
+  const [selectedFilter, setSelectedFilter] = useState<'all' | 'matched' | 'uninsured' | 'supplied_s1' | 'new_hires' | 'job_conflicts' | 'missing_payroll' | 'discrepancy'>('all');
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [summary, setSummary] = useState<ForensicAuditSummary | null>(null);
@@ -123,12 +140,12 @@ export default function OfficialPrintAuditPanel() {
   const [exportingSubset, setExportingSubset] = useState<string | null>(null);
   const rowsPerPage = 15;
 
-  // ── Fetch summary ──────────────────────────────────────────────────────────
-  const fetchSummary = useCallback(async (acc: AccountFilter) => {
+  // ── Fetch summary & filtered records ───────────────────────────────────────
+  const fetchSummary = useCallback(async (acc: AccountFilter, filt = selectedFilter, forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/official-print-audit?action=summary&account=${acc}`);
+      const res = await fetch(`/api/official-print-audit?action=summary&account=${acc}&filter=${filt}${forceRefresh ? '&refresh=true' : ''}`);
       const json: AuditApiResponse = await res.json();
       if (!json.success) throw new Error(json.error || 'فشل التدقيق الجنائي');
       setSummary(json.summary);
@@ -140,11 +157,16 @@ export default function OfficialPrintAuditPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedFilter]);
 
   useEffect(() => {
-    fetchSummary(account);
-  }, [account, fetchSummary]);
+    fetchSummary(account, selectedFilter);
+  }, [account, selectedFilter, fetchSummary]);
+
+  const handleFilterClick = (filt: typeof selectedFilter) => {
+    setSelectedFilter(filt);
+    fetchSummary(account, filt);
+  };
 
   // ── Export ─────────────────────────────────────────────────────────────────
   const handleExport = async (subset = 'all') => {
@@ -262,7 +284,7 @@ export default function OfficialPrintAuditPanel() {
 
             {/* Refresh */}
             <button
-              onClick={() => fetchSummary(account)}
+              onClick={() => fetchSummary(account, selectedFilter, true)}
               disabled={loading}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
@@ -391,6 +413,8 @@ export default function OfficialPrintAuditPanel() {
               color="#38bdf8" bg="rgba(56,189,248,0.1)" border="rgba(56,189,248,0.3)"
               icon={<TrendingUp size={16} />}
               subtitle={`حساب: ${account}`}
+              onClick={() => handleFilterClick('all')}
+              isActive={selectedFilter === 'all'}
             />
             <SummaryCard
               label="مطابق ومعتمد ✓"
@@ -398,6 +422,8 @@ export default function OfficialPrintAuditPanel() {
               color="#34d399" bg="rgba(16,185,129,0.1)" border="rgba(16,185,129,0.3)"
               icon={<CheckCircle2 size={16} />}
               subtitle="موجود بالبرنت والمرتبات"
+              onClick={() => handleFilterClick('matched')}
+              isActive={selectedFilter === 'matched'}
             />
             <SummaryCard
               label="مخالفة تأمينية مؤكدة ⚠️"
@@ -405,6 +431,8 @@ export default function OfficialPrintAuditPanel() {
               color="#f87171" bg="rgba(239,68,68,0.12)" border="rgba(239,68,68,0.4)"
               icon={<AlertTriangle size={16} />}
               subtitle="يلزم تقديم س1 عاجل"
+              onClick={() => handleFilterClick('uninsured')}
+              isActive={selectedFilter === 'uninsured'}
             />
             <SummaryCard
               label="تم توريد س1 📋"
@@ -412,6 +440,8 @@ export default function OfficialPrintAuditPanel() {
               color="#60a5fa" bg="rgba(59,130,246,0.1)" border="rgba(59,130,246,0.3)"
               icon={<FileText size={16} />}
               subtitle="وارد التأمين برقم CRM"
+              onClick={() => handleFilterClick('supplied_s1')}
+              isActive={selectedFilter === 'supplied_s1'}
             />
             <SummaryCard
               label="تعيين جديد 🆕"
@@ -419,6 +449,8 @@ export default function OfficialPrintAuditPanel() {
               color="#fbbf24" bg="rgba(234,179,8,0.1)" border="rgba(234,179,8,0.3)"
               icon={<Clock size={16} />}
               subtitle="بعد 22/09/2026"
+              onClick={() => handleFilterClick('new_hires')}
+              isActive={selectedFilter === 'new_hires'}
             />
             <SummaryCard
               label="تعارض مسميات ⚠️"
@@ -426,6 +458,8 @@ export default function OfficialPrintAuditPanel() {
               color="#fb923c" bg="rgba(249,115,22,0.1)" border="rgba(249,115,22,0.3)"
               icon={<Briefcase size={16} />}
               subtitle="وظيفة المرتبات ≠ التأمينات"
+              onClick={() => handleFilterClick('job_conflicts')}
+              isActive={selectedFilter === 'job_conflicts'}
             />
             <SummaryCard
               label="بالتأمينات بلا مرتبات 🔍"
@@ -433,6 +467,8 @@ export default function OfficialPrintAuditPanel() {
               color="#c084fc" bg="rgba(168,85,247,0.1)" border="rgba(168,85,247,0.3)"
               icon={<UserCheck size={16} />}
               subtitle="مسجل تأمينياً فقط"
+              onClick={() => handleFilterClick('missing_payroll')}
+              isActive={selectedFilter === 'missing_payroll'}
             />
             <SummaryCard
               label="تناقض بيانات 🔴"
@@ -440,6 +476,8 @@ export default function OfficialPrintAuditPanel() {
               color="#fca5a5" bg="rgba(239,68,68,0.08)" border="rgba(239,68,68,0.3)"
               icon={<XCircle size={16} />}
               subtitle="أرقام تأمين / أسماء مختلفة"
+              onClick={() => handleFilterClick('discrepancy')}
+              isActive={selectedFilter === 'discrepancy'}
             />
           </div>
 
@@ -497,10 +535,22 @@ export default function OfficialPrintAuditPanel() {
               display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
               borderBottom: '1px solid rgba(148,163,184,0.1)',
             }}>
-              <div style={{ fontWeight: 800, color: '#f1f5f9', fontSize: '0.95rem' }}>
-                📋 عينة السجلات المحللة
-                <span style={{ fontSize: '0.78rem', color: '#64748b', marginRight: 10, fontWeight: 500 }}>
-                  (عرض أول 50 سجل — صدّر الملف للاطلاع على الجميع)
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800, color: '#f1f5f9', fontSize: '0.95rem' }}>
+                  {selectedFilter === 'all' && '📋 جميع السجلات المحللة'}
+                  {selectedFilter === 'matched' && '👥 السجلات المطابقة والمعتمدة ✓'}
+                  {selectedFilter === 'uninsured' && '⚠️ مخالفات تأمينية مؤكدة (غير مؤمن عليهم)'}
+                  {selectedFilter === 'supplied_s1' && '📋 تم توريد س1 بوارد التأمين'}
+                  {selectedFilter === 'new_hires' && '🆕 تعيينات جديدة بعد 22/09/2026'}
+                  {selectedFilter === 'job_conflicts' && '💼 تعارض مسميات وظيفية رسمي'}
+                  {selectedFilter === 'missing_payroll' && '🔍 مسجلون بالتأمينات بلا مرتبات'}
+                  {selectedFilter === 'discrepancy' && '🔴 تناقض أرقام تأمينية وأسماء'}
+                </div>
+                <span style={{
+                  fontSize: '0.75rem', color: '#38bdf8', background: 'rgba(56,189,248,0.1)',
+                  padding: '2px 8px', borderRadius: 8, fontWeight: 700, fontFamily: 'IBM Plex Mono, monospace'
+                }}>
+                  {sampleRecords.length} سجل معروض
                 </span>
               </div>
 

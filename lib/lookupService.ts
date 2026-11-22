@@ -243,110 +243,92 @@ export interface SearchCandidate {
   s6_info?: S6CalculationInfo;
 }
 
-export async function searchEmployees(
-  query: string,
-  targetYear?: number,
-  targetMonth?: number
-): Promise<SearchCandidate[]> {
-  const q = query.trim();
-  if (!q || q.length < 2) return [];
+type PersonDraft = {
+  id: string;
+  national_id: string | null;
+  employee_code: string | null;
+  employee_name: string | null;
+  company_account: string | null;
+  status: string | null;
+  insurance_status: string | null;
+  insurance_number?: string | null;
+  job_title?: string | null;
+  insurance_job_title?: string | null;
+  subscription_start_date?: string | null;
+  subscription_end_date?: string | null;
+  hire_date?: string | null;
+  phone_number?: string | null;
+  sources: Set<string>;
+};
 
-  // 1. Search across all sources in parallel (Phase 1 legacy tables + Phase 2 Master Directory)
-  const [insRes, payRes, miRes, resRes, masterRes] = await Promise.all([
-    supabaseServer
-      .from('incoming_insurance_records')
-      .select('id, national_id, employee_code, employee_name, company_account, status, insurance_status, insurance_number, job_title, insurance_job_title, subscription_start_date, subscription_end_date')
-      .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
-      .limit(25),
-    supabaseServer
-      .from('monthly_payroll_records')
-      .select('id, national_id, employee_code, employee_name, period_year, period_month, attendance_days')
-      .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
-      .limit(25),
-    supabaseServer
-      .from('monthly_insurance_records')
-      .select('id, national_id, employee_code, employee_name, period_year, period_month')
-      .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
-      .limit(25),
-    supabaseServer
-      .from('resignation_records')
-      .select('id, national_id, employee_code, employee_name, resignation_date, resignation_type, last_working_day')
-      .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
-      .limit(15),
-    supabaseServer
-      .from('employees_master')
-      .select('id, national_id, employee_code, employee_name, company_account, current_status, insurance_status, insurance_number, current_job_title, insurance_job_title, insurance_start_date, hire_date, phone_number')
-      .or(`national_id.ilike.%${q}%,employee_code.ilike.%${q}%,employee_name.ilike.%${q}%`)
-      .limit(25),
-  ]);
+function getPersonKey(r: { national_id?: string | null; employee_code?: string | null; employee_name?: string | null }) {
+  if (r.national_id && r.national_id.trim()) return `nat_${r.national_id.trim()}`;
+  if (r.employee_code && r.employee_code.trim()) return `code_${r.employee_code.trim()}`;
+  if (r.employee_name && r.employee_name.trim()) return `name_${r.employee_name.trim()}`;
+  return null;
+}
 
-  // 2. Group into unique persons (unifying by national_id or code)
-  type PersonDraft = {
+function mergeIntoPersonMap(
+  personMap: Map<string, PersonDraft>,
+  records: Array<{
     id: string;
-    national_id: string | null;
-    employee_code: string | null;
-    employee_name: string | null;
-    company_account: string | null;
-    status: string | null;
-    insurance_status: string | null;
+    national_id?: string | null;
+    employee_code?: string | null;
+    employee_name?: string | null;
+    company_account?: string | null;
+    status?: string | null;
+    current_status?: string | null;
+    insurance_status?: string | null;
     insurance_number?: string | null;
     job_title?: string | null;
+    current_job_title?: string | null;
     insurance_job_title?: string | null;
     subscription_start_date?: string | null;
+    insurance_start_date?: string | null;
     subscription_end_date?: string | null;
     hire_date?: string | null;
     phone_number?: string | null;
-    sources: Set<string>;
-  };
+  }>,
+  source: string
+) {
+  for (const raw of records) {
+    const r = {
+      id: raw.id,
+      national_id: raw.national_id ? String(raw.national_id).trim() : null,
+      employee_code: raw.employee_code ? String(raw.employee_code).trim() : null,
+      employee_name: raw.employee_name ? String(raw.employee_name).trim() : null,
+      company_account: raw.company_account ? String(raw.company_account).trim() : null,
+      status: (raw.current_status || raw.status) ? String(raw.current_status || raw.status).trim() : null,
+      insurance_status: raw.insurance_status ? String(raw.insurance_status).trim() : null,
+      insurance_number: raw.insurance_number ? String(raw.insurance_number).trim() : null,
+      job_title: (raw.current_job_title || raw.job_title) ? String(raw.current_job_title || raw.job_title).trim() : null,
+      insurance_job_title: raw.insurance_job_title ? String(raw.insurance_job_title).trim() : null,
+      subscription_start_date: (raw.insurance_start_date || raw.subscription_start_date) ? String(raw.insurance_start_date || raw.subscription_start_date).trim() : null,
+      subscription_end_date: raw.subscription_end_date ? String(raw.subscription_end_date).trim() : null,
+      hire_date: raw.hire_date ? String(raw.hire_date).trim() : null,
+      phone_number: raw.phone_number ? String(raw.phone_number).trim() : null,
+    };
 
-  const personMap = new Map<string, PersonDraft>();
-
-  const getPersonKey = (r: { national_id?: string | null; employee_code?: string | null; employee_name?: string | null }) => {
-    if (r.national_id && r.national_id.trim()) return `nat_${r.national_id.trim()}`;
-    if (r.employee_code && r.employee_code.trim()) return `code_${r.employee_code.trim()}`;
-    if (r.employee_name && r.employee_name.trim()) return `name_${r.employee_name.trim()}`;
-    return null;
-  };
-
-  const mergeDraft = (
-    r: {
-      id: string;
-      national_id?: string | null;
-      employee_code?: string | null;
-      employee_name?: string | null;
-      company_account?: string | null;
-      status?: string | null;
-      insurance_status?: string | null;
-      insurance_number?: string | null;
-      job_title?: string | null;
-      insurance_job_title?: string | null;
-      subscription_start_date?: string | null;
-      subscription_end_date?: string | null;
-      hire_date?: string | null;
-      phone_number?: string | null;
-    },
-    source: string
-  ) => {
     const key = getPersonKey(r);
-    if (!key) return;
+    if (!key) continue;
 
     const existing = personMap.get(key);
     if (!existing) {
       personMap.set(key, {
         id: r.id,
-        national_id: r.national_id || null,
-        employee_code: r.employee_code || null,
-        employee_name: r.employee_name || null,
-        company_account: r.company_account || null,
-        status: r.status || null,
-        insurance_status: r.insurance_status || null,
-        insurance_number: r.insurance_number || null,
-        job_title: r.job_title || null,
-        insurance_job_title: r.insurance_job_title || null,
-        subscription_start_date: r.subscription_start_date || null,
-        subscription_end_date: r.subscription_end_date || null,
-        hire_date: r.hire_date || null,
-        phone_number: r.phone_number || null,
+        national_id: r.national_id,
+        employee_code: r.employee_code,
+        employee_name: r.employee_name,
+        company_account: r.company_account,
+        status: r.status,
+        insurance_status: r.insurance_status,
+        insurance_number: r.insurance_number,
+        job_title: r.job_title,
+        insurance_job_title: r.insurance_job_title,
+        subscription_start_date: r.subscription_start_date,
+        subscription_end_date: r.subscription_end_date,
+        hire_date: r.hire_date,
+        phone_number: r.phone_number,
         sources: new Set([source]),
       });
     } else {
@@ -367,37 +349,29 @@ export async function searchEmployees(
       if (!existing.hire_date && r.hire_date) existing.hire_date = r.hire_date;
       if (!existing.phone_number && r.phone_number) existing.phone_number = r.phone_number;
     }
-  };
+  }
+}
 
-  (insRes.data || []).forEach((r) => mergeDraft(r, 'وارد التأمين'));
-  (payRes.data || []).forEach((r) => mergeDraft(r, 'المرتبات'));
-  (miRes.data || []).forEach((r) => mergeDraft(r, 'التأمينات'));
-  (resRes.data || []).forEach((r) => mergeDraft(r, 'الاستقالات'));
-  (masterRes.data || []).forEach((r) => mergeDraft({
-    id: r.id,
-    national_id: r.national_id,
-    employee_code: r.employee_code,
-    employee_name: r.employee_name,
-    company_account: r.company_account,
-    status: r.current_status,
-    insurance_status: r.insurance_status,
-    insurance_number: r.insurance_number,
-    job_title: r.current_job_title,
-    insurance_job_title: r.insurance_job_title,
-    subscription_start_date: r.insurance_start_date,
-    hire_date: r.hire_date,
-    phone_number: r.phone_number,
-  }, 'سجل الموظفين Master'));
-
-  const distinctPeople = Array.from(personMap.values()).slice(0, 15);
-
-  // 3. For each distinct person, query their full monthly and resignation records in parallel
-  const enrichedResults: SearchCandidate[] = await Promise.all(
+/**
+ * Enriches candidate drafts with full monthly attendance, S1/S6 readiness, and resignation data
+ */
+async function enrichPersonDrafts(
+  distinctPeople: PersonDraft[],
+  targetYear?: number,
+  targetMonth?: number
+): Promise<SearchCandidate[]> {
+  return Promise.all(
     distinctPeople.map(async (p) => {
       // Build conditions for matching this person
       const orConds: string[] = [];
-      if (p.national_id) orConds.push(`national_id.eq.${p.national_id}`);
-      if (p.employee_code) orConds.push(`employee_code.eq.${p.employee_code}`);
+      const cleanDraftNid = p.national_id ? p.national_id.replace(/\D/g, '') : '';
+      if (cleanDraftNid.length === 14) {
+        // STRICT ISOLATION: When a 14-digit National ID is present, NEVER cross-match on employee_code with OR!
+        orConds.push(`national_id.eq.${cleanDraftNid}`);
+      } else {
+        if (p.national_id) orConds.push(`national_id.eq.${p.national_id}`);
+        if (p.employee_code) orConds.push(`employee_code.eq.${p.employee_code}`);
+      }
 
       let companyAccount = p.company_account;
       let insuranceStatus = p.insurance_status;
@@ -422,15 +396,14 @@ export async function searchEmployees(
       if (orConds.length > 0) {
         const orClause = orConds.join(',');
 
-        const [incomingData, payData, miData, resData, masterData] = await Promise.all([
+        const [incomingRes, payData, miData, resData, masterData] = await Promise.all([
           // Fetch from incoming_insurance (ordered latest first)
           supabaseServer
             .from('incoming_insurance_records')
             .select('company_account, status, insurance_status, employee_name, insurance_number, job_title, insurance_job_title, subscription_start_date, subscription_end_date, termination_reason')
             .or(orClause)
             .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle(),
+            .limit(5),
 
           // Fetch all payroll records ordered ascending
           supabaseServer
@@ -464,6 +437,14 @@ export async function searchEmployees(
             .limit(1)
             .maybeSingle(),
         ]);
+
+        const incomingRows = incomingRes.data || [];
+        const incomingData = {
+          data: incomingRows.find(r => r.insurance_number && String(r.insurance_number).trim() !== '0' && r.insurance_status) ||
+                incomingRows.find(r => r.insurance_number && String(r.insurance_number).trim() !== '0') ||
+                incomingRows.find(r => r.insurance_status) ||
+                incomingRows[0] || null
+        };
 
         if (incomingData.data) {
           if (!companyAccount && incomingData.data.company_account) companyAccount = incomingData.data.company_account;
@@ -650,8 +631,102 @@ export async function searchEmployees(
       };
     })
   );
+}
 
-  return enrichedResults;
+/**
+ * Intelligent, Hierarchical, Zero-AI Employee Search
+ * Handles:
+ *  1. Batch Search: Pasting multiple IDs/Codes separated by commas or newlines (1 to 100 items) -> returns all of them!
+ *  2. Exact 14-digit National ID: Strictly exact match (`eq`) -> returns strictly that 1 employee!
+ *  3. Exact Employee Code or Insurance Number -> returns exact matching employee(s)!
+ *  4. Prefix search for active typing (starts-with only, never middle wildcard!)
+ *  5. Text / Name search (ranked by prefix match first)
+ */
+/**
+ * Search employees across all datasets — STRICTLY BY NATIONAL ID (14 digits) ONLY.
+ * Searching by employee code, insurance number, or names is intentionally disabled
+ * to prevent duplicate mass entries and keep the search history log accurate and uncluttered.
+ *
+ * Supported formats:
+ *  1. Exactly 14 digits National ID (single query)
+ *  2. Multiple 14-digit National IDs separated by commas or newlines (batch query)
+ */
+export async function searchEmployees(
+  query: string,
+  targetYear?: number,
+  targetMonth?: number
+): Promise<SearchCandidate[]> {
+  const rawQ = (query || '').trim();
+  if (!rawQ) return [];
+
+  // 1. Detect if input contains multiple lines or commas (Batch Search by 14-digit National IDs)
+  const tokens = rawQ
+    .split(/[\r\n,]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+
+  // ── BATCH SEARCH MODE (e.g. 2 to 100 National IDs pasted at once) ─
+  if (tokens.length > 1) {
+    const personMap = new Map<string, PersonDraft>();
+    const batchNatIds: string[] = [];
+
+    for (const tok of tokens) {
+      const d = tok.replace(/\D/g, '');
+      if (d.length === 14) batchNatIds.push(d);
+    }
+
+    if (batchNatIds.length > 0) {
+      const [mRes, iRes, pRes, miRes, rRes] = await Promise.all([
+        supabaseServer.from('employees_master').select('*').in('national_id', batchNatIds),
+        supabaseServer.from('incoming_insurance_records').select('*').in('national_id', batchNatIds),
+        supabaseServer.from('monthly_payroll_records').select('*').in('national_id', batchNatIds),
+        supabaseServer.from('monthly_insurance_records').select('*').in('national_id', batchNatIds),
+        supabaseServer.from('resignation_records').select('*').in('national_id', batchNatIds),
+      ]);
+      mergeIntoPersonMap(personMap, mRes.data || [], 'سجل الموظفين Master');
+      mergeIntoPersonMap(personMap, iRes.data || [], 'وارد التأمين');
+      mergeIntoPersonMap(personMap, pRes.data || [], 'المرتبات');
+      mergeIntoPersonMap(personMap, miRes.data || [], 'التأمينات');
+      mergeIntoPersonMap(personMap, rRes.data || [], 'الاستقالات');
+
+      const distinct = Array.from(personMap.values()).slice(0, 100);
+      return enrichPersonDrafts(distinct, targetYear, targetMonth);
+    }
+
+    return [];
+  }
+
+  // ── SINGLE ITEM SEARCH MODE: STRICT 14-DIGIT NATIONAL ID ONLY ──
+  const q = tokens[0] || rawQ;
+  const digitsOnly = q.replace(/\D/g, '');
+
+  if (digitsOnly.length === 14) {
+    const personMap = new Map<string, PersonDraft>();
+
+    const [masterRes, insRes, payRes, miRes, resRes] = await Promise.all([
+      supabaseServer.from('employees_master').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseServer.from('incoming_insurance_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseServer.from('monthly_payroll_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseServer.from('monthly_insurance_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseServer.from('resignation_records').select('*').eq('national_id', digitsOnly).limit(5),
+    ]);
+
+    mergeIntoPersonMap(personMap, masterRes.data || [], 'سجل الموظفين Master');
+    mergeIntoPersonMap(personMap, insRes.data || [], 'وارد التأمين');
+    mergeIntoPersonMap(personMap, payRes.data || [], 'المرتبات');
+    mergeIntoPersonMap(personMap, miRes.data || [], 'التأمينات');
+    mergeIntoPersonMap(personMap, resRes.data || [], 'الاستقالات');
+
+    // Strict filter: only people who actually have this exact 14-digit national ID
+    const distinct = Array.from(personMap.values()).filter(p => p.national_id === digitsOnly);
+    if (distinct.length > 0) {
+      return enrichPersonDrafts(distinct, targetYear, targetMonth);
+    }
+    return [];
+  }
+
+  // If not exactly 14 digits, do not search by codes, insurance numbers, or names
+  return [];
 }
 
 export interface MonthAvailability {
@@ -709,7 +784,7 @@ export interface UnifiedEmployeeProfile {
   phoneNumber?: string | null;
   address?: string | null;
   notes?: string | null;
-  
+
   // Sheet-specific sections
   archives?: {
     contract?: string | null;
@@ -857,74 +932,109 @@ export async function getEmployeeFullDetails(params: {
   national_id?: string | null;
   employee_code?: string | null;
   employee_name?: string | null;
+  company_account?: string | null;
   selected_year?: number;
   selected_month?: number;
 }): Promise<EmployeeDetailsResult> {
-  const { national_id, employee_code, employee_name, selected_year, selected_month } = params;
+  const { national_id, employee_code, employee_name, company_account: requestedAccount, selected_year, selected_month } = params;
   const conflicts: string[] = [];
+
+  const cleanNid = national_id ? national_id.replace(/\D/g, '') : '';
+  const hasValidNid = cleanNid.length === 14;
 
   // 1. Fetch matching incoming insurance records
   let incomingQuery = supabaseServer.from('incoming_insurance_records').select('*');
-  const incomingOrConditions: string[] = [];
-  if (national_id) incomingOrConditions.push(`national_id.eq.${national_id}`);
-  if (employee_code) incomingOrConditions.push(`employee_code.eq.${employee_code}`);
+  if (hasValidNid) {
+    // STRICT ISOLATION: When a 14-digit National ID is provided, ONLY match that exact National ID.
+    // Never combine with employee_code using OR, as codes overlap between companies.
+    incomingQuery = incomingQuery.eq('national_id', cleanNid).order('created_at', { ascending: false });
+  } else {
+    const incomingOrConditions: string[] = [];
+    if (national_id) incomingOrConditions.push(`national_id.eq.${national_id}`);
+    if (employee_code) {
+      if (requestedAccount && requestedAccount !== '—') {
+        incomingQuery = incomingQuery.eq('employee_code', employee_code).ilike('company_account', requestedAccount);
+      } else {
+        incomingOrConditions.push(`employee_code.eq.${employee_code}`);
+      }
+    }
+    if (incomingOrConditions.length > 0) {
+      incomingQuery = incomingQuery.or(incomingOrConditions.join(',')).order('created_at', { ascending: false });
+    }
+  }
 
   let incomingRecord: Record<string, unknown> | null = null;
-  if (incomingOrConditions.length > 0) {
-    incomingQuery = incomingQuery.or(incomingOrConditions.join(',')).order('created_at', { ascending: false });
-    const { data } = await incomingQuery.limit(5);
-    if (data && data.length > 0) {
-      incomingRecord = data[0];
-      // Check for code/national_id conflict
-      data.forEach((r) => {
-        if (national_id && r.national_id && r.national_id !== national_id) {
-          conflicts.push(`تعارض في أرقام وارد التأمين: تم العثور على نفس الكود (${employee_code}) مع رقم قومي مختلف (${r.national_id})`);
-        }
-        if (employee_code && r.employee_code && r.employee_code !== employee_code) {
-          conflicts.push(`تعارض في أرقام وارد التأمين: تم العثور على نفس الرقم القومي (${national_id}) مع كود مختلف (${r.employee_code})`);
-        }
-      });
+  const { data } = await incomingQuery.limit(10);
+  if (data && data.length > 0) {
+    let candidatePool = data;
+    if (requestedAccount && requestedAccount !== '—') {
+      const matchPool = data.filter(r => r.company_account && String(r.company_account).trim().toLowerCase() === requestedAccount.trim().toLowerCase());
+      if (matchPool.length > 0) candidatePool = matchPool;
     }
+
+    incomingRecord = candidatePool.find(r => r.insurance_number && String(r.insurance_number).trim() !== '0' && r.insurance_status) ||
+                     candidatePool.find(r => r.insurance_number && String(r.insurance_number).trim() !== '0') ||
+                     candidatePool.find(r => r.insurance_status) ||
+                     candidatePool[0];
+
+    // Check for code conflict within THIS person's own records only
+    data.forEach((r) => {
+      if (hasValidNid && r.national_id === cleanNid && employee_code && r.employee_code && r.employee_code !== employee_code) {
+        conflicts.push(`تعارض في أرقام وارد التأمين: الكود المسجل (${employee_code}) يختلف عن الوارد (${r.employee_code})`);
+      }
+    });
   }
 
   // 2. Fetch resignation (RES.) records
   let resQuery = supabaseServer.from('resignation_records').select('*');
-  const resOrConditions: string[] = [];
-  if (national_id) resOrConditions.push(`national_id.eq.${national_id}`);
-  if (employee_code) resOrConditions.push(`employee_code.eq.${employee_code}`);
+  if (hasValidNid) {
+    resQuery = resQuery.eq('national_id', cleanNid);
+  } else {
+    const resOrConditions: string[] = [];
+    if (national_id) resOrConditions.push(`national_id.eq.${national_id}`);
+    if (employee_code) {
+      if (requestedAccount && requestedAccount !== '—') {
+        resQuery = resQuery.eq('employee_code', employee_code).ilike('company_account', requestedAccount);
+      } else {
+        resOrConditions.push(`employee_code.eq.${employee_code}`);
+      }
+    }
+    if (resOrConditions.length > 0) resQuery = resQuery.or(resOrConditions.join(','));
+  }
 
   let resignationRecords: Record<string, unknown>[] = [];
-  if (resOrConditions.length > 0) {
-    resQuery = resQuery.or(resOrConditions.join(','));
-    const { data } = await resQuery.limit(10);
-    if (data) resignationRecords = data;
-  }
+  const { data: resData } = await resQuery.limit(10);
+  if (resData) resignationRecords = resData;
 
   // 3. Fetch all monthly payroll records for this employee
   let payrollQuery = supabaseServer.from('monthly_payroll_records').select('*');
-  const payrollOrConditions: string[] = [];
-  if (national_id) payrollOrConditions.push(`national_id.eq.${national_id}`);
-  if (employee_code) payrollOrConditions.push(`employee_code.eq.${employee_code}`);
+  if (hasValidNid) {
+    payrollQuery = payrollQuery.eq('national_id', cleanNid);
+  } else {
+    const payrollOrConditions: string[] = [];
+    if (national_id) payrollOrConditions.push(`national_id.eq.${national_id}`);
+    if (employee_code) payrollOrConditions.push(`employee_code.eq.${employee_code}`);
+    if (payrollOrConditions.length > 0) payrollQuery = payrollQuery.or(payrollOrConditions.join(','));
+  }
 
   let payrollRecords: Record<string, unknown>[] = [];
-  if (payrollOrConditions.length > 0) {
-    payrollQuery = payrollQuery.or(payrollOrConditions.join(','));
-    const { data } = await payrollQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
-    if (data) payrollRecords = data;
-  }
+  const { data: payData } = await payrollQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
+  if (payData) payrollRecords = payData;
 
   // 4. Fetch all monthly insurance records for this employee
   let miQuery = supabaseServer.from('monthly_insurance_records').select('*');
-  const miOrConditions: string[] = [];
-  if (national_id) miOrConditions.push(`national_id.eq.${national_id}`);
-  if (employee_code) miOrConditions.push(`employee_code.eq.${employee_code}`);
+  if (hasValidNid) {
+    miQuery = miQuery.eq('national_id', cleanNid);
+  } else {
+    const miOrConditions: string[] = [];
+    if (national_id) miOrConditions.push(`national_id.eq.${national_id}`);
+    if (employee_code) miOrConditions.push(`employee_code.eq.${employee_code}`);
+    if (miOrConditions.length > 0) miQuery = miQuery.or(miOrConditions.join(','));
+  }
 
   let monthlyInsRecords: Record<string, unknown>[] = [];
-  if (miOrConditions.length > 0) {
-    miQuery = miQuery.or(miOrConditions.join(','));
-    const { data } = await miQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
-    if (data) monthlyInsRecords = data;
-  }
+  const { data: miData } = await miQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
+  if (miData) monthlyInsRecords = miData;
 
   // 5. Get available imported periods
   const availablePeriods = await getAvailableImportedPeriods();
@@ -1066,30 +1176,43 @@ export async function getEmployeeFullDetails(params: {
   }
 
   // 6. Build Unified Employee Profile (ملف الموحد الشامل من جميع أوراق العمل)
-  const targetNid = national_id || (incomingRecord?.national_id as string) || '';
+  const targetNid = hasValidNid ? cleanNid : (national_id || (incomingRecord?.national_id as string) || '');
   const targetCode = employee_code || (incomingRecord?.employee_code as string) || '';
   const targetName = employee_name || (incomingRecord?.employee_name as string) || '';
 
   let masterEmp: Record<string, unknown> | null = null;
-  const masterOrConds: string[] = [];
-  if (targetNid) masterOrConds.push(`national_id.eq.${targetNid}`);
-  if (targetCode) masterOrConds.push(`employee_code.eq.${targetCode}`);
-  
-  if (masterOrConds.length > 0) {
-    const { data: mData } = await supabaseServer
-      .from('employees_master')
-      .select('*')
-      .or(masterOrConds.join(','))
-      .limit(1)
-      .maybeSingle();
+  if (hasValidNid) {
+    let mQuery = supabaseServer.from('employees_master').select('*').eq('national_id', cleanNid);
+    if (requestedAccount && requestedAccount !== '—') {
+      mQuery = mQuery.ilike('company_account', requestedAccount);
+    }
+    const { data: mData } = await mQuery.limit(1).maybeSingle();
     if (mData) masterEmp = mData;
+  } else {
+    const masterOrConds: string[] = [];
+    if (targetNid) masterOrConds.push(`national_id.eq.${targetNid}`);
+    if (targetCode) masterOrConds.push(`employee_code.eq.${targetCode}`);
+
+    if (masterOrConds.length > 0) {
+      const { data: mData } = await supabaseServer
+        .from('employees_master')
+        .select('*')
+        .or(masterOrConds.join(','))
+        .limit(1)
+        .maybeSingle();
+      if (mData) masterEmp = mData;
+    }
   }
 
   // Fetch sheet_data records for this employee
   const sheetOrConds: string[] = [];
   if (masterEmp?.id) sheetOrConds.push(`employee_id.eq.${masterEmp.id}`);
-  if (targetNid) sheetOrConds.push(`row_national_id.eq.${targetNid}`);
-  if (targetCode) sheetOrConds.push(`row_code.eq.${targetCode}`);
+  if (hasValidNid) {
+    sheetOrConds.push(`row_national_id.eq.${cleanNid}`);
+  } else {
+    if (targetNid) sheetOrConds.push(`row_national_id.eq.${targetNid}`);
+    if (targetCode) sheetOrConds.push(`row_code.eq.${targetCode}`);
+  }
 
   let allSheetRecords: Array<{
     sheet_id: string;
@@ -1110,7 +1233,7 @@ export async function getEmployeeFullDetails(params: {
   }
 
   // Fallback search in sheet_data if row_code or row_national_id had shifted columns
-  if (allSheetRecords.length === 0 && (targetNid || targetCode)) {
+  if (allSheetRecords.length === 0 && (hasValidNid || targetCode)) {
     // Attempt finding in sheet_data where row_data contains code or nid
     const { data: fallbackRows } = await supabaseServer
       .from('sheet_data')
@@ -1120,7 +1243,8 @@ export async function getEmployeeFullDetails(params: {
     if (fallbackRows) {
       const filtered = fallbackRows.filter((r) => {
         const str = JSON.stringify(r.row_data);
-        return (targetNid && str.includes(targetNid)) || (targetCode && str.includes(`"${targetCode}"`));
+        if (hasValidNid) return str.includes(cleanNid);
+        return targetCode && str.includes(`"${targetCode}"`);
       });
       if (filtered.length > 0) {
         allSheetRecords = filtered as unknown as typeof allSheetRecords;
@@ -1303,7 +1427,7 @@ export async function getEmployeeFullDetails(params: {
   const unifiedProfile: UnifiedEmployeeProfile = {
     found: Boolean(masterEmp || allSheetRecords.length > 0 || incomingRecord),
     masterId: masterEmp?.id as string || null,
-    companyAccount: (masterEmp?.company_account as string) || (incomingRecord?.company_account as string) || 'E.G',
+    companyAccount: (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null) || 'E.G',
     employeeCode: cleanDbCode || targetCode,
     employeeName: cleanDbName || targetName,
     nationalId: cleanDbNid || targetNid,
@@ -1328,8 +1452,8 @@ export async function getEmployeeFullDetails(params: {
     ),
   };
 
-  // Company account rule: Sharka in incoming insurance
-  const companyAccount = incomingRecord ? (incomingRecord.company_account as string) || null : (masterEmp?.company_account as string) || null;
+  // Company account rule: Sharka in incoming insurance, master, or requested
+  const companyAccount = (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null) || 'E.G';
 
   // ── S1 Calculation (استمارة س1 - بداية الاشتراك) ──
   const s1Year = firstBoth?.year || firstPayroll?.year || (monthlyInsRecords[0]?.period_year as number) || null;

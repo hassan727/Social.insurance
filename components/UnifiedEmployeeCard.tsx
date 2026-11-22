@@ -508,27 +508,27 @@ export default function UnifiedEmployeeCard({ details, onSwitchToTimeline }: Pro
                   <div style={{ fontSize: 16, fontWeight: 900, color: '#38bdf8' }}>{bank.primaryBank}</div>
                 </div>
                 <div style={{ textAlign: 'left' }}>
-                  <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700 }}>رقم الحساب / الكود</div>
-                  <div className="font-mono-pro" style={{ fontSize: 15, fontWeight: 900, color: '#ffffff' }}>{bank.accountNumber}</div>
+                  <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, marginBottom: 4 }}>رقم الحساب / الكود</div>
+                  <CopyableBadge label="" value={bank.accountNumber} mono accent="#ffffff" />
                 </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
                 <div style={{ padding: '8px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
                   <span style={{ fontSize: 10, color: '#94a3b8' }}>SAIB: </span>
-                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.saib && bank.saib !== '0' ? '#34d399' : '#64748b' }}>{bank.saib || '0'}</strong>
+                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.saib && bank.saib !== '0' ? '#ffffff' : '#64748b' }}>{bank.saib || '0'}</strong>
                 </div>
                 <div style={{ padding: '8px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
                   <span style={{ fontSize: 10, color: '#94a3b8' }}>CIB: </span>
-                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.cib && bank.cib !== '0' ? '#34d399' : '#64748b' }}>{bank.cib || '0'}</strong>
+                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.cib && bank.cib !== '0' ? '#ffffff' : '#64748b' }}>{bank.cib || '0'}</strong>
                 </div>
                 <div style={{ padding: '8px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
                   <span style={{ fontSize: 10, color: '#94a3b8' }}>ADIB: </span>
-                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.adib && bank.adib !== '0' ? '#34d399' : '#64748b' }}>{bank.adib || '0'}</strong>
+                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.adib && bank.adib !== '0' ? '#ffffff' : '#64748b' }}>{bank.adib || '0'}</strong>
                 </div>
                 <div style={{ padding: '8px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
                   <span style={{ fontSize: 10, color: '#94a3b8' }}>DOPAY: </span>
-                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.dopay && bank.dopay !== '0' ? '#34d399' : '#64748b' }}>{bank.dopay || '0'}</strong>
+                  <strong className="font-mono-pro" style={{ fontSize: 12, color: bank.dopay && bank.dopay !== '0' ? '#ffffff' : '#64748b' }}>{bank.dopay || '0'}</strong>
                 </div>
               </div>
             </div>

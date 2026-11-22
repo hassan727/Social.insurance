@@ -466,14 +466,13 @@ async function checkInInsuranceNotInMaster(): Promise<DiscrepancyRecord[]> {
       if (data) found = true;
     }
 
-    if (!found && rec.employee_code && rec.company_account) {
+    if (!found && rec.employee_code) {
       const { data } = await supabaseServer
         .from('employees_master')
         .select('id')
         .eq('employee_code', rec.employee_code)
-        .eq('company_account', rec.company_account)
-        .maybeSingle();
-      if (data) found = true;
+        .limit(1);
+      if (data && data.length > 0) found = true;
     }
 
     if (!found) {

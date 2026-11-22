@@ -65,7 +65,7 @@ export interface ImportedRow {
 export interface MatchResult {
   matched: boolean;
   employee_id: string | null;
-  match_type: 'code' | 'national_id' | 'name' | 'new';
+  match_type: 'code' | 'national_id' | 'insurance_number' | 'name' | 'new';
   confidence: number;
 }
 
@@ -277,28 +277,16 @@ export async function findMatchingEmployee(
   rowData: ImportedRow
 ): Promise<MatchResult> {
   const { row_code, row_national_id, row_name } = rowData;
+  const innerData = (rowData.row_data || {}) as Record<string, unknown>;
+  const rawInsuranceNumber = (innerData.insurance_number as string) ||
+    (innerData['الرقم التاميني'] as string) ||
+    (innerData['الرقم التأميني'] as string) ||
+    (innerData['الرقم التامينى'] as string) ||
+    (innerData['الرقم التأمينى'] as string) || null;
+  const cleanInsNo = rawInsuranceNumber ? String(rawInsuranceNumber).trim() : null;
 
-  // Priority 1: Match by company_account + employee_code
-  if (row_code) {
-    const { data: byCode } = await supabaseServer
-      .from('employees_master')
-      .select('id')
-      .eq('company_account', companyAccount)
-      .eq('employee_code', row_code)
-      .maybeSingle();
-
-    if (byCode) {
-      return {
-        matched: true,
-        employee_id: byCode.id,
-        match_type: 'code',
-        confidence: 100,
-      };
-    }
-  }
-
-  // Priority 2: Match by national_id (global unique)
-  if (row_national_id) {
+  // Priority 1: Match by national_id (Global Sovereign Unique ID - 14 digits)
+  if (row_national_id && row_national_id.length === 14) {
     const { data: byNationalId } = await supabaseServer
       .from('employees_master')
       .select('id, company_account, employee_code')
@@ -306,30 +294,69 @@ export async function findMatchingEmployee(
       .maybeSingle();
 
     if (byNationalId) {
-      // Check if employee moved between accounts
-      if (byNationalId.company_account !== companyAccount) {
-        // Employee transferred between accounts!
-        console.log(
-          `🔄 Employee transfer detected: ${row_name} from ${byNationalId.company_account} to ${companyAccount}`
-        );
-      }
       return {
         matched: true,
         employee_id: byNationalId.id,
         match_type: 'national_id',
+        confidence: 100,
+      };
+    }
+  }
+
+  // Priority 2: Match by insurance_number (State insurance unique ID)
+  if (cleanInsNo && cleanInsNo.length >= 7) {
+    const { data: byIns } = await supabaseServer
+      .from('employees_master')
+      .select('id, company_account, employee_code')
+      .eq('insurance_number', cleanInsNo)
+      .limit(2);
+
+    if (byIns && byIns.length === 1) {
+      return {
+        matched: true,
+        employee_id: byIns[0].id,
+        match_type: 'insurance_number',
         confidence: 95,
       };
     }
   }
 
-  // Priority 3: Fuzzy match by name (within same company_account)
+  // Priority 3: Match by employee_code (Universal Employee Code across accounts)
+  if (row_code) {
+    const { data: byCodeList } = await supabaseServer
+      .from('employees_master')
+      .select('id, company_account, employee_code, employee_name')
+      .eq('employee_code', row_code)
+      .limit(5);
+
+    if (byCodeList && byCodeList.length === 1) {
+      return {
+        matched: true,
+        employee_id: byCodeList[0].id,
+        match_type: 'code',
+        confidence: 92,
+      };
+    } else if (byCodeList && byCodeList.length > 1) {
+      const sameAcc = byCodeList.find(e => e.company_account.toLowerCase() === companyAccount.toLowerCase());
+      if (sameAcc) {
+        return {
+          matched: true,
+          employee_id: sameAcc.id,
+          match_type: 'code',
+          confidence: 90,
+        };
+      }
+    }
+  }
+
+  // Priority 4: Match by normalized name
   if (row_name) {
     const normalizedInputName = normalizeText(row_name);
     const { data: byName } = await supabaseServer
       .from('employees_master')
       .select('id, employee_name')
-      .eq('company_account', companyAccount)
-      .limit(10);
+      .ilike('employee_name', `%${normalizedInputName.slice(0, 6)}%`)
+      .limit(20);
 
     if (byName) {
       for (const emp of byName) {
@@ -622,21 +649,36 @@ export async function importSheet(
     // 5. Pre-load existing employees into memory for high-speed matching (1 single query instead of thousands)
     const { data: existingEmps } = await supabaseServer
       .from('employees_master')
-      .select('id, company_account, employee_code, national_id, employee_name, consolidated_data');
+      .select('id, company_account, employee_code, national_id, employee_name, insurance_number, consolidated_data');
 
-    const byCodeAccountMap = new Map<string, EmployeeLookup>();
     const byNatIdMap = new Map<string, EmployeeLookup>();
-    const byNormNameAccountMap = new Map<string, EmployeeLookup>();
+    const byInsNoMap = new Map<string, EmployeeLookup>();
+    const byCodeMap = new Map<string, EmployeeLookup>();
+    const byCodeAccountMap = new Map<string, EmployeeLookup>();
+    const byNormNameMap = new Map<string, EmployeeLookup>();
 
     for (const emp of (existingEmps || []) as EmployeeLookup[]) {
-      if (emp.employee_code && emp.company_account) {
-        byCodeAccountMap.set(`${emp.company_account}:${String(emp.employee_code).trim()}`, emp);
-      }
-      if (emp.national_id) {
+      if (emp.national_id && String(emp.national_id).trim().length === 14) {
         byNatIdMap.set(String(emp.national_id).trim(), emp);
       }
-      if (emp.employee_name && emp.company_account) {
-        byNormNameAccountMap.set(`${emp.company_account}:${normalizeText(emp.employee_name)}`, emp);
+      if (emp.insurance_number && String(emp.insurance_number).trim()) {
+        byInsNoMap.set(String(emp.insurance_number).trim(), emp);
+      }
+      if (emp.employee_code && String(emp.employee_code).trim()) {
+        const c = String(emp.employee_code).trim();
+        // Global code map (first one wins for universal lookup)
+        if (!byCodeMap.has(c)) {
+          byCodeMap.set(c, emp);
+        }
+        if (emp.company_account) {
+          byCodeAccountMap.set(`${emp.company_account.toLowerCase()}:${c}`, emp);
+        }
+      }
+      if (emp.employee_name) {
+        const normN = normalizeText(emp.employee_name);
+        if (!byNormNameMap.has(normN)) {
+          byNormNameMap.set(normN, emp);
+        }
       }
     }
 
@@ -807,25 +849,45 @@ export async function importSheet(
           }
         }
 
-        // Fast in-memory matching
+        // Extract insurance number early for matching Priority 2
+        const rawInsNumber = cleanCode(
+          rowData.insurance_number ||
+          rowData['الرقم التاميني'] ||
+          rowData['الرقم التأميني'] ||
+          rowData['الرقم التامينى'] ||
+          rowData['الرقم التأمينى']
+        );
+
+        // Fast in-memory hierarchical matching
         let matchedEmp: EmployeeLookup | null = null;
 
-        // Priority 1: Match by company_account + employee_code
-        if (rawCode) {
-          const found = byCodeAccountMap.get(`${companyAccount}:${rawCode}`);
-          if (found) matchedEmp = found;
-        }
-
-        // Priority 2: Match by national_id
-        if (!matchedEmp && rawNatId) {
+        // Priority 1: Match by national_id (Sovereign Global Unique ID - 14 digits)
+        if (rawNatId && rawNatId.length === 14) {
           const found = byNatIdMap.get(rawNatId);
           if (found) matchedEmp = found;
         }
 
-        // Priority 3: Fuzzy match by name
+        // Priority 2: Match by insurance_number (Unique State Insurance ID)
+        if (!matchedEmp && rawInsNumber && rawInsNumber.length >= 7) {
+          const found = byInsNoMap.get(rawInsNumber);
+          if (found) matchedEmp = found;
+        }
+
+        // Priority 3: Match by employee_code (Universal Employee Code across accounts)
+        if (!matchedEmp && rawCode) {
+          const foundByAccount = byCodeAccountMap.get(`${companyAccount.toLowerCase()}:${rawCode}`);
+          if (foundByAccount) {
+            matchedEmp = foundByAccount;
+          } else {
+            const foundGlobal = byCodeMap.get(rawCode);
+            if (foundGlobal) matchedEmp = foundGlobal;
+          }
+        }
+
+        // Priority 4: Match by normalized name
         if (!matchedEmp && rawName) {
           const normN = normalizeText(rawName);
-          const found = byNormNameAccountMap.get(`${companyAccount}:${normN}`);
+          const found = byNormNameMap.get(normN);
           if (found) matchedEmp = found;
         }
 
@@ -920,9 +982,15 @@ export async function importSheet(
             employeesToInsert.push(newEmpRecord);
 
             // Update memory index maps so subsequent rows in this file match immediately
-            if(rawCode) byCodeAccountMap.set(`${companyAccount}:${rawCode}`, newEmpRecord as unknown as EmployeeLookup);
-            if(rawNatId) byNatIdMap.set(rawNatId, newEmpRecord as unknown as EmployeeLookup);
-            if(rawName) byNormNameAccountMap.set(`${companyAccount}:${normalizeText(rawName)}`, newEmpRecord as unknown as EmployeeLookup);
+            const lookupRecord = newEmpRecord as unknown as EmployeeLookup;
+            if (rawNatId && rawNatId.length === 14) byNatIdMap.set(rawNatId, lookupRecord);
+            if (newEmpRecord.insurance_number) byInsNoMap.set(String(newEmpRecord.insurance_number).trim(), lookupRecord);
+            if (rawCode) {
+              const c = String(rawCode).trim();
+              if (!byCodeMap.has(c)) byCodeMap.set(c, lookupRecord);
+              byCodeAccountMap.set(`${companyAccount.toLowerCase()}:${c}`, lookupRecord);
+            }
+            if (rawName) byNormNameMap.set(normalizeText(rawName), lookupRecord);
 
             historyToInsert.push({
               employee_id: newId,

@@ -7,6 +7,7 @@ export async function GET(request: Request) {
     const nationalId = searchParams.get('national_id');
     const employeeCode = searchParams.get('employee_code');
     const employeeName = searchParams.get('employee_name');
+    const companyAccount = searchParams.get('company_account');
     const yearStr = searchParams.get('selected_year');
     const monthStr = searchParams.get('selected_month');
 
@@ -21,6 +22,7 @@ export async function GET(request: Request) {
       national_id: nationalId,
       employee_code: employeeCode,
       employee_name: employeeName,
+      company_account: companyAccount,
       selected_year: selectedYear,
       selected_month: selectedMonth,
     });

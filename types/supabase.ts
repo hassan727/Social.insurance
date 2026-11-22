@@ -39,10 +39,45 @@ export type Database = {
   }
   public: {
     Tables: {
+      company_accounts: {
+        Row: {
+          id: number
+          account_code: string
+          account_name: string
+          aliases: string[] | null
+          description: string | null
+          is_active: boolean
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: number
+          account_code: string
+          account_name: string
+          aliases?: string[] | null
+          description?: string | null
+          is_active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: number
+          account_code?: string
+          account_name?: string
+          aliases?: string[] | null
+          description?: string | null
+          is_active?: boolean
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       employees_master: {
         Row: {
           id: string
           company_account: string
+          account_id: number | null
+          account_employee_uid: string | null
           employee_code: string | null
           national_id: string | null
           employee_name: string
@@ -71,6 +106,8 @@ export type Database = {
         Insert: {
           id?: string
           company_account: string
+          account_id?: number | null
+          account_employee_uid?: string | null
           employee_code?: string | null
           national_id?: string | null
           employee_name: string
@@ -99,6 +136,8 @@ export type Database = {
         Update: {
           id?: string
           company_account?: string
+          account_id?: number | null
+          account_employee_uid?: string | null
           employee_code?: string | null
           national_id?: string | null
           employee_name?: string

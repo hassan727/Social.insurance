@@ -8,16 +8,18 @@ export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
-    const companyAccount = formData.get('company_account') as string | null;
+    const rawAccount = (formData.get('company_account') as string | null) || 'E.G';
     const selectedSheetsStr = formData.get('selected_sheets') as string | null;
 
     if (!file) {
       return NextResponse.json({ error: 'الملف مطلوب' }, { status: 400 });
     }
 
-    if (!companyAccount || !['E.G', 'm.g'].includes(companyAccount)) {
-      return NextResponse.json({ error: 'حساب الشركة مطلوب (E.G أو m.g)' }, { status: 400 });
-    }
+    // Dynamic account normalization: default to E.G (Egypt Gas), normalize m.g/M.G
+    const normalizedAccount = (rawAccount.trim().toLowerCase().startsWith('m') || rawAccount.includes('مودرن'))
+      ? 'M.G'
+      : 'E.G';
+    const companyAccount = normalizedAccount;
 
     if (!selectedSheetsStr) {
       return NextResponse.json({ error: 'يجب اختيار ورقة واحدة على الأقل' }, { status: 400 });

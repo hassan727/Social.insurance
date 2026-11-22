@@ -47,7 +47,26 @@ export async function GET(request: Request) {
     }
 
     // Default: Return summary and records JSON
-    const { summary, records } = await runOfficialPrintForensicAudit(account);
+    const refresh = searchParams.get('refresh') === 'true';
+    const { summary, records } = await runOfficialPrintForensicAudit(account, refresh);
+    const filter = searchParams.get('filter') || 'all';
+
+    let filteredRecords = records;
+    if (filter === 'uninsured') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus.includes('مخالفة تأمينية'));
+    } else if (filter === 'job_conflicts') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus.includes('تعارض مسميات') || r.jobConflictStatus === 'تعارض مسميات');
+    } else if (filter === 'supplied_s1') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus.includes('س1'));
+    } else if (filter === 'new_hires') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus.includes('تعيين جديد'));
+    } else if (filter === 'missing_payroll') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus.includes('بلا مرتبات'));
+    } else if (filter === 'discrepancy') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus.includes('تعارض أرقام') || r.nameMatchConfidence.includes('تعارض'));
+    } else if (filter === 'matched') {
+      filteredRecords = records.filter((r) => r.finalForensicStatus === 'مطابق ومعتمد');
+    }
 
     return NextResponse.json({
       success: true,
@@ -55,7 +74,8 @@ export async function GET(request: Request) {
       registeredAccounts: REGISTERED_ACCOUNTS,
       summary,
       recordsCount: records.length,
-      sampleRecords: records.slice(0, 50),
+      filteredCount: filteredRecords.length,
+      sampleRecords: filteredRecords.slice(0, 250),
     });
   } catch (error: unknown) {
     console.error('Error running official print forensic audit:', error);

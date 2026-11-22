@@ -358,18 +358,31 @@ export async function POST(request: Request) {
       }
 
       const byCodeAccount = new Map<string, EmpMasterLookup>();
+      const byCodeGlobal = new Map<string, EmpMasterLookup>();
       const byNatId = new Map<string, EmpMasterLookup>();
+      const byInsNo = new Map<string, EmpMasterLookup>();
       const byNormName = new Map<string, EmpMasterLookup>();
 
       (existingEmps || []).forEach((emp) => {
-        if (emp.employee_code && emp.company_account) {
-          byCodeAccount.set(`${emp.company_account.trim()}:${String(emp.employee_code).trim()}`, emp);
+        if (emp.employee_code) {
+          const c = String(emp.employee_code).trim();
+          if (!byCodeGlobal.has(c)) byCodeGlobal.set(c, emp);
+          if (emp.company_account) {
+            byCodeAccount.set(`${emp.company_account.trim().toLowerCase()}:${c}`, emp);
+          }
         }
-        if (emp.national_id) {
+        if (emp.national_id && String(emp.national_id).trim().length === 14) {
           byNatId.set(String(emp.national_id).trim(), emp);
         }
-        if (emp.employee_name && emp.company_account) {
-          byNormName.set(`${emp.company_account.trim()}:${normalizeArabicText(emp.employee_name)}`, emp);
+        if ((emp as any).insurance_number && String((emp as any).insurance_number).trim()) {
+          byInsNo.set(String((emp as any).insurance_number).trim(), emp);
+        }
+        if (emp.employee_name) {
+          const normN = normalizeArabicText(emp.employee_name);
+          if (!byNormName.has(normN)) byNormName.set(normN, emp);
+          if (emp.company_account) {
+            byNormName.set(`${emp.company_account.trim().toLowerCase()}:${normN}`, emp);
+          }
         }
       });
 
@@ -384,16 +397,25 @@ export async function POST(request: Request) {
         const nid = (rec.national_id ? String(rec.national_id).trim() : '') || raw['الرقم القومي'] || raw['القومي'] || '';
         const name = (rec.employee_name ? String(rec.employee_name).trim() : '') || raw['الاسم'] || '';
         const acc = (rec.company_account ? String(rec.company_account).trim() : '') || raw['الشركة'] || raw['الشركه'] || 'E.G';
+        const insNum = (rec.insurance_number ? String(rec.insurance_number).trim() : '') || raw['الرقم التأميني'] || raw['الرقم التاميني'] || raw['الرقم التأميني للمؤمن علية'] || '';
 
         let matched: EmpMasterLookup | null = null;
+        // Priority 1: National ID (14 digits)
         if (nid && nid.length === 14) {
           matched = byNatId.get(nid) || null;
         }
-        if (!matched && code) {
-          matched = byCodeAccount.get(`${acc}:${code}`) || byCodeAccount.get(`E.G:${code}`) || byCodeAccount.get(`m.g:${code}`) || null;
+        // Priority 2: Insurance Number
+        if (!matched && insNum && insNum.length >= 7) {
+          matched = byInsNo.get(insNum) || null;
         }
-        if (!matched && name && name.length >= 8) {
-          matched = byNormName.get(`${acc}:${normalizeArabicText(name)}`) || null;
+        // Priority 3: Employee Code (Account specific then Global)
+        if (!matched && code) {
+          matched = byCodeAccount.get(`${acc.toLowerCase()}:${code}`) || byCodeGlobal.get(code) || null;
+        }
+        // Priority 4: Name
+        if (!matched && name && name.length >= 6) {
+          const normN = normalizeArabicText(name);
+          matched = byNormName.get(`${acc.toLowerCase()}:${normN}`) || byNormName.get(normN) || null;
         }
 
         const now = new Date().toISOString();
@@ -549,9 +571,17 @@ export async function POST(request: Request) {
 
           employeesToInsert.push(newRecord);
           const lookupItem = newRecord as unknown as EmpMasterLookup;
-          if (code) byCodeAccount.set(`${acc}:${code}`, lookupItem);
+          if (code) {
+            byCodeGlobal.set(code, lookupItem);
+            byCodeAccount.set(`${acc.toLowerCase()}:${code}`, lookupItem);
+          }
           if (nid) byNatId.set(nid, lookupItem);
-          if (name) byNormName.set(`${acc}:${normalizeArabicText(name)}`, lookupItem);
+          if (insNum) byInsNo.set(insNum, lookupItem);
+          if (name) {
+            const normN = normalizeArabicText(name);
+            byNormName.set(normN, lookupItem);
+            byNormName.set(`${acc.toLowerCase()}:${normN}`, lookupItem);
+          }
         }
       }
 
