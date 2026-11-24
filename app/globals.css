@@ -438,7 +438,7 @@ div.font-mono-pro {
 
 /* ─── Nav desktop row ─── */
 .nav-desktop { display: none !important; }
-@media (min-width: 768px) { .nav-desktop { display: flex !important; } }
+@media (min-width: 1150px) { .nav-desktop { display: flex !important; } }
 
 /* ─── Execute button row ─── */
 .execute-row {
@@ -493,11 +493,6 @@ div.font-mono-pro {
 
 /* ─── Global Mobile Responsive Overrides (Pure Styling — Safe) ─── */
 @media (max-width: 768px) {
-  html, body {
-    overflow-x: hidden;
-    width: 100%;
-    max-width: 100vw;
-  }
   main {
     width: 98% !important;
     padding: 1rem 0.5rem !important;
@@ -569,10 +564,14 @@ div.font-mono-pro {
 
 /* ─── Navbar Desktop/Mobile Visibility ─── */
 .nav-desktop { display: none !important; }
-@media (min-width: 768px) { .nav-desktop { display: flex !important; } }
+@media (min-width: 1150px) { .nav-desktop { display: flex !important; } }
 
 .nav-mobile { display: flex !important; }
 @media (min-width: 768px) { .nav-mobile { display: none !important; } }
+
+/* ─── Navbar burger toggle (matches desktop-nav breakpoint) ─── */
+.nav-menu-toggle { display: flex !important; }
+@media (min-width: 1150px) { .nav-menu-toggle { display: none !important; } }
 
 /* ─── Online Green Dot Indicator (Facebook / Slack Style) ─── */
 .online-dot-container {
