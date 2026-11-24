@@ -187,7 +187,7 @@ export default function ImportPage() {
 
   /* ══════════════════════════════════════ RENDER ══════════════════════════════════════ */
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', overflowX: 'clip' }}>
       <div className="orb orb-tl" style={{ opacity: 0.12 }} />
       <div className="orb orb-bl" style={{ opacity: 0.08 }} />
 
