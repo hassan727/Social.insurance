@@ -590,7 +590,7 @@ export default function Navbar() {
 
             {/* ── Mobile Menu Toggle ── */}
             <button
-              className="show-mobile-flex"
+              className="nav-menu-toggle"
               onClick={() => setMobileOpen(prev => !prev)}
               aria-label={mobileOpen ? 'إغلاق القائمة' : 'فتح القائمة'}
               aria-expanded={mobileOpen}
