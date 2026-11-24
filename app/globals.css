@@ -507,7 +507,6 @@ div.font-mono-pro {
   }
   .input-dark {
     font-size: 13px !important;
-    padding: 14px 44px 14px 44px !important;
   }
   .orb {
     display: none !important; /* Save GPU/battery on mobile */
@@ -634,3 +633,4 @@ div.font-mono-pro {
 .spin {
   animation: spin 1s linear infinite;
 }
+
