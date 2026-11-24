@@ -1946,6 +1946,7 @@ export default function LookupPage() {
                     {/* ═══ MASTER PROFILE TABS SWITCHER ═══ */}
                     <div style={{
                       display: 'flex',
+                      flexWrap: 'wrap',
                       alignItems: 'center',
                       gap: 8,
                       padding: '6px',
@@ -1958,7 +1959,8 @@ export default function LookupPage() {
                         type="button"
                         onClick={() => setActiveProfileTab('unified')}
                         style={{
-                          flex: 1,
+                          flex: '1 1 200px',
+                          minWidth: 0,
                           display: 'inline-flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -1988,7 +1990,8 @@ export default function LookupPage() {
                         type="button"
                         onClick={() => setActiveProfileTab('timeline')}
                         style={{
-                          flex: 1,
+                          flex: '1 1 200px',
+                          minWidth: 0,
                           display: 'inline-flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -2567,3 +2570,4 @@ export default function LookupPage() {
     </div>
   );
 }
+
