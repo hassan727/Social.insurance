@@ -239,7 +239,7 @@ export default function SmartImportPage() {
   };
 
   return (
-    <>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', overflowX: 'clip' }}>
       <div className="orb orb-tl" />
       <div className="orb orb-bl" />
 
@@ -614,6 +614,6 @@ export default function SmartImportPage() {
           </motion.div>
         )}
       </main>
-    </>
+    </div>
   );
 }
