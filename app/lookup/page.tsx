@@ -1804,7 +1804,7 @@ export default function LookupPage() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
                     {/* ═══ STICKY QUICK-ID BANNER ═══ */}
-                    <div style={{
+                    <div className="quick-id-banner" style={{
                       position: 'sticky',
                       top: 0,
                       zIndex: 30,
@@ -2570,4 +2570,5 @@ export default function LookupPage() {
     </div>
   );
 }
+
 
