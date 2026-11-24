@@ -514,7 +514,7 @@ export default function LookupPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', overflowX: 'clip' }}>
       <div className="orb orb-tl" style={{ opacity: 0.12 }} />
       <div className="orb orb-bl" style={{ opacity: 0.08 }} />
 
@@ -522,7 +522,7 @@ export default function LookupPage() {
 
         {/* ═══ VIEW MODE SELECTOR: 360° Lookup vs Operations Log (CRUD & Export) ═══ */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
-          <div style={{ display: 'inline-flex', padding: 4, borderRadius: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)' }}>
+          <div style={{ display: 'inline-flex', flexWrap: 'wrap', padding: 4, borderRadius: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)' }}>
             <button
               type="button"
               onClick={() => setViewMode('lookup')}
@@ -619,7 +619,7 @@ export default function LookupPage() {
                     </p>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     {/* Switch to Operations Table */}
                     <button
                       type="button"
