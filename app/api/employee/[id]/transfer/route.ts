@@ -58,9 +58,10 @@ export async function POST(
     }
 
     // Authorization = the verified session. The typed reviewer name is only a
-    // display label; the record carries what the session actually proves.
+    // display label; the suffix states plainly WHAT the session proves: the
+    // single shared admin login, not a per-person verified identity.
     const sessionRole = await getSessionRole();
-    const recordedBy = sessionRole ? `${String(confirmed_by).trim()} (${sessionRole})` : String(confirmed_by).trim();
+    const recordedBy = sessionRole ? `${String(confirmed_by).trim()} (shared ${sessionRole} session)` : String(confirmed_by).trim();
 
     // confirm_account_transfer is executable by the service_role Postgres role
     // ONLY (anon/authenticated EXECUTE revoked): the session check above plus

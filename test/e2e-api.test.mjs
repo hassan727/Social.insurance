@@ -55,7 +55,7 @@ const mkJwt = (role) => b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role }
 const SVC_JWT = mkJwt('service_role');
 const AUTHED_JWT = mkJwt('authenticated');
 writeFileSync('/tmp/postgrest.conf', `db-uri = "postgres://authenticator:authpw@127.0.0.1:5545/e2e"\ndb-schemas = "public"\ndb-anon-role = "anon"\nserver-port = 3001\njwt-secret = "${JWT_SECRET}"\n`);
-const pr = spawn('/tmp/postgrest', ['/tmp/postgrest.conf'], { stdio: 'ignore' });
+let pr = spawn('/tmp/postgrest', ['/tmp/postgrest.conf'], { stdio: 'ignore' });
 // 3. Prefix-strip proxy (supabase-js appends /rest/v1)
 http.createServer((req, res) => {
   const u = req.url.replace(/^\/rest\/v1/, '');
@@ -1099,6 +1099,38 @@ check('CAT11: direct table READ with authenticated role -> denied', (dAuthed.sta
 const dRpc = await pgrest('/rpc/resolve_current_company', ANON_JWT, { method: 'POST', body: JSON.stringify({ p_employee_id: id71, p_as_of: yday }) });
 const dRpcJ = await dRpc.json().catch(() => ({}));
 check('CAT11: direct read-only RPC with anon key -> denied', (dRpc.status === 401 || dRpc.status === 403) && String(dRpcJ.code || '') === '42501', `status=${dRpc.status} ${JSON.stringify(dRpcJ).slice(0, 120)}`);
+// Views run with their owner's rights, so a missed view would bypass the
+// table denials; ALL TABLES covers them — prove it on a real view.
+const dView = await pgrest('/v_pending_conflicts?select=*&limit=1', ANON_JWT);
+const dViewJ = await dView.json().catch(() => ({}));
+check('CAT11: direct VIEW read with anon key -> denied (no view bypass)', (dView.status === 401 || dView.status === 403) && String(dViewJ.code || '') === '42501', `status=${dView.status} ${JSON.stringify(dViewJ).slice(0, 120)}`);
+// Objects created AFTER the lockdown must inherit the closed posture via the
+// migration-runner role's default privileges (tests run migrations as
+// postgres, the same role shape as the project's change path).
+await db.query(`CREATE TABLE public.post07_future_check (id int); CREATE OR REPLACE FUNCTION public.post07_future_fn() RETURNS int LANGUAGE sql STABLE AS $$ SELECT 1 $$;`);
+// Supabase reloads the PostgREST schema cache automatically on DDL. This
+// scratch PostgREST build ignores NOTIFY pgrst, so restart it to force the
+// same reload — otherwise new objects are invisible (404) rather than
+// privilege-denied and the test proves nothing.
+pr.kill(); await sleep(500);
+pr = spawn('/tmp/postgrest', ['/tmp/postgrest.conf'], { stdio: 'ignore' });
+await sleep(1500);
+const dFutureT = await pgrest('/post07_future_check?select=*', ANON_JWT);
+const dFutureTJ = await dFutureT.json().catch(() => ({}));
+const dFutureF = await pgrest('/rpc/post07_future_fn', ANON_JWT, { method: 'POST', body: '{}' });
+const dFutureFJ = await dFutureF.json().catch(() => ({}));
+check('CAT11: NEW table + function created after lockdown -> anon denied by default privileges',
+  (dFutureT.status === 401 || dFutureT.status === 403) && String(dFutureTJ.code || '') === '42501' &&
+  (dFutureF.status === 401 || dFutureF.status === 403) && String(dFutureFJ.code || '') === '42501',
+  `table=${dFutureT.status}/${dFutureTJ.code} fn=${dFutureF.status}/${dFutureFJ.code}`);
+// The positive half: the event trigger must ALSO hand the new objects to
+// service_role, or the app's only data path breaks for future migrations.
+const sFutureT = await pgrest('/post07_future_check?select=*', SVC_JWT);
+const sFutureF = await pgrest('/rpc/post07_future_fn', SVC_JWT, { method: 'POST', body: '{}' });
+check('CAT11: NEW table + function still reachable by service_role (app path intact)',
+  sFutureT.status === 200 && sFutureF.status === 200,
+  `table=${sFutureT.status} fn=${sFutureF.status}`);
+await db.query(`DROP TABLE public.post07_future_check; DROP FUNCTION public.post07_future_fn();`);
 const apiNoAuth = await api('/api/employee?limit=1', { noAuth: true });
 check('CAT11: API route without session -> 401 (middleware gate)', apiNoAuth.status === 401, 'status=' + apiNoAuth.status);
 const pageNoAuth = await fetch('http://127.0.0.1:3100/lookup', { redirect: 'manual' });

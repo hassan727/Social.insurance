@@ -50,16 +50,23 @@ const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], { cwd: new URL('..'
 for (let i = 0; i < 60; i++) { try { await fetch('http://localhost:3100/api/company-accounts'); break; } catch { await sleep(1500); } }
 console.log('stack up');
 
-// Login via API and carry the session cookie into the browser
-const login = await fetch('http://localhost:3100/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin@insurance2026' }) });
-const cookiePair = ((login.headers.getSetCookie ? login.headers.getSetCookie()[0] : login.headers.get('set-cookie')) || '').split(';')[0];
-const [cookieName, cookieValue] = cookiePair.split('=');
-check('login issued session cookie', !!cookieValue, '');
-
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-await context.addCookies([{ name: cookieName, value: cookieValue, domain: 'localhost', path: '/' }]);
 const page = await context.newPage();
+
+// 0) The gate: logged-out, a page request lands on /login; log in through
+// the REAL login form (no API shortcut) so the tested path is the user's.
+await page.goto('http://localhost:3100/smart-import', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await sleep(2500);
+check('gate: logged-out page request redirected to /login', page.url().includes('/login'), page.url());
+await page.screenshot({ path: '/downloads/ui-transfer-0-gate-login.png', fullPage: true });
+await page.locator('input[placeholder="أدخل اسم المستخدم"]').fill('admin');
+await page.locator('input[type="password"], input[placeholder="••••••••••"]').first().fill('admin@insurance2026');
+await page.locator('button[type="submit"]').first().click();
+await page.waitForURL(/\/lookup/, { timeout: 30000 });
+await sleep(2000);
+check('gate: UI login lands on /lookup (session works through middleware)', page.url().includes('/lookup'), page.url());
+await page.screenshot({ path: '/downloads/ui-transfer-0b-logged-in.png', fullPage: true });
 try {
   // 1) Import an MG file containing an EG employee -> reviewed conflict
   await page.goto('http://localhost:3100/smart-import', { waitUntil: 'domcontentloaded', timeout: 60000 });
