@@ -198,6 +198,14 @@ const sheetSpCount = (await db.query(`SELECT count(*)::int AS c FROM dynamic_she
 check('spaced sheet name maps to SAME source (no duplicate fabricated)', sheetAfterSp && sheetAfterSp.id === sheetAfter.id && sheetSpCount === 1, 'id=' + (sheetAfterSp||{}).id + ' count=' + sheetSpCount);
 const mSp = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
 check('same-source correction via spaced name applied', String((mSp?.consolidated_data || {})['الراتب']) === '9000', JSON.stringify((mSp?.consolidated_data || {})['الراتب']));
+// same-batch duplicate rows with DIFFERENT values: deterministic newest-row wins,
+// but the import must WARN (never presented as silently verified)
+const dupRows = mkXlsxB([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': 'محاسب' }, { 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': 'محاسب أول' }]);
+const dup = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([dupRows]), 't6.xlsx'); fd.append('selected_sheets', '["SheetB"]'); fd.append('company_account', 'MG'); return fd; })() });
+const dupj = await dup.json().catch(() => ({}));
+const dupWarnings = (dupj.detailed_results?.SheetB?.warnings) || [];
+check('same-batch duplicate import succeeds', dup.status === 200, String(dup.status));
+check('same-batch duplicate with different values raises a visible warning', dupWarnings.length >= 1 && dupWarnings[0].includes('مكرر'), JSON.stringify(dupWarnings).slice(0, 140));
 
 const si = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); return fd; })() });
 check('smart-import execute w/o account → 400 (no bypass)', si.status === 400, String(si.status));

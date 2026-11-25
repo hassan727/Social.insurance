@@ -644,7 +644,11 @@ export async function runOfficialPrintForensicAudit(
     }
 
     // ── التحليل الزمني الدقيق للتعيينات (تجاوز مشكلة التاريخ المصري والـ NaN) ──
-    const rawHire = masterRec?.hire_date || payRec?.hireDate || (incomingRec?.raw_data as Record<string, string>)?.['تاريخ استلام العمل'] || (masterRec?.consolidated_data as Record<string, string>)?.['تاريخ التعيين'] || '';
+    const masterConflicts = ((masterRec?.consolidated_data as Record<string, unknown> | null)?.field_conflicts || {}) as Record<string, unknown>;
+    const hireWithheld = !masterRec?.hire_date && !!(masterConflicts['hire_date'] || masterConflicts['تاريخ استلام العمل']);
+    // Withheld (cross-source conflict) hire date: no silent single-source
+    // fallback — the audit marks it needs-review instead of picking a value.
+    const rawHire = hireWithheld ? '' : (masterRec?.hire_date || payRec?.hireDate || (incomingRec?.raw_data as Record<string, string>)?.['تاريخ استلام العمل'] || (masterRec?.consolidated_data as Record<string, string>)?.['تاريخ التعيين'] || '');
     const parsedHire = parseEgyptianDate(rawHire);
     let isHiredAfterCutoff = false;
     let formattedHireDate = rawHire ? String(rawHire).trim() : '—';
@@ -682,7 +686,9 @@ export async function runOfficialPrintForensicAudit(
     let actionRequired = 'البيانات سليمة ومطابقة ✓';
 
     const inPrint = !!printRec;
-    const inPay = !!payRec && payRec.latestSalary > 0;
+    // A payroll record with an EXPLICIT 0 salary is still present evidence;
+    // only a missing record means "not in payroll".
+    const inPay = !!payRec;
     const hasIncomingS1 = !!(
       incDetails?.formType?.includes('1') ||
       incDetails?.crmNumber ||
@@ -758,9 +764,9 @@ export async function runOfficialPrintForensicAudit(
       salaryNotes: printRec?.insurance_salary && payRec?.latestSalary
         ? `أجر التأمين: ${printRec.insurance_salary} ج.م | الراتب الفعلي: ${payRec.latestSalary} ج.م`
         : '—',
-      hireDate: formattedHireDate,
+      hireDate: hireWithheld ? 'متعارض — يحتاج مراجعة' : formattedHireDate,
       insuranceStartDate: printRec?.subscription_start_date || masterRec?.insurance_start_date || '—',
-      dateNotes: isHiredAfterCutoff ? 'تعيين بعد تاريخ البرنت' : '—',
+      dateNotes: hireWithheld ? 'تاريخ الاستلام متعارض بين المصادر — يحتاج مراجعة' : (isHiredAfterCutoff ? 'تعيين بعد تاريخ البرنت' : '—'),
       foundInPrint: inPrint,
       foundInPayroll: inPay,
       foundInIncomingInsurance: !!incomingRec,

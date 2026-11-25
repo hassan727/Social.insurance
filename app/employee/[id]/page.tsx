@@ -336,7 +336,7 @@ export default function EmployeeProfilePage({
   ] as const;
 
   return (
-    <div style={{ padding: '24px 20px' }}>
+    <div style={{ padding: '24px 20px', overflowX: 'hidden' }}>
       {/* ── Back link ── */}
       <Link
           href="/employees"

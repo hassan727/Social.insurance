@@ -90,9 +90,18 @@ for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
   await page2.goto(`http://localhost:3100/employee/${empId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page2.waitForSelector('text=حقول تحتاج مراجعة', { timeout: 30000 }).catch(() => console.log('review card not found: ' + tag));
   await sleep(4000);
-  await page2.locator('text=محاسب أول').first().scrollIntoViewIfNeeded().catch(() => {});
-  await page2.locator('text=حقول تحتاج مراجعة').first().scrollIntoViewIfNeeded().catch(() => {});
+  await page2.locator('text=حقول تحتاج مراجعة').first().evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'nearest' })).catch(() => {});
   await sleep(800);
+  const overflow = await page2.evaluate(() => {
+    const de = document.documentElement;
+    const bad = [];
+    document.querySelectorAll('*').forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if ((r.right > de.clientWidth + 1 || r.left < -1) && bad.length < 8 && el.tagName !== 'HTML' && el.tagName !== 'BODY') bad.push(el.tagName + '.' + String(el.className).slice(0, 50) + ' l=' + Math.round(r.left) + ' r=' + Math.round(r.right));
+    });
+    return { scrollW: de.scrollWidth, clientW: de.clientWidth, bad };
+  });
+  console.log('overflow probe ' + tag + ':', JSON.stringify(overflow));
   await page2.screenshot({ path: `/downloads/e2e-field-conflict-profile-${tag}.png`, fullPage: false });
   console.log('shot: profile field conflict ' + tag);
   await page2.close();

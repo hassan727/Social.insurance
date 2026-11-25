@@ -76,6 +76,7 @@ export interface ImportResult {
   updated_employees: number;
   skipped_rows: number;
   errors: string[];
+  warnings?: string[];
   import_id: string;
 }
 
@@ -534,6 +535,8 @@ export async function importSheet(
   accountId: number | null = null
 ): Promise<ImportResult> {
   const errors: string[] = [];
+  const warnings: string[] = [];
+  const seenInFile = new Map<string, Record<string, unknown>>(); // employee id -> first row_data in this file
   let newEmployees = 0;
   let updatedEmployees = 0;
   let skippedRows = 0;
@@ -956,6 +959,22 @@ export async function importSheet(
             },
           });
 
+          {
+            const prev = seenInFile.get(matchedEmp.id);
+            if (prev) {
+              const diffKeys = Object.keys(rowData).filter((k) => {
+                const a = (rowData as Record<string, unknown>)[k];
+                const b = prev[k];
+                const blank = (x: unknown) => x === undefined || x === null || String(x).trim() === '';
+                return !blank(a) && !blank(b) && String(a) !== String(b);
+              });
+              if (diffKeys.length > 0) {
+                warnings.push(`صف مكرر لنفس الموظف (${rawName || rawNatId || rawCode}) في نفس الملف بقيم مختلفة في: ${diffKeys.join('، ')} — اعتُمد أحدث صف بالترتيب ويحتاج مراجعة، لم تُعتمد كقيمة موثقة`);
+              }
+            } else {
+              seenInFile.set(matchedEmp.id, rowData as Record<string, unknown>);
+            }
+          }
           if (currentSheetId) {
             sheetDataToInsert.push({
               sheet_id: currentSheetId,
@@ -1145,6 +1164,7 @@ export async function importSheet(
         updated_employees: updatedEmployees,
         skipped_rows: skippedRows,
         errors: errors,
+        warnings: warnings.length ? warnings : undefined,
         import_id: importLogId,
       };
     } catch (error) {
