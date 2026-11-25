@@ -56,7 +56,11 @@ interface ImportResult {
 
 export default function SmartImportPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [companyAccount, setCompanyAccount] = useState<'E.G' | 'm.g'>('E.G');
+  // Accounts come from the same source the API validates against
+  // (/api/company-accounts). Nothing is pre-selected: the operator must
+  // choose explicitly, and the code is validated server-side.
+  const [accounts, setAccounts] = useState<{ id: number; account_code: string; account_name: string }[]>([]);
+  const [companyAccount, setCompanyAccount] = useState<string>('');
   const [isDragging, setIsDragging] = useState(false);
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
@@ -94,6 +98,10 @@ export default function SmartImportPage() {
   const handlePreview = async () => {
     if (!selectedFile) {
       toast.error('يرجى اختيار ملف أولاً');
+      return;
+    }
+    if (!companyAccount) {
+      toast.error('يرجى اختيار حساب الشركة صراحةً أولاً');
       return;
     }
 
@@ -278,11 +286,11 @@ export default function SmartImportPage() {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {(['E.G', 'm.g'] as const).map((acc) => (
+            {accounts.map((acc) => (
               <button
-                key={acc}
-                onClick={() => setCompanyAccount(acc)}
-                className={companyAccount === acc ? 'btn-primary' : 'btn-ghost'}
+                key={acc.id}
+                onClick={() => setCompanyAccount(acc.account_code)}
+                className={companyAccount === acc.account_code ? 'btn-primary' : 'btn-ghost'}
                 style={{
                   padding: '14px 20px',
                   borderRadius: 12,
@@ -296,7 +304,7 @@ export default function SmartImportPage() {
                 }}
               >
                 <Building2 style={{ width: 16, height: 16 }} />
-                {acc === 'E.G' ? 'Egypt Gas (E.G)' : 'Modern Gas (m.g)'}
+                {acc.account_name || acc.account_code}
               </button>
             ))}
           </div>

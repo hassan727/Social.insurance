@@ -1051,22 +1051,65 @@ export async function getEmployeeFullDetails(params: {
   const masterAccountId = (masterEmp?.account_id as number | null) ?? null;
   const waradAccountId = resolveAccountText(incomingRecord?.company_account);
   let resolvedAccountId: number | null = null;
+  let accountContradiction = false;
   if (masterAccountId !== null && waradAccountId !== null) {
     if (masterAccountId === waradAccountId) {
       resolvedAccountId = masterAccountId;
     } else {
-      conflicts.push('تعارض حساب: الدليل ووارد التأمين ينسبان الموظف لحسابين مختلفين — عُرضت السجلات الشهرية بدون حصر بحساب وتحتاج مراجعة');
+      // FAIL CLOSED: a known contradiction withholds attributed monthly
+      // facts entirely — an unscoped fetch would merge both accounts' rows
+      // into one timeline, which is the original contamination bug.
+      accountContradiction = true;
+      const codeOf = (id: number) => (allAccounts || []).find((a) => a.id === id)?.account_code ?? String(id);
+      conflicts.push(`تعارض حساب: الدليل ينسب الموظف إلى "${codeOf(masterAccountId)}" بينما وارد التأمين ينسبه إلى "${codeOf(waradAccountId)}" — حُجبت السجلات الشهرية حتى حسم الحساب وتحتاج مراجعة`);
     }
   } else if (masterAccountId !== null || waradAccountId !== null) {
     resolvedAccountId = masterAccountId ?? waradAccountId;
     conflicts.push('نسبة الحساب معتمدة على مصدر واحد فقط — تحتاج تأكيداً من المصدر الآخر');
   }
 
+  // When neither source resolves an account, the monthly rows' OWN
+  // account_id is the remaining source. If every attributed row agrees on
+  // exactly one account, scope to it (single-source, noted). If the rows
+  // span several accounts, FAIL CLOSED: withhold them rather than merge.
+  let withholdMonthly = resolvedAccountId === null;
+  if (resolvedAccountId === null && !accountContradiction && (hasValidNid || employee_code)) {
+    const probes: { account_id: number | null }[] = [];
+    for (const table of ['monthly_payroll_records', 'monthly_insurance_records'] as const) {
+      let q = supabaseServer.from(table).select('account_id');
+      if (hasValidNid) q = q.eq('national_id', cleanNid);
+      else if (employee_code) q = q.eq('employee_code', employee_code);
+      const { data: probeRows } = await q.limit(5000);
+      if (probeRows) probes.push(...(probeRows as { account_id: number | null }[]));
+    }
+    const byAccount = new Map<number, number>();
+    let unattributed = 0;
+    for (const row of probes) {
+      const aid = row.account_id;
+      if (aid === null || aid === undefined) unattributed++;
+      else byAccount.set(aid, (byAccount.get(aid) ?? 0) + 1);
+    }
+    const codeOf = (id: number) => (allAccounts || []).find((a) => a.id === id)?.account_code ?? String(id);
+    if (byAccount.size === 1) {
+      resolvedAccountId = [...byAccount.keys()][0];
+      withholdMonthly = false;
+      conflicts.push('نسبة الحساب مستمدة من السجلات الشهرية نفسها (مصدر واحد) — تحتاج تأكيداً');
+      if (unattributed > 0) {
+        conflicts.push(`${unattributed} سجل شهري بلا حساب مؤكد — أُقصي من العرض ويحتاج مراجعة`);
+      }
+    } else if (byAccount.size > 1) {
+      const parts = [...byAccount.entries()].map(([id, n]) => `"${codeOf(id)}" (${n})`);
+      conflicts.push(`تعارض حساب: السجلات الشهرية نفسها موزعة على حسابات متعددة: ${parts.join('، ')}${unattributed ? ` إضافة إلى ${unattributed} بلا حساب` : ''} — حُجبت السجلات الشهرية حتى حسم الحساب`);
+    } else if (unattributed > 0) {
+      conflicts.push(`${unattributed} سجل شهري بلا أي نسبة حساب مؤكدة — حُجبت وتحتاج مراجعة`);
+    }
+  }
+
   // 3. Fetch all monthly payroll records for this employee — scoped to the
   // employee's account. Without a national_id or code there is NO fetch at
   // all (a name alone must never pull an unfiltered monthly scan).
   let payrollRecords: Record<string, unknown>[] = [];
-  if (hasValidNid || employee_code) {
+  if ((hasValidNid || employee_code) && !withholdMonthly && !accountContradiction) {
     let payrollQuery = supabaseServer.from('monthly_payroll_records').select('*');
     if (hasValidNid) {
       payrollQuery = payrollQuery.eq('national_id', cleanNid);
@@ -1101,7 +1144,7 @@ export async function getEmployeeFullDetails(params: {
   // 4. Fetch all monthly insurance records for this employee — same
   // account scoping and no-identifier guard as payroll.
   let monthlyInsRecords: Record<string, unknown>[] = [];
-  if (hasValidNid || employee_code) {
+  if ((hasValidNid || employee_code) && !withholdMonthly && !accountContradiction) {
     let miQuery = supabaseServer.from('monthly_insurance_records').select('*');
     if (hasValidNid) {
       miQuery = miQuery.eq('national_id', cleanNid);

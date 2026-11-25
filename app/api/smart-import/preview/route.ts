@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { supabaseServer } from '@/lib/supabaseServer';
+import { resolveAccountId } from '@/lib/accountResolver';
 
 export async function POST(request: Request) {
   try {
@@ -12,8 +13,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'الملف مطلوب' }, { status: 400 });
     }
 
-    if (!companyAccount || !['E.G', 'm.g'].includes(companyAccount)) {
-      return NextResponse.json({ error: 'حساب الشركة مطلوب (E.G أو m.g)' }, { status: 400 });
+    // Same accounts source as execute: explicit selection, validated against
+    // company_accounts — no hardcoded allowlist, no default.
+    if (!companyAccount || !(await resolveAccountId(companyAccount))) {
+      return NextResponse.json({ error: 'يجب اختيار حساب شركة صالح صراحةً قبل المعاينة — لا يوجد حساب افتراضي' }, { status: 400 });
     }
 
     // Check file size (max 50MB for multi-sheet files)
