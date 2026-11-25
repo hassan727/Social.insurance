@@ -281,6 +281,49 @@ export default function EmployeeProfilePage({
   }
 
   const { employee: emp, sheet_data, sources_found, history, open_discrepancies, meta } = data;
+  // Cross-source field conflicts recorded by the consolidation merge: the
+  // scalar is withheld (never auto-selected); each competing value is shown
+  // with its source. Conflicting scalar fields render as "محتاج مراجعة"
+  // instead of a blank that would read as settled/empty.
+  const fieldConflicts = ((emp.consolidated_data as Record<string, unknown> | null)?.field_conflicts ?? {}) as Record<string, { source: string; value: unknown; at: string }[]>;
+  // Dedupe: raw alias keys and their canonical key describe the same fact.
+  const ALIAS_TO_CANONICAL: Record<string, string> = {
+    'الكود': 'employee_code', 'الرقم القومى': 'national_id',
+    'job_title': 'current_job_title', 'الوظيفه': 'current_job_title',
+    'region': 'current_region', 'المنطقه': 'current_region',
+    'department': 'current_department', 'الاداره': 'current_department',
+    'status': 'current_status', 'الحاله': 'current_status',
+    'الرقم التامينى': 'insurance_number', 'الرقم التاميني': 'insurance_number',
+    'الرقم التأميني': 'insurance_number', 'الرقم التأمينى': 'insurance_number',
+    'الحاله التامينيه': 'insurance_status', 'الحالة التأمينية': 'insurance_status',
+    'الاجر التامينى': 'insurance_salary',
+    'الوظيفه في التامينات': 'insurance_job_title',
+    'رقم الهاتف': 'phone_number', 'العنوان': 'address',
+    'تاريخ استلام العمل': 'hire_date',
+    'subscription_start_date': 'insurance_start_date', 'تاريخ بدايه الاشتراك': 'insurance_start_date',
+    'resignation_date': 'resignation_date', 'تاريخ الاستقاله': 'resignation_date',
+    'last_working_day': 'last_working_day', 'اخر يوم عمل': 'last_working_day',
+  };
+  const conflictFieldSet = new Set(Object.keys(fieldConflicts).filter((k) => {
+    if (!Array.isArray(fieldConflicts[k]) || fieldConflicts[k].length < 2) return false;
+    const canonical = ALIAS_TO_CANONICAL[k];
+    if (canonical && Array.isArray(fieldConflicts[canonical]) && fieldConflicts[canonical].length >= 2) return false;
+    return true;
+  }));
+  const FIELD_LABELS: Record<string, string> = {
+    employee_code: 'كود الموظف', national_id: 'الرقم القومي',
+    current_job_title: 'الوظيفة', current_region: 'المنطقة',
+    current_department: 'الإدارة', current_status: 'حالة العمل',
+    insurance_number: 'الرقم التأميني', insurance_status: 'الحالة التأمينية',
+    insurance_salary: 'الأجر التأميني', insurance_job_title: 'الوظيفة في التأمينات',
+    insurance_start_date: 'تاريخ بداية الاشتراك', phone_number: 'رقم الهاتف',
+    address: 'العنوان', hire_date: 'تاريخ استلام العمل',
+    resignation_date: 'تاريخ الاستقالة', last_working_day: 'آخر يوم عمل',
+  };
+  const cv = (field: string, value: string | number | null | undefined) =>
+    conflictFieldSet.has(field) ? '⚠ محتاج مراجعة' : (value ?? null);
+  const ca = (field: string, accent?: string) =>
+    conflictFieldSet.has(field) ? '#fbbf24' : accent;
   const criticalCount = open_discrepancies.filter((d) => d.severity === 'critical').length;
 
   const ALL_SHEETS = ['Database', 'Archives', 'Social Insurance', 'Incoming Insurance', 'Medical', 'Bank ACC', 'RES', 'New', 'HR Letter', 'Deductions', 'Requests', 'شغل تأمينات', 'أرقام وارد التأمين'];
@@ -452,23 +495,43 @@ export default function EmployeeProfilePage({
         {activeTab === 'overview' && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
 
+            {/* Cross-source field conflicts — withheld scalars, sources shown */}
+            {conflictFieldSet.size > 0 && (
+              <SectionCard title="حقول تحتاج مراجعة (تعارض بين المصادر)" icon={<AlertTriangle style={{ width: 14, height: 14 }} />} color="#fbbf24" badge={conflictFieldSet.size}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 2px' }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8' }}>لم تُختر قيمة تلقائيًا لهذه الحقول — تظهر كل قيمة مع مصدرها حتى تُحسم:</div>
+                  {Array.from(conflictFieldSet).map((field) => (
+                    <div key={field} style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: 10, padding: '8px 12px' }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: '#fbbf24', marginBottom: 4 }}>{FIELD_LABELS[field] || field}</div>
+                      {fieldConflicts[field].map((e, i) => (
+                        <div key={i} style={{ fontSize: 12, color: '#fde68a', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700 }}>{String(e.value)}</span>
+                          <span style={{ color: '#94a3b8' }}>(مصدر: {e.source})</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </SectionCard>
+            )}
+
             {/* Identity */}
             <SectionCard title="بيانات الهوية" icon={<User style={{ width: 14, height: 14 }} />} color="#6366f1">
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <InfoRow label="الرقم القومي" value={emp.national_id} mono icon={<Hash style={{ width: 9, height: 9 }} />} accent="#818cf8" />
-                <InfoRow label="كود الموظف" value={emp.employee_code} mono accent="#818cf8" />
+                <InfoRow label="الرقم القومي" value={cv('national_id', emp.national_id)} mono icon={<Hash style={{ width: 9, height: 9 }} />} accent={ca('national_id', '#818cf8')} />
+                <InfoRow label="كود الموظف" value={cv('employee_code', emp.employee_code)} mono accent={ca('employee_code', '#818cf8')} />
                 <InfoRow label="الحساب" value={emp.company_account} />
-                <InfoRow label="الحالة" value={emp.current_status} />
+                <InfoRow label="الحالة" value={cv('current_status', emp.current_status)} accent={ca('current_status')} />
               </div>
             </SectionCard>
 
             {/* Employment */}
             <SectionCard title="البيانات الوظيفية" icon={<Briefcase style={{ width: 14, height: 14 }} />} color="#38bdf8">
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <InfoRow label="الوظيفة" value={emp.current_job_title} />
-                <InfoRow label="الإدارة" value={emp.current_department} />
-                <InfoRow label="المنطقة" value={emp.current_region} />
-                <InfoRow label="تاريخ الاستلام" value={emp.hire_date} icon={<Calendar style={{ width: 9, height: 9 }} />} accent="#38bdf8" />
+                <InfoRow label="الوظيفة" value={cv('current_job_title', emp.current_job_title)} accent={ca('current_job_title')} />
+                <InfoRow label="الإدارة" value={cv('current_department', emp.current_department)} accent={ca('current_department')} />
+                <InfoRow label="المنطقة" value={cv('current_region', emp.current_region)} accent={ca('current_region')} />
+                <InfoRow label="تاريخ الاستلام" value={cv('hire_date', emp.hire_date)} icon={<Calendar style={{ width: 9, height: 9 }} />} accent={ca('hire_date', '#38bdf8')} />
                 {emp.resignation_date && (
                   <InfoRow label="تاريخ الاستقالة" value={emp.resignation_date} accent="#fb7185" />
                 )}
@@ -481,19 +544,19 @@ export default function EmployeeProfilePage({
             {/* Insurance */}
             <SectionCard title="بيانات التأمينات" icon={<Shield style={{ width: 14, height: 14 }} />} color="#34d399">
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <InfoRow label="الرقم التأميني" value={emp.insurance_number} mono accent="#34d399" />
-                <InfoRow label="الحالة التأمينية" value={emp.insurance_status} accent="#34d399" />
-                <InfoRow label="الأجر التأميني" value={emp.insurance_salary != null ? `${emp.insurance_salary.toLocaleString('ar-EG')} ج.م` : null} accent="#a3e635" />
-                <InfoRow label="الوظيفة في التأمينات" value={emp.insurance_job_title} />
-                <InfoRow label="تاريخ بداية الاشتراك" value={emp.insurance_start_date} icon={<Calendar style={{ width: 9, height: 9 }} />} />
+                <InfoRow label="الرقم التأميني" value={cv('insurance_number', emp.insurance_number)} mono accent={ca('insurance_number', '#34d399')} />
+                <InfoRow label="الحالة التأمينية" value={cv('insurance_status', emp.insurance_status)} accent={ca('insurance_status', '#34d399')} />
+                <InfoRow label="الأجر التأميني" value={cv('insurance_salary', emp.insurance_salary != null ? `${emp.insurance_salary.toLocaleString('ar-EG')} ج.م` : null)} accent={ca('insurance_salary', '#a3e635')} />
+                <InfoRow label="الوظيفة في التأمينات" value={cv('insurance_job_title', emp.insurance_job_title)} accent={ca('insurance_job_title')} />
+                <InfoRow label="تاريخ بداية الاشتراك" value={cv('insurance_start_date', emp.insurance_start_date)} icon={<Calendar style={{ width: 9, height: 9 }} />} accent={ca('insurance_start_date')} />
               </div>
             </SectionCard>
 
             {/* Contact */}
             <SectionCard title="معلومات الاتصال" icon={<Phone style={{ width: 14, height: 14 }} />} color="#f59e0b">
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
-                <InfoRow label="رقم الهاتف" value={emp.phone_number} mono icon={<Phone style={{ width: 9, height: 9 }} />} accent="#f59e0b" />
-                <InfoRow label="العنوان" value={emp.address} icon={<MapPin style={{ width: 9, height: 9 }} />} />
+                <InfoRow label="رقم الهاتف" value={cv('phone_number', emp.phone_number)} mono icon={<Phone style={{ width: 9, height: 9 }} />} accent={ca('phone_number', '#f59e0b')} />
+                <InfoRow label="العنوان" value={cv('address', emp.address)} icon={<MapPin style={{ width: 9, height: 9 }} />} accent={ca('address')} />
               </div>
             </SectionCard>
 

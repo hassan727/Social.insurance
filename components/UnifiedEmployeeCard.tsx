@@ -292,7 +292,7 @@ export default function UnifiedEmployeeCard({ details, onSwitchToTimeline }: Pro
             <CopyableBadge label="الرقم التأميني الموحد" value={soc?.insuranceNumber || (details.incomingInsurance.record?.insurance_number as string)} mono accent="#34d399" />
             <CopyableBadge label="الوظيفة الفعلية (بالشركة)" value={u?.jobTitle || (details.incomingInsurance.record?.job_title as string)} />
             <CopyableBadge label="الوظيفة في التأمينات (س1)" value={soc?.insuranceJobTitle || (details.incomingInsurance.record?.insurance_job_title as string) || '—'} accent="#c4b5fd" />
-            <CopyableBadge label="الأجر التأميني" value={soc?.insuranceSalary ? `${Number(soc.insuranceSalary).toLocaleString('ar-EG')} ج.م` : '—'} mono accent="#fde047" />
+            <CopyableBadge label="الأجر التأميني" value={soc?.insuranceSalary !== undefined && soc?.insuranceSalary !== null && soc?.insuranceSalary !== '' && soc?.insuranceSalary !== '—' ? `${Number(soc.insuranceSalary).toLocaleString('ar-EG')} ج.م` : '—'} mono accent="#fde047" />
             <CopyableBadge label="الشركة (Account)" value={u?.companyAccount || details.incomingInsurance.company_account} mono accent="#34d399" />
             <CopyableBadge label="تاريخ استلام العمل" value={u?.hireDate || (details.incomingInsurance.record?.hire_date as string) || '—'} mono />
             <CopyableBadge label="المنطقة / الفرع" value={u?.region || (details.incomingInsurance.record?.region as string) || '—'} />
@@ -664,14 +664,14 @@ export default function UnifiedEmployeeCard({ details, onSwitchToTimeline }: Pro
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 12 }}>
           <CopyableBadge label="الرقم التأميني" value={soc?.insuranceNumber || details.incomingInsurance.record?.insurance_number} mono accent="#a78bfa" />
           <CopyableBadge label="الحالة التأمينية" value={soc?.insuranceStatus || details.incomingInsurance.record?.insurance_status} accent="#34d399" />
-          <CopyableBadge label="الأجر التأميني" value={soc?.insuranceSalary ? `${Number(soc.insuranceSalary).toLocaleString('ar-EG')} ج.م` : '—'} mono accent="#38bdf8" />
+          <CopyableBadge label="الأجر التأميني" value={soc?.insuranceSalary !== undefined && soc?.insuranceSalary !== null && soc?.insuranceSalary !== '' && soc?.insuranceSalary !== '—' ? `${Number(soc.insuranceSalary).toLocaleString('ar-EG')} ج.م` : '—'} mono accent="#38bdf8" />
           <CopyableBadge label="الوظيفة في التأمينات" value={soc?.insuranceJobTitle || details.incomingInsurance.record?.insurance_job_title} />
           <CopyableBadge label="تاريخ بداية الاشتراك" value={soc?.subscriptionStartDate || details.incomingInsurance.record?.subscription_start_date} mono />
           <CopyableBadge label="طريقة التوريد ومكتب التأمين" value={soc?.supplyMethod || details.incomingInsurance.record?.supply_method || '—'} />
           <CopyableBadge label="رقم الـ CRM" value={soc?.crmNumber || details.incomingInsurance.record?.crm_number || '—'} mono />
           {workIns && (
             <>
-              <CopyableBadge label="الأجر الشامل (شغل تأمينات)" value={workIns.totalSalary ? `${Number(workIns.totalSalary).toLocaleString('ar-EG')} ج.م` : '—'} mono accent="#fde047" />
+              <CopyableBadge label="الأجر الشامل (شغل تأمينات)" value={workIns.totalSalary !== undefined && workIns.totalSalary !== null && workIns.totalSalary !== '' && workIns.totalSalary !== '—' ? `${Number(workIns.totalSalary).toLocaleString('ar-EG')} ج.م` : '—'} mono accent="#fde047" />
               <CopyableBadge label="أيام عمل شهور (5 - 6 - 7)" value={`ش5: ${workIns.month5} | ش6: ${workIns.month6} | ش7: ${workIns.month7}`} mono accent="#6ee7b7" />
             </>
           )}

@@ -155,6 +155,49 @@ const mAfterZero = (await db.query(`SELECT consolidated_data FROM employees_mast
 const led = (mAfterZero?.consolidated_data || {}).financial_ledger || {};
 check('classic route: explicit 0 attendance recorded (not dropped)', String((led.attendance_by_month || {})['12']) === '0', JSON.stringify(led.attendance_by_month || null));
 check('classic route: explicit 0 salary recorded (not dropped)', String((led.salaries_by_month || {})['12']) === '0', JSON.stringify(led.salaries_by_month || null));
+// reimport SAME source (sheet name) must keep source identity (same dynamic_sheet id,
+// no fabricated new source) and the corrected value must take effect
+const sheetBefore = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name='Sheet1'`)).rows[0];
+const smartCorr = mkXlsx([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': 'محاسب', 'الراتب': 8000 }]);
+const sm2 = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([smartCorr]), 't2.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+check('smart reimport same sheet succeeds', sm2.status === 200, String(sm2.status));
+const sheetAfter = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name='Sheet1'`)).rows[0];
+check('reimport keeps source identity (same sheet id, no fabricated new source)', sheetBefore && sheetAfter && sheetBefore.id === sheetAfter.id, (sheetBefore||{}).id + ' vs ' + (sheetAfter||{}).id);
+const mAfterRe = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+check('reimport same-source correction applied', String((mAfterRe?.consolidated_data || {})['الراتب']) === '8000', JSON.stringify((mAfterRe?.consolidated_data || {})['الراتب']));
+
+// cross-source disagreement (different sheet = independent source): scalar must be
+// WITHHELD (NULL), conflict recorded with both sources, lookup details surfaces it
+const mkXlsxB = (rows) => { const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'SheetB'); return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })); };
+const smartConflict = mkXlsxB([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': 'محاسب أول' }]);
+const sc = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([smartConflict]), 't3.xlsx'); fd.append('selected_sheets', '["SheetB"]'); fd.append('company_account', 'MG'); return fd; })() });
+check('smart import conflicting second source succeeds', sc.status === 200, String(sc.status));
+const mConf = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+const fc = (mConf?.consolidated_data || {}).field_conflicts || {};
+check('cross-source: scalar column WITHHELD (NULL, not latest-upload win)', mConf.current_job_title === null, String(mConf.current_job_title));
+check('cross-source: blob scalar withheld', (mConf?.consolidated_data || {})['الوظيفه'] === undefined, JSON.stringify((mConf?.consolidated_data || {})['الوظيفه']));
+check('cross-source: conflict records BOTH sources', Array.isArray(fc['الوظيفه']) && fc['الوظيفه'].length === 2 && new Set(fc['الوظيفه'].map((e) => e.source)).size === 2, JSON.stringify(fc['الوظيفه'] || null).slice(0, 160));
+const dConf = await (await api('/api/lookup/details?national_id=55555555555555')).json();
+check('lookup details surfaces field conflict with sources', JSON.stringify(dConf.details?.conflicts || []).includes('الوظيفة') && JSON.stringify(dConf.details?.conflicts || []).includes('محاسب أول'), JSON.stringify((dConf.details?.conflicts || []).slice(-1)).slice(0, 160));
+check('lookup details returns structured field_conflicts', !!((dConf.details?.field_conflicts || {})['الوظيفه']), 'field_conflicts present');
+// same-source correction resolving the conflict: fix SheetB to agree -> value restored, conflict cleared
+const smartFix = mkXlsxB([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': 'محاسب' }]);
+const sf = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([smartFix]), 't4.xlsx'); fd.append('selected_sheets', '["SheetB"]'); fd.append('company_account', 'MG'); return fd; })() });
+check('correcting reimport succeeds', sf.status === 200, String(sf.status));
+const mFix = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+check('correction: agreement restores scalar', mFix.current_job_title === 'محاسب', String(mFix.current_job_title));
+check('correction: conflict cleared on convergence', !((mFix?.consolidated_data || {}).field_conflicts || {})['الوظيفه'], JSON.stringify((mFix?.consolidated_data || {}).field_conflicts || null));
+// source identity across sheet-name FORMATTING differences ('Sheet 1' vs 'Sheet1'
+// normalize to the same registered sheet) — no duplicate source fabricated
+const mkXlsxSp = (rows) => { const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet 1'); return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })); };
+const smartSp = mkXlsxSp([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': 'محاسب', 'الراتب': 9000 }]);
+const ssp = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([smartSp]), 't5.xlsx'); fd.append('selected_sheets', '["Sheet 1"]'); fd.append('company_account', 'MG'); return fd; })() });
+check('import with spaced sheet name succeeds', ssp.status === 200, String(ssp.status));
+const sheetAfterSp = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name='Sheet1'`)).rows[0];
+const sheetSpCount = (await db.query(`SELECT count(*)::int AS c FROM dynamic_sheets WHERE sheet_name ILIKE 'Sheet%1'`)).rows[0].c;
+check('spaced sheet name maps to SAME source (no duplicate fabricated)', sheetAfterSp && sheetAfterSp.id === sheetAfter.id && sheetSpCount === 1, 'id=' + (sheetAfterSp||{}).id + ' count=' + sheetSpCount);
+const mSp = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+check('same-source correction via spaced name applied', String((mSp?.consolidated_data || {})['الراتب']) === '9000', JSON.stringify((mSp?.consolidated_data || {})['الراتب']));
 
 const si = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); return fd; })() });
 check('smart-import execute w/o account → 400 (no bypass)', si.status === 400, String(si.status));

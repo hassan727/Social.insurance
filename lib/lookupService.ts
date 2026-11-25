@@ -940,6 +940,10 @@ export interface EmployeeDetailsResult {
     employee_name: string | null;
   };
   conflicts: string[];
+  // Cross-source field disagreements detected by the consolidation merge:
+  // field key -> per-source newest values. The scalar value is WITHHELD
+  // (never auto-selected); every competing value is shown with its source.
+  field_conflicts?: Record<string, { source: string; value: unknown; at: string }[]>;
   accountDisplay?: {
     status: 'resolved' | 'conflict' | 'unknown';
     code: string | null;
@@ -1606,6 +1610,16 @@ export async function getEmployeeFullDetails(params: {
     raw: rq,
   }));
 
+  // Explicit 0 is meaningful and preserved; a missing/blank value is '—',
+  // never coerced to an invented 0.
+  const pickKeepZero = (...vals: unknown[]): string | number => {
+    for (const v of vals) {
+      if (v === undefined || v === null) continue;
+      if (typeof v === 'string' && v.trim() === '') continue;
+      return v as string | number;
+    }
+    return '—';
+  };
   // 8. شغل تأمينات
   const workInsRow = sheetsByName['شغل تامينات']?.[0] || sheetsByName['شغل تامينات ']?.[0] || {};
   let workInsuranceData: UnifiedEmployeeProfile['workInsurance'] = null;
@@ -1614,9 +1628,9 @@ export async function getEmployeeFullDetails(params: {
       month5: (workInsRow['شهر 5'] as string | number) || workInsRow.month_5 as string | number || '—',
       month6: (workInsRow['شهر 6'] as string | number) || workInsRow.month_6 as string | number || '—',
       month7: (workInsRow['شهر 7'] as string | number) || workInsRow.month_7 as string | number || '—',
-      totalMonths: (workInsRow['عدد اشهر العمل'] as string | number) || workInsRow.work_months as string | number || 0,
-      totalSalary: (workInsRow['الاجر الشامل'] as string | number) || workInsRow.gross_salary as string | number || 0,
-      insuranceSalary: (workInsRow['الاجر التامينى'] as string | number) || workInsRow.insurance_salary as string | number || 0,
+      totalMonths: pickKeepZero(workInsRow['عدد اشهر العمل'], workInsRow.work_months),
+      totalSalary: pickKeepZero(workInsRow['الاجر الشامل'], workInsRow.gross_salary),
+      insuranceSalary: pickKeepZero(workInsRow['الاجر التامينى'], workInsRow.insurance_salary),
       raw: workInsRow,
     };
   }
@@ -1628,7 +1642,7 @@ export async function getEmployeeFullDetails(params: {
     socialInsData = {
       insuranceStatus: (socialRow['الحاله التامينيه'] as string) || (socialRow.insurance_status as string) || '',
       insuranceNumber: (socialRow['الرقم التامينى'] as string) || (socialRow.insurance_number as string) || '',
-      insuranceSalary: (socialRow['الاجر التامينى'] as string | number) || (socialRow.insurance_salary as string | number) || 0,
+      insuranceSalary: pickKeepZero(socialRow['الاجر التامينى'], socialRow.insurance_salary),
       insuranceJobTitle: (socialRow['الوظيفه في التامينات'] as string) || (socialRow.insurance_job_title as string) || '',
       subscriptionStartDate: (socialRow['تاريخ بدايه الاشتراك'] as string) || (socialRow.subscription_start_date as string) || '',
       supplyMethod: (socialRow['طريقه التوريد'] as string) || (socialRow.supply_method as string) || '',
@@ -1752,7 +1766,51 @@ export async function getEmployeeFullDetails(params: {
       }
     : computeS6Date(s6Year, s6Month, s6WorkDays, isActive, hasResignation, recordedEndDate, resignationType);
 
+  // Generic cross-source field conflicts recorded by the consolidation
+  // merge (same-fact disagreement between independent sources, no automatic
+  // selection). Surfaced in the SAME conflicts list the profile already
+  // shows — values labeled with their sources, scalar stays withheld.
+  const FIELD_LABELS: Record<string, string> = {
+    employee_code: 'كود الموظف', national_id: 'الرقم القومي',
+    current_job_title: 'الوظيفة', current_region: 'المنطقة',
+    current_department: 'الإدارة', current_status: 'حالة العمل',
+    insurance_number: 'الرقم التأميني', insurance_status: 'الحالة التأمينية',
+    insurance_salary: 'الأجر التأميني', insurance_job_title: 'الوظيفة في التأمينات',
+    insurance_start_date: 'تاريخ بداية الاشتراك', phone_number: 'رقم الهاتف',
+    address: 'العنوان', hire_date: 'تاريخ استلام العمل',
+    resignation_date: 'تاريخ الاستقالة', last_working_day: 'آخر يوم عمل',
+  };
+  const fieldConflicts = ((masterEmp?.consolidated_data as Record<string, unknown> | null)?.field_conflicts || {}) as Record<string, { source: string; value: unknown; at: string }[]>;
+  // Dedupe: a raw alias key and its canonical key describe the SAME fact;
+  // when both are recorded, show the canonical one only.
+  const ALIAS_TO_CANONICAL: Record<string, string> = {
+    'الكود': 'employee_code', 'الرقم القومى': 'national_id',
+    'job_title': 'current_job_title', 'الوظيفه': 'current_job_title',
+    'region': 'current_region', 'المنطقه': 'current_region',
+    'department': 'current_department', 'الاداره': 'current_department',
+    'status': 'current_status', 'الحاله': 'current_status',
+    'الرقم التامينى': 'insurance_number', 'الرقم التاميني': 'insurance_number',
+    'الرقم التأميني': 'insurance_number', 'الرقم التأمينى': 'insurance_number',
+    'الحاله التامينيه': 'insurance_status', 'الحالة التأمينية': 'insurance_status',
+    'الاجر التامينى': 'insurance_salary',
+    'الوظيفه في التامينات': 'insurance_job_title',
+    'رقم الهاتف': 'phone_number', 'العنوان': 'address',
+    'تاريخ استلام العمل': 'hire_date',
+    'subscription_start_date': 'insurance_start_date', 'تاريخ بدايه الاشتراك': 'insurance_start_date',
+    'resignation_date': 'resignation_date', 'تاريخ الاستقاله': 'resignation_date',
+    'last_working_day': 'last_working_day', 'اخر يوم عمل': 'last_working_day',
+  };
+  for (const [field, entries] of Object.entries(fieldConflicts)) {
+    if (!Array.isArray(entries) || entries.length < 2) continue;
+    const canonical = ALIAS_TO_CANONICAL[field];
+    if (canonical && Array.isArray(fieldConflicts[canonical]) && fieldConflicts[canonical].length >= 2) continue;
+    const label = FIELD_LABELS[field] || field;
+    const parts = entries.map((e) => `"${String(e.value)}" (مصدر: ${e.source})`).join(' مقابل ');
+    conflicts.push(`تعارض ${label}: ${parts} — لم تُختر قيمة تلقائيًا ويحتاج مراجعة`);
+  }
+
   return {
+    field_conflicts: fieldConflicts,
     identifiers: {
       national_id: national_id || (incomingRecord?.national_id as string) || cleanDbNid || null,
       employee_code: employee_code || (incomingRecord?.employee_code as string) || cleanDbCode || null,
