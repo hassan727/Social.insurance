@@ -802,6 +802,48 @@ export async function importSheet(
       }
     }
 
+    // Per-account source catalog (confirmed mixed-source model): the source
+    // identity is (workbook sheet, ACCOUNT). Rows resolved to a different
+    // account write their contribution to that account's own catalog entry,
+    // never into the operator-selected account's sheet.
+    const sheetIdByAccount = new Map<number | null, string>();
+    if (currentSheetId) sheetIdByAccount.set(accountId, currentSheetId);
+    const sheetIdForAccount = async (acct: number | null): Promise<string | undefined> => {
+      const hit = sheetIdByAccount.get(acct);
+      if (hit) return hit;
+      if (acct === null) return currentSheetId;
+      const { data: existing } = await supabaseServer.from('dynamic_sheets')
+        .select('id').eq('account_id', acct).eq('sheet_name', sheetName).maybeSingle();
+      if (existing?.id) {
+        sheetIdByAccount.set(acct, existing.id as string);
+        return existing.id as string;
+      }
+      const { data: inserted } = await supabaseServer.from('dynamic_sheets').insert({
+        sheet_name: sheetName,
+        display_name: sheetName,
+        description: `ورقة "${sheetName}" - تم التسجيل التلقائي`,
+        column_definitions: toJson(columnDefs),
+        matching_keys: ['employee_code', 'national_id', 'employee_name'],
+        primary_key_field: 'employee_code',
+        is_active: true,
+        is_master_source: false,
+        update_strategy: 'merge',
+        total_columns: columnDefs.length,
+        account_id: acct,
+      }).select('id').maybeSingle();
+      if (inserted?.id) {
+        sheetIdByAccount.set(acct, inserted.id as string);
+        return inserted.id as string;
+      }
+      const { data: winner } = await supabaseServer.from('dynamic_sheets')
+        .select('id').eq('account_id', acct).eq('sheet_name', sheetName).maybeSingle();
+      if (winner?.id) {
+        sheetIdByAccount.set(acct, winner.id as string);
+        return winner.id as string;
+      }
+      return undefined;
+    };
+
     // Unmapped-column guard: a column present in the file but absent from the
     // registered mapping is INVISIBLE to the importer. If such a column holds
     // any data, the import is partial: say so visibly and never run the
@@ -1177,9 +1219,10 @@ export async function importSheet(
               seenInFile.set(matchedEmp.id, rowData as Record<string, unknown>);
             }
           }
-          if (currentSheetId) {
+          const matchedRowSheetId = await sheetIdForAccount(effectiveAccountId);
+          if (matchedRowSheetId) {
             sheetDataToInsert.push({
-              sheet_id: currentSheetId,
+              sheet_id: matchedRowSheetId,
               employee_id: matchedEmp.id,
               row_data: toJson(rowData),
               row_code: rawCode,
@@ -1235,9 +1278,10 @@ export async function importSheet(
               import_id: importLogId,
             });
 
-            if(currentSheetId) {
+            const newRowSheetId = await sheetIdForAccount(effectiveAccountId);
+            if(newRowSheetId) {
               sheetDataToInsert.push({
-                sheet_id: currentSheetId,
+                sheet_id: newRowSheetId,
                 employee_id: newId,
                 row_data: toJson(rowData),
                 row_code: rawCode,
@@ -1276,6 +1320,29 @@ export async function importSheet(
       }
 
       // C) Batch Insert Sheet Data (chunks of 250)
+      // One-latest-per-(sheet, employee): re-filed rows supersede the same
+      // employee's previous latest row in the same catalog sheet.
+      const empIdsBySheet = new Map<string, Set<string>>();
+      sheetDataToInsert.forEach((r) => {
+        const sid = r.sheet_id;
+        const eid = r.employee_id;
+        if (!sid || !eid) return;
+        const set = empIdsBySheet.get(sid) || new Set<string>();
+        set.add(eid);
+        empIdsBySheet.set(sid, set);
+      });
+      for (const [sid, empSet] of Array.from(empIdsBySheet.entries())) {
+        const ids = Array.from(empSet);
+        for (let i = 0; i < ids.length; i += 200) {
+          const { error: supErr } = await supabaseServer
+            .from('sheet_data')
+            .update({ is_latest: false })
+            .eq('sheet_id', sid)
+            .eq('is_latest', true)
+            .in('employee_id', ids.slice(i, i + 200));
+          if (supErr) errors.push(`Snapshot supersede error: ${supErr.message}`);
+        }
+      }
       for (let i = 0; i < sheetDataToInsert.length; i += 250) {
         const chunk = sheetDataToInsert.slice(i, i + 250);
         const { error } = await supabaseServer.from('sheet_data').insert(chunk);
@@ -1347,14 +1414,20 @@ export async function importSheet(
       // FAIL CLOSED: never prune on a partial/failed/empty sync. A prune is
       // only a verified full snapshot of this (worksheet, account).
       if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping && crossAccountConflicts.length === 0) {
-        const importedEmpIds = new Set(sheetDataToInsert.map((r) => r.employee_id).filter(Boolean));
-        const { data: accEmps, error: accErr } = await supabaseServer
-          .from('employees_master')
-          .select('id')
-          .eq('account_id', accountId);
-        if (accErr) {
-          warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr.message}`);
-        } else {
+        // Per-source-worksheet prune ACROSS row accounts: each account's own
+        // catalog flips only its own absent employees; other worksheets and
+        // other accounts' contributions are retained untouched.
+        for (const [acct, acctSheetId] of Array.from(sheetIdByAccount.entries())) {
+          if (acct === null) continue;
+          const importedEmpIds = empIdsBySheet.get(acctSheetId) || new Set<string>();
+          const { data: accEmps, error: accErr } = await supabaseServer
+            .from('employees_master')
+            .select('id')
+            .eq('account_id', acct);
+          if (accErr) {
+            warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr.message}`);
+            continue;
+          }
           const staleEmpIds = (accEmps || [])
             .map((e) => e.id as string)
             .filter((id) => !importedEmpIds.has(id));
@@ -1363,7 +1436,7 @@ export async function importSheet(
             const { error: flipErr } = await supabaseServer
               .from('sheet_data')
               .update({ is_latest: false })
-              .eq('sheet_id', currentSheetId)
+              .eq('sheet_id', acctSheetId)
               .eq('is_latest', true)
               .in('employee_id', chunk);
             if (flipErr) errors.push(`Snapshot flip error: ${flipErr.message}`);

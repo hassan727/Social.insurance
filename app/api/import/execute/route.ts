@@ -189,6 +189,7 @@ export async function POST(request: Request) {
     };
     let preScanRejected = 0;
     let preScanInvalidNid = 0;
+    const overwriteNotes: string[] = [];
     for (const row of dataRows) {
       if (!row || row.length === 0 || row.every((c) => c === '' || c === null || c === undefined)) continue;
       const nidVal = cleanNationalId(scanCell(row, 'national_id')) || '';
@@ -236,21 +237,57 @@ export async function POST(request: Request) {
           .eq('period_month', periodMonth!)
           .eq('account_id', accountId!);
       } else if (sourceType === 'incoming_insurance' || (sourceType as string) === 'official_insurance_print') {
-        if ((sourceType as string) === 'official_insurance_print') {
-          await supabaseServer
-            .from('incoming_insurance_records')
-            .delete()
-            .ilike('form_type', '%برنت%');
-        } else {
-          await supabaseServer
-            .from('incoming_insurance_records')
-            .delete()
-            .neq('id', '00000000-0000-0000-0000-000000000000');
+        // Row-company partition (confirmed mixed-source model): an overwrite
+        // of a mixed source may only replace records whose company resolves
+        // to an account present in the NEW file. Other accounts' rows and
+        // unattributed (NULL/unknown-company) rows are preserved. Old import
+        // logs are kept so their ON DELETE CASCADE cannot wipe records
+        // outside the partition.
+        const isPrintOverwrite = (sourceType as string) === 'official_insurance_print';
+        const accCache = new Map<string, number | null>();
+        const resolveCached = async (txt: string): Promise<number | null> => {
+          const key = txt.trim().toLowerCase();
+          if (!key) return null;
+          if (accCache.has(key)) return accCache.get(key) ?? null;
+          const ra = await resolveAccount(txt);
+          accCache.set(key, ra ? ra.id : null);
+          return ra ? ra.id : null;
+        };
+        const newFileAccounts = new Set<number>();
+        for (const row of dataRows) {
+          if (!row || row.length === 0 || row.every((c) => c === '' || c === null || c === undefined)) continue;
+          const accIdx = headers.findIndex((h) => h === 'الشركة' || h === 'الشركه');
+          const cell = accIdx >= 0 && row[accIdx] !== null && row[accIdx] !== undefined ? String(row[accIdx]).trim() : '';
+          const rid = cell ? await resolveCached(cell) : accountId;
+          if (rid !== null) newFileAccounts.add(rid);
         }
-        await supabaseServer
-          .from('import_logs')
-          .delete()
-          .eq('source_type', sourceType);
+        const deletableIds: string[] = [];
+        let preservedCount = 0;
+        let fromIdx = 0;
+        for (;;) {
+          const { data: page } = await supabaseServer
+            .from('incoming_insurance_records')
+            .select('id, company_account, form_type')
+            .range(fromIdx, fromIdx + 999);
+          if (!page || page.length === 0) break;
+          for (const rec of page as Array<{ id: string; company_account: string | null; form_type: string | null }>) {
+            const formMatch = isPrintOverwrite
+              ? String(rec.form_type || '').includes('برنت')
+              : !String(rec.form_type || '').includes('برنت');
+            if (!formMatch) continue;
+            const recAccId = rec.company_account ? await resolveCached(String(rec.company_account)) : null;
+            if (recAccId !== null && newFileAccounts.has(recAccId)) deletableIds.push(rec.id);
+            else preservedCount++;
+          }
+          if (page.length < 1000) break;
+          fromIdx += 1000;
+        }
+        for (let i = 0; i < deletableIds.length; i += 500) {
+          await supabaseServer.from('incoming_insurance_records').delete().in('id', deletableIds.slice(i, i + 500));
+        }
+        if (preservedCount > 0) {
+          overwriteNotes.push(`تم الاحتفاظ بـ ${preservedCount} سجل يخص حسابات أخرى أو غير منسوب — لم يمسّه الاستبدال`);
+        }
       } else if (sourceType === 'res') {
         await supabaseServer
           .from('resignation_records')
@@ -287,7 +324,7 @@ export async function POST(request: Request) {
     let rowsAccepted = 0;
     let rowsRejected = 0;
     let rowsNeedingReview = 0;
-    const rejectedReasons: string[] = [];
+    const rejectedReasons: string[] = [...overwriteNotes];
     // Row-account resolution (confirmed mixed-source model): an explicit
     // الشركه/الشركة cell on incoming-insurance / official-print rows wins over
     // the operator-selected account; a blank or unknown cell on a sheet that

@@ -693,6 +693,80 @@ check('row-account guard: master EG vs row m.g blocked (no silent switch)', Arra
 const egRowMaster = (await db.query(`SELECT account_id, consolidated_data FROM employees_master WHERE national_id='88880000000004'`)).rows[0];
 check('row-account guard: EG master untouched by m.g row', egRowMaster?.account_id === 1 && egRowMaster?.consolidated_data?.marker === 'EGROW', JSON.stringify(egRowMaster).slice(0, 120));
 
+
+// ── Classic print overwrite: row-company partition (confirmed model) ──
+const printMap = JSON.stringify({ national_id: 'الرقم القومي', employee_name: 'اسم المؤمن عليه', employee_code: 'رقم الاداء' });
+const printFile1 = mkXlsx([
+  { 'الرقم القومي': '66660000000001', 'اسم المؤمن عليه': 'برنت غاز قديم', 'رقم الاداء': 'P101', 'الشركه': 'E.G' },
+  { 'الرقم القومي': '66660000000002', 'اسم المؤمن عليه': 'برنت مودرن قديم', 'رقم الاداء': 'P102', 'الشركه': 'm.g' },
+]);
+const p1 = await postImport({ source_type: 'official_insurance_print', column_mapping: printMap, company_account: 'EG', confirm_overwrite: 'true' }, printFile1);
+check('print import 1 succeeds', p1.status === 200, String(p1.status));
+const p1rows = await db.query(`SELECT national_id, company_account FROM incoming_insurance_records WHERE national_id IN ('66660000000001','66660000000002')`);
+check('print import 1: rows stamped by ROW company (EG/MG), not operator default', p1rows.rows.length === 2 && p1rows.rows.find(r=>r.national_id==='66660000000001')?.company_account === 'EG' && p1rows.rows.find(r=>r.national_id==='66660000000002')?.company_account === 'MG', JSON.stringify(p1rows.rows));
+// an unattributed legacy print row (company NULL) must also survive partition overwrites
+await db.query(`INSERT INTO incoming_insurance_records (employee_code, employee_name, national_id, company_account, status, insurance_status, form_type) VALUES ('P199', 'برنت غير منسوب', '66660000000099', NULL, 'Active', 'مؤمن عليه', 'برنت تأمينات رسمي (22/09/2026)')`);
+// overwrite with an MG-only print file
+const printFile2 = mkXlsx([
+  { 'الرقم القومي': '66660000000003', 'اسم المؤمن عليه': 'برنت مودرن جديد', 'رقم الاداء': 'P103', 'الشركه': 'm.g' },
+]);
+const printLogsBefore = (await db.query(`SELECT count(*)::int c FROM import_logs WHERE source_type='official_insurance_print'`)).rows[0].c;
+const p2 = await postImport({ source_type: 'official_insurance_print', column_mapping: printMap, company_account: 'MG', confirm_overwrite: 'true' }, printFile2);
+const p2j = await p2.json().catch(() => ({}));
+check('print overwrite (MG-only file) succeeds', p2.status === 200, String(p2.status) + ' ' + (p2j.error || ''));
+const egPrintSurvives = (await db.query(`SELECT count(*)::int c FROM incoming_insurance_records WHERE national_id='66660000000001'`)).rows[0].c;
+check('partition overwrite: EG print row SURVIVES MG-file overwrite', egPrintSurvives === 1, 'count=' + egPrintSurvives);
+const oldMgGone = (await db.query(`SELECT count(*)::int c FROM incoming_insurance_records WHERE national_id='66660000000002'`)).rows[0].c;
+const newMgIn = (await db.query(`SELECT count(*)::int c FROM incoming_insurance_records WHERE national_id='66660000000003' AND company_account='MG'`)).rows[0].c;
+check('partition overwrite: old MG print row replaced by new file', oldMgGone === 0 && newMgIn === 1, 'old=' + oldMgGone + ' new=' + newMgIn);
+const nullSurvives = (await db.query(`SELECT count(*)::int c FROM incoming_insurance_records WHERE national_id='66660000000099'`)).rows[0].c;
+check('partition overwrite: unattributed (NULL company) print row SURVIVES', nullSurvives === 1, 'count=' + nullSurvives);
+const printLogs = (await db.query(`SELECT count(*)::int c FROM import_logs WHERE source_type='official_insurance_print'`)).rows[0].c;
+check('partition overwrite: old import logs NOT deleted (no cascade wipe)', printLogs === printLogsBefore + 1, 'before=' + printLogsBefore + ' after=' + printLogs);
+check('partition overwrite: preserve note disclosed to operator', (p2j.rejectedReasons || []).some((r) => r.includes('الاحتفاظ')), JSON.stringify(p2j.rejectedReasons || null));
+
+// ── Smart import: per-account source catalog + cross-account prune ──
+const catMix1 = mkXlsxMulti({ CatMix: [
+  { 'الرقم القومي': '55550000000001', 'الاسم': 'كتالوج غاز', 'الكود': 'C101', 'الشركه': 'E.G' },
+  { 'الرقم القومي': '55550000000002', 'الاسم': 'كتالوج مودرن', 'الكود': 'C102', 'الشركه': 'm.g' },
+] });
+const cm1 = await postSmartAcct(catMix1, ['CatMix'], 'EG');
+check('catalog: mixed import succeeds', cm1.status === 200, String(cm1.status));
+const catSheets = await db.query(`SELECT id, account_id FROM dynamic_sheets WHERE sheet_name='CatMix' ORDER BY account_id`);
+check('catalog: mixed sheet registered PER ACCOUNT (EG + MG), not operator-EG only', catSheets.rows.length === 2 && catSheets.rows[0].account_id === 1 && catSheets.rows[1].account_id === 2, JSON.stringify(catSheets.rows.map(r=>r.account_id)));
+const egCatId = catSheets.rows[0].id, mgCatId = catSheets.rows[1].id;
+const sdA = await db.query(`SELECT sd.sheet_id FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id='55550000000001' AND sd.is_latest`);
+const sdB = await db.query(`SELECT sd.sheet_id FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id='55550000000002' AND sd.is_latest`);
+check('catalog: EG row data filed under EG catalog sheet', sdA.rows.length === 1 && sdA.rows[0].sheet_id === egCatId, JSON.stringify(sdA.rows));
+check('catalog: MG row data filed under MG catalog sheet (not operator EG)', sdB.rows.length === 1 && sdB.rows[0].sheet_id === mgCatId, JSON.stringify(sdB.rows));
+// simulate a PRIOR MG contribution to CatMix (employee C) + an unrelated worksheet contribution
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('m.g', 2, '55550000000003', 'C103', 'كتالوج مودرن غائب', 'Active')`);
+const cEmp = (await db.query(`SELECT id FROM employees_master WHERE national_id='55550000000003'`)).rows[0].id;
+await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_national_id, is_latest) VALUES ($1, $2, '{}', '55550000000003', true)`, [mgCatId, cEmp]);
+const otherSheet = (await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES ('CatOther','CatOther',true,'[]'::jsonb,ARRAY['national_id'],2) RETURNING id`)).rows[0].id;
+await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_national_id, is_latest) VALUES ($1, $2, '{}', '55550000000003', true)`, [otherSheet, cEmp]);
+// re-import same worksheet, C absent -> only C's CatMix contribution flips
+const cm2 = await postSmartAcct(catMix1, ['CatMix'], 'EG');
+check('catalog: re-import succeeds', cm2.status === 200, String(cm2.status));
+const cFlip = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2 ORDER BY created_at DESC LIMIT 1`, [mgCatId, cEmp])).rows[0];
+check('prune: absent MG employee CatMix contribution flipped (is_latest=false)', cFlip?.is_latest === false, JSON.stringify(cFlip));
+const cOther = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [otherSheet, cEmp])).rows[0];
+check('prune: OTHER worksheet contribution retained untouched', cOther?.is_latest === true, JSON.stringify(cOther));
+const aStill = await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id='55550000000001' AND sd.sheet_id=$1 AND sd.is_latest`, [egCatId]);
+check('prune: present EG employee contribution still latest', aStill.rows[0].c === 1, 'count=' + aStill.rows[0].c);
+// mixed error blocks prune: B absent from file + one unresolved row -> B must NOT flip
+const catMix3 = mkXlsxMulti({ CatMix: [
+  { 'الرقم القومي': '55550000000001', 'الاسم': 'كتالوج غاز', 'الكود': 'C101', 'الشركه': 'E.G' },
+  { 'الرقم القومي': '55550000000009', 'الاسم': 'كتالوج مجهول', 'الكود': 'C109', 'الشركه': '' },
+] });
+const cm3 = await postSmartAcct(catMix3, ['CatMix'], 'EG');
+const cm3j = await cm3.json().catch(() => ({}));
+check('catalog: error import processed (partial)', cm3.status === 200, String(cm3.status));
+const bRow = await db.query(`SELECT sd.is_latest FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id='55550000000002' AND sd.sheet_id=$1 AND sd.is_latest`, [mgCatId]);
+check('prune BLOCKED on mixed error: absent MG row still latest (no false full-sync)', bRow.rows.length >= 1, 'latestRows=' + bRow.rows.length);
+const cm3warn = JSON.stringify((cm3j.detailed_results?.CatMix?.warnings) || (cm3j.detailed_results?.CatMix?.errors) || []);
+check('prune blocked: operator warned snapshot not treated as complete', cm3warn.includes('لقطة') || cm3warn.includes('فشل') || cm3warn.includes('شركة الصف'), cm3warn.slice(0, 160));
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);
