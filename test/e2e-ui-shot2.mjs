@@ -68,11 +68,10 @@ for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
   const cand = page.locator('text=موظف تعارض').first();
   await cand.click({ timeout: 15000 }).catch((e) => console.log('candidate click failed', String(e).slice(0, 60)));
   await page.waitForSelector('text=حُجبت', { timeout: 20000 }).catch(() => console.log('conflict text not found: ' + tag));
-  await page.addStyleTag({ content: '* { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }' });
-  await sleep(800);
-  await page.locator('text=تعارض في المعرفات').first().scrollIntoViewIfNeeded().catch(() => {});
-  await sleep(500);
-  await page.screenshot({ path: `/downloads/e2e-lookup-conflict-${tag}.png`, fullPage: false });
+  await sleep(5000); // let hydration + framer-motion animations fully settle — NO style overrides
+  await page.locator('text=حُجبت').first().scrollIntoViewIfNeeded().catch(() => {});
+  await sleep(1200);
+  await page.screenshot({ path: `/downloads/e2e-lookup-conflict-panel-${tag}.png`, fullPage: false });
   console.log('shot: lookup conflict ' + tag);
   await page.close();
 }

@@ -75,6 +75,19 @@ console.log('SCRIPTS', await page.evaluate(() => performance.getEntriesByType('r
 await page.addStyleTag({ content: '* { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }' });
 await sleep(800);
 await page.screenshot({ path: '/downloads/e2e-smart-import-dynamic-accounts.png', fullPage: false });
+// /import page: dynamic account selector + empty period + validation gates
+for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
+  const ip = await browser.newPage({ viewport: { width: w, height: h } });
+  await fetch('http://localhost:3100/import').catch(() => {});
+  await ip.goto('http://localhost:3100/import', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await ip.waitForSelector('text=حساب', { timeout: 60000 }).catch(() => console.log('import page label not found'));
+  await sleep(3000);
+  await ip.addStyleTag({ content: '* { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }' });
+  await sleep(500);
+  await ip.screenshot({ path: `/downloads/e2e-import-page-${tag}.png`, fullPage: false });
+  console.log('shot: import ' + tag);
+  await ip.close();
+}
 const pv = await browser.newPage({ viewport: { width: 390, height: 844 } });
 await pv.goto('http://localhost:3100/smart-import', { waitUntil: 'domcontentloaded', timeout: 60000 });
 await pv.waitForSelector('text=اختر حساب الشركة', { timeout: 60000 });
