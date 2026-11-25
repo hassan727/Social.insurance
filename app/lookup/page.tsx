@@ -1335,8 +1335,8 @@ export default function LookupPage() {
                               </td>
                               <td>
                                 {c.account_display?.status === 'conflict' ? (
-                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 800, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
-                                    غير محسوم: {c.account_display.masterCode || '—'} / {c.account_display.waradCode || '—'}
+                                  <span style={{ display: 'inline-block', maxWidth: '100%', fontSize: 11, padding: '3px 8px', borderRadius: 8, fontWeight: 800, lineHeight: 1.5, whiteSpace: 'normal', wordBreak: 'break-word', textAlign: 'center', background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                                    غير محسوم: {c.account_display.masterCode || '—'}/{c.account_display.waradCode || '—'}
                                   </span>
                                 ) : c.company_account && c.company_account !== '—' ? (
                                   <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 8, fontWeight: 800, color: '#ffffff' }}>
