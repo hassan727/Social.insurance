@@ -663,6 +663,36 @@ const auditNid = await (await api('/api/official-print-audit?account=ALL&refresh
 const auditRecNid = (auditNid.sampleRecords || auditNid.records || []).find((r) => r.nationalId === '77770000000012' || r.national_id === '77770000000012');
 check('audit: code-only payroll row NOT identity-linked to master (NID-only)', !!auditRecNid && auditRecNid.foundInPayroll === false, JSON.stringify(auditRecNid ? { f: auditRecNid.foundInPayroll } : 'RECORD NOT FOUND'));
 
+
+// ── Mixed-source row routing (confirmed model): explicit row Account wins ──
+const mixedSheet = mkXlsxMulti({ MixedWarad: [
+  { 'الرقم القومي': '88880000000001', 'الاسم': 'موظف غاز صريح', 'الكود': '9101', 'الشركه': 'E.G' },
+  { 'الرقم القومي': '88880000000002', 'الاسم': 'موظف مودرن صريح', 'الكود': '9102', 'الشركه': 'm.g' },
+  { 'الرقم القومي': '88880000000003', 'الاسم': 'موظف مجهول الشركة', 'الكود': '9103', 'الشركه': '' },
+] });
+const mixRes = await postSmartAcct(mixedSheet, ['MixedWarad'], 'EG');
+const mixJ = await mixRes.json().catch(() => ({}));
+const mixSheetRes = mixJ.detailed_results?.MixedWarad || {};
+check('mixed sheet: import processed', mixRes.status === 200, String(mixRes.status));
+const mixMaster1 = (await db.query(`SELECT account_id FROM employees_master WHERE national_id='88880000000001'`)).rows[0];
+check('mixed sheet: explicit E.G row stamped EG', mixMaster1?.account_id === 1, JSON.stringify(mixMaster1));
+const mixMaster2 = (await db.query(`SELECT account_id FROM employees_master WHERE national_id='88880000000002'`)).rows[0];
+check('mixed sheet: explicit m.g row NOT stamped EG (row account wins over selected)', mixMaster2?.account_id === 2, JSON.stringify(mixMaster2));
+const mixMaster3 = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='88880000000003'`)).rows[0].c;
+check('mixed sheet: blank-company row creates NO master (fail closed)', mixMaster3 === 0, 'count=' + mixMaster3);
+check('mixed sheet: blank-company row surfaced as review error, partial not full success', (mixSheetRes.errors || []).some((e) => e.includes('شركة الصف')), JSON.stringify(mixSheetRes.errors || null).slice(0, 160));
+
+// Cross-account guard follows the ROW account: master EG + row m.g -> blocked review
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, consolidated_data) VALUES ('E.G', 1, '88880000000004', '9104', 'موظف حدودي صريح', 'Active', '{"marker":"EGROW"}')`);
+const guardMix = await postSmartAcct(mkXlsxMulti({ MixedGuard: [
+  { 'الرقم القومي': '88880000000004', 'الاسم': 'موظف حدودي صريح', 'الكود': '9104', 'الشركه': 'm.g' },
+] }), ['MixedGuard'], 'EG');
+const guardMixJ = await guardMix.json().catch(() => ({}));
+const guardMixSheet = guardMixJ.detailed_results?.MixedGuard || {};
+check('row-account guard: master EG vs row m.g blocked (no silent switch)', Array.isArray(guardMixSheet.cross_account_conflicts) && guardMixSheet.cross_account_conflicts.length === 1 && guardMixSheet.updated_employees === 0, JSON.stringify({ c: (guardMixSheet.cross_account_conflicts || []).length, u: guardMixSheet.updated_employees }));
+const egRowMaster = (await db.query(`SELECT account_id, consolidated_data FROM employees_master WHERE national_id='88880000000004'`)).rows[0];
+check('row-account guard: EG master untouched by m.g row', egRowMaster?.account_id === 1 && egRowMaster?.consolidated_data?.marker === 'EGROW', JSON.stringify(egRowMaster).slice(0, 120));
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);

@@ -747,6 +747,9 @@ export async function importSheet(
 
     const rawHeaders = (rawData[headerRowIndex] as unknown[] || []).map((h) => String(h || '').trim());
     const dataRows = rawData.slice(headerRowIndex + 1);
+    // Confirmed mixed-source model: a sheet WITH a company column routes each
+    // row by its explicit cell; blank/unknown cells are fail-closed review.
+    const sheetHasCompanyColumn = rawHeaders.some((h) => h === 'الشركه' || h === 'الشركة');
 
     // 4. Auto-map columns (use definition if available, else smart guess)
     let columnDefs: ColumnDefinition[];
@@ -827,6 +830,23 @@ export async function importSheet(
     const { data: existingEmps } = await supabaseServer
       .from('employees_master')
       .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data');
+
+    // Row-account resolution (shared with the bridge phase below).
+    const { data: rowAccounts } = await supabaseServer
+      .from('company_accounts')
+      .select('id, account_code, aliases')
+      .eq('is_active', true);
+    const resolveRowAccount = (txt: unknown): number | null => {
+      const t = String(txt || '').trim().toLowerCase();
+      if (!t) return null;
+      const m = (rowAccounts || []).find(
+        (a) => a.account_code.toLowerCase() === t ||
+          (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === t))
+      );
+      return m ? (m.id as number) : null;
+    };
+    const accountCodeById = new Map<number, string>();
+    (rowAccounts || []).forEach((a) => accountCodeById.set(a.id as number, String(a.account_code).trim().toLowerCase()));
 
     // Identity matching is by 14-digit national ID ONLY (user rule): no
     // insurance-number / employee-code / name fallback maps.
@@ -940,6 +960,28 @@ export async function importSheet(
           skippedRows++;
           continue;
         }
+        // ROW ACCOUNT (confirmed mixed-source model): an explicit
+        // الشركه/الشركة cell wins over the operator-selected account. On a
+        // sheet that HAS a company column, a blank or unknown cell is
+        // fail-closed review — never the operator default, never guessed.
+        const rowAccCell = String(rowData['الشركه'] ?? rowData['الشركة'] ?? '').trim();
+        let rowAccountId: number | null = null;
+        if (rowAccCell) {
+          rowAccountId = resolveRowAccount(rowAccCell);
+          if (rowAccountId === null) {
+            errors.push(`صف ${rowNumber}: شركة الصف غير معروفة (${rowAccCell}) — لم يُستورد؛ يحتاج مراجعة`);
+            processingFailures++;
+            skippedRows++;
+            continue;
+          }
+        } else if (sheetHasCompanyColumn) {
+          errors.push(`صف ${rowNumber}: شركة الصف فارغة في ورقة مختلطة — لم يُستورد؛ يحتاج مراجعة ولا يُنسب تلقائيًا`);
+          processingFailures++;
+          skippedRows++;
+          continue;
+        }
+        const effectiveAccountId: number | null = rowAccountId ?? accountId;
+        const effectiveAccText = (effectiveAccountId !== null && accountCodeById.get(effectiveAccountId)) || companyAccount.trim().toLowerCase();
         nonEmptyRows++;
 
         // ── Phase 1 Bridge Collection (Unifying the Two Worlds) ──
@@ -1046,9 +1088,9 @@ export async function importSheet(
           const empAccId =
             typeof matchedEmp.account_id === 'number' ? matchedEmp.account_id : null;
           const empAccText = String(matchedEmp.company_account || '').trim().toLowerCase();
-          const impAccText = companyAccount.trim().toLowerCase();
+          const impAccText = effectiveAccText;
           const sameAccount =
-            (empAccId !== null && accountId !== null && empAccId === accountId) ||
+            (empAccId !== null && effectiveAccountId !== null && empAccId === effectiveAccountId) ||
             (empAccText !== '' && empAccText === impAccText);
           const empAccountKnown = empAccId !== null || empAccText !== '';
           if (empAccountKnown && !sameAccount) {
@@ -1154,7 +1196,8 @@ export async function importSheet(
           const newId = crypto.randomUUID();
             const newEmpRecord: EmployeeMasterInsert = {
               id: newId,
-              company_account: companyAccount,
+              company_account: effectiveAccText,
+              account_id: effectiveAccountId,
               employee_code: rawCode,
               national_id: rawNatId,
               employee_name: rawName || 'بدون اسم',
@@ -1246,31 +1289,20 @@ export async function importSheet(
       }
 
       // E) Phase 1 Bridge Batches (Bridging the Two Worlds):
-      // Stamp monthly bridge rows with the import's EXPLICIT validated
-      // account. A row whose own company text contradicts the validated
-      // account is quarantined (account_id NULL), never silently stamped.
-      const { data: bridgeAccounts } = await supabaseServer
-        .from('company_accounts')
-        .select('id, account_code, aliases')
-        .eq('is_active', true);
-      const resolveRowAccount = (txt: unknown): number | null => {
-        const t = String(txt || '').trim().toLowerCase();
-        if (!t) return null;
-        const m = (bridgeAccounts || []).find(
-          (a) => a.account_code.toLowerCase() === t ||
-            (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === t))
-        );
-        return m ? (m.id as number) : null;
-      };
+      // Row Account wins (confirmed mixed-source model): a row whose own
+      // company cell resolves is stamped with THAT account; rows without a
+      // company cell take the import's validated account. Blank/unknown
+      // cells on company-column sheets never reach this phase (reviewed out
+      // in the row loop above).
       payrollBatch.forEach((r) => {
         const rd = (r.raw_data || {}) as Record<string, unknown>;
         const rowAcc = resolveRowAccount(rd['الشركه'] ?? rd['الشركة']);
-        r.account_id = accountId !== null && (rowAcc === null || rowAcc === accountId) ? accountId : null;
+        r.account_id = rowAcc ?? accountId;
       });
       insuranceBatch.forEach((r) => {
         const rd = (r.raw_data || {}) as Record<string, unknown>;
         const rowAcc = resolveRowAccount(rd['الشركه'] ?? rd['الشركة']);
-        r.account_id = accountId !== null && (rowAcc === null || rowAcc === accountId) ? accountId : null;
+        r.account_id = rowAcc ?? accountId;
       });
       for (let i = 0; i < incomingBatch.length; i += 150) {
         const chunk = incomingBatch.slice(i, i + 150);
