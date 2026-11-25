@@ -895,6 +895,63 @@ check('CAT7: data-quality run succeeds', dq.status === 200, String(dq.status));
 const dqFlagged = (await db.query(`SELECT DISTINCT em.national_id FROM data_discrepancies dd JOIN employees_master em ON em.id=dd.employee_id WHERE dd.discrepancy_type='active_in_db_resigned_in_res' AND em.national_id IN ('88880000000043','88880000000044')`)).rows.map((r) => r.national_id).sort();
 check('CAT7: RES check flags BOTH accounts\' resigned-active employees', dqFlagged.length === 2 && dqFlagged[0] === '88880000000043' && dqFlagged[1] === '88880000000044', JSON.stringify(dqFlagged));
 
+// CAT8: fail-closed for unresolved employees (0 or 2+ matching masters) and
+// person-safe shared fallback under cross-account code collisions.
+// Deterministic shared-sheet scenario: keep ONLY the legacy shared (NULL)
+// مناقضات catalog (CAT8 is the final block; earlier assertions already ran).
+await db.query(`DELETE FROM sheet_data WHERE sheet_id IN (SELECT id FROM dynamic_sheets WHERE sheet_name IN ('شيت المنقاضات','المنقاضات') AND account_id IS NOT NULL)`);
+await db.query(`DELETE FROM dynamic_sheets WHERE sheet_name IN ('شيت المنقاضات','المنقاضات') AND account_id IS NOT NULL`);
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
+  ('E.G', 1, '88880000000046', '8846', 'موظف مزدوج', 'Active'),
+  ('m.g', 2, '88880000000046', '8846', 'موظف مزدوج', 'Active'),
+  ('m.g', 2, '88880000000047', '8847', 'موظف مودرن كود', 'Active'),
+  ('E.G', 1, '88880000000048', '8847', 'موظف غاز كود', 'Active'),
+  ('E.G', 1, '88880000000051', '8851', 'موظف غاز مشترك', 'Active'),
+  ('m.g', 2, '88880000000052', '8851', 'موظف مودرن مشترك', 'Active');`);
+
+// 1) same NID in BOTH accounts: unresolved -> NEITHER master mutates, no sheet write anywhere
+const c8a = await postChecklist({ national_id: '88880000000046', employee_code: '8846', employee_name: 'موظف مزدوج', insurance_status: 'مناقضة', discrepancy_note: 'x' });
+const c8aj = await c8a.json().catch(() => ({}));
+const m46 = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='88880000000046' AND insurance_status IS NOT NULL`)).rows[0].c;
+check('CAT8: same-NID-both-accounts -> NEITHER master mutated', m46 === 0, 'mutated=' + m46);
+const s46 = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_national_id='88880000000046'`)).rows[0].c;
+check('CAT8: unresolved employee -> NO sheet write anywhere (incl. shared)', s46 === 0, 'rows=' + s46);
+check('CAT8: unresolved surfaces explicit warning', JSON.stringify(c8aj.sideEffects || []).includes('تعذر تحديد حساب الموظف'), JSON.stringify(c8aj.sideEffects || []).slice(0, 200));
+
+// 2) globally-matched update via code collision: nid unique to acct-2 but code present in BOTH accounts
+const c8b = await postChecklist({ national_id: '88880000000047', employee_code: '8847', insurance_status: 'حالة كات8ب' });
+const m47 = (await db.query(`SELECT national_id, insurance_status FROM employees_master WHERE national_id IN ('88880000000047','88880000000048')`)).rows;
+check('CAT8: code-collision global match -> NEITHER master mutated (fail closed)', m47.length === 2 && m47.every((r) => r.insurance_status === null), JSON.stringify(m47));
+
+// 3) resolved single account: scoped master update touches exactly ONE master
+const c8c = await postChecklist({ national_id: '88880000000041', employee_code: '8841', insurance_status: 'حالة كات8ج' });
+const m41 = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE insurance_status='حالة كات8ج'`)).rows[0].c;
+check('CAT8: resolved employee -> exactly ONE master updated', m41 === 1, 'updated=' + m41);
+
+// 4) zero-master employee: unresolved -> no write anywhere + warning
+const c8d = await postChecklist({ national_id: '88880000000049', employee_code: '8849', employee_name: 'موظف بلا سجل', add_to_new_sheet: true, new_employee_data: { name: 'موظف بلا سجل' } });
+const c8dj = await c8d.json().catch(() => ({}));
+const s49 = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_national_id='88880000000049'`)).rows[0].c;
+check('CAT8: zero-master employee -> NO sheet write anywhere', s49 === 0, 'rows=' + s49);
+check('CAT8: zero-master surfaces explicit warning', JSON.stringify(c8dj.sideEffects || []).includes('تعذر تحديد حساب الموظف'), JSON.stringify(c8dj.sideEffects || []).slice(0, 200));
+
+// 5) shared fallback person safety: NID-keyed writes from both accounts keep
+// separate rows in the shared sheet (person = 14-digit NID only)
+await postChecklist({ national_id: '88880000000051', employee_name: 'موظف غاز مشترك', insurance_status: 'مناقضة', discrepancy_note: 'ملاحظة غاز' });
+await postChecklist({ national_id: '88880000000052', employee_name: 'موظف مودرن مشترك', insurance_status: 'مناقضة', discrepancy_note: 'ملاحظة مودرن' });
+const shared = await db.query(`SELECT sd.row_national_id, sd.row_data->>'الاسم' nm, sd.row_data->>'NOTE' note FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name IN ('شيت المنقاضات','المنقاضات') AND ds.account_id IS NULL AND sd.row_national_id IN ('88880000000051','88880000000052') ORDER BY sd.row_national_id`);
+check('CAT8: shared sheet keeps BOTH persons as separate rows', shared.rows.length === 2 && shared.rows[0].nm === 'موظف غاز مشترك' && shared.rows[1].nm === 'موظف مودرن مشترك' && shared.rows[0].note === 'ملاحظة غاز' && shared.rows[1].note === 'ملاحظة مودرن', JSON.stringify(shared.rows));
+
+// 6) cross-account code collision: a POST carrying a code present in BOTH
+// accounts is globally-matched -> unresolved -> fail closed; the other
+// person's shared-sheet row is NOT mutated
+await db.query(`UPDATE sheet_data SET row_code='8851' WHERE row_national_id='88880000000051'`);
+await postChecklist({ national_id: '88880000000052', employee_code: '8851', employee_name: 'موظف مودرن مشترك', insurance_status: 'مناقضة', discrepancy_note: 'محاولة خلط' });
+const after = await db.query(`SELECT sd.row_national_id, sd.row_data->>'NOTE' note FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name IN ('شيت المنقاضات','المنقاضات') AND ds.account_id IS NULL AND sd.row_national_id IN ('88880000000051','88880000000052') ORDER BY sd.row_national_id`);
+check('CAT8: code-collision POST does NOT mutate the other account\'s shared row', after.rows.length === 2 && after.rows[0].note === 'ملاحظة غاز' && after.rows[1].note === 'ملاحظة مودرن', JSON.stringify(after.rows));
+const mixed = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_data->>'NOTE'='محاولة خلط'`)).rows[0].c;
+check('CAT8: no contamination row written anywhere', mixed === 0, 'rows=' + mixed);
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);

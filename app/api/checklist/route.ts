@@ -104,9 +104,11 @@ export async function POST(request: NextRequest) {
     const sideEffects: string[] = [];
 
     // Resolve the employee's account ONCE (distinct accounts of matching
-    // masters; exactly one -> account-scoped sheet writes, otherwise
-    // unresolved -> legacy shared fallback only). A checklist write must
-    // never land in a sheet grounded to a DIFFERENT account.
+    // masters; exactly one -> account-scoped writes, otherwise UNRESOLVED
+    // -> fail closed: no master mutation and no sheet write, not even to a
+    // legacy shared catalog. A checklist write must never land in a sheet
+    // or master grounded to a DIFFERENT account, and a person whose account
+    // cannot be determined must not be written anywhere.
     let employeeAccountId: number | null = null;
     {
       const { data: mastersForAccount } = await supabaseServer
@@ -121,7 +123,9 @@ export async function POST(request: NextRequest) {
       if (distinctAccounts.length === 1) employeeAccountId = distinctAccounts[0];
     }
 
+    const UNRESOLVED_WARN = 'تعذر تحديد حساب الموظف (غير مسجل أو مسجل في أكثر من حساب) — لم تتم الكتابة';
     // Sheet resolution for checklist side-effect writes:
+    //  0. unresolved employee account -> fail closed (no write anywhere);
     //  1. the sheet grounded to the employee's own account (exactly one);
     //  2. otherwise a single legacy shared (account_id NULL) sheet;
     //  3. otherwise fail closed (no write) with an explicit warning — never
@@ -130,6 +134,7 @@ export async function POST(request: NextRequest) {
     const resolveSheetForEmployee = async (
       nameFilter: { or?: string; ilike?: string },
     ): Promise<{ sheet: SheetRef | null; warning: string | null }> => {
+      if (employeeAccountId === null) return { sheet: null, warning: UNRESOLVED_WARN };
       let q: any = supabaseServer.from('dynamic_sheets').select('id, sheet_name, account_id');
       if (nameFilter.or) q = q.or(nameFilter.or);
       if (nameFilter.ilike) q = q.ilike('sheet_name', nameFilter.ilike);
@@ -145,20 +150,33 @@ export async function POST(request: NextRequest) {
       return { sheet: null, warning: null };
     };
 
+    // Person identity inside sheet_data: the 14-digit national ID ONLY.
+    // A shared (legacy) sheet holds rows from BOTH accounts, and employee
+    // codes collide across accounts — matching by code there would update
+    // the other account's person's row. NID when present, code only as a
+    // last resort when no NID was supplied.
+    const rowMatchCol = national_id ? 'row_national_id' : 'row_code';
+    const rowMatchVal = national_id ?? employee_code ?? '';
+
     // ── 1. Update employees_master.insurance_status ──────────────────────
     if (insurance_status) {
-      const { error: updateErr } = await supabaseServer
-        .from('employees_master')
-        .update({
-          insurance_status,
-          last_updated_at: now,
-        })
-        .or(orConds.join(','));
-
-      if (updateErr) {
-        console.warn('Could not update employees_master insurance_status:', updateErr.message);
+      if (employeeAccountId === null) {
+        sideEffects.push(UNRESOLVED_WARN + ' (سجل الموظف)');
       } else {
-        sideEffects.push(`تم تحديث الحالة التأمينية إلى "${insurance_status}" في سجل الموظف`);
+        const { error: updateErr } = await supabaseServer
+          .from('employees_master')
+          .update({
+            insurance_status,
+            last_updated_at: now,
+          })
+          .or(orConds.join(','))
+          .eq('account_id', employeeAccountId);
+
+        if (updateErr) {
+          console.warn('Could not update employees_master insurance_status:', updateErr.message);
+        } else {
+          sideEffects.push(`تم تحديث الحالة التأمينية إلى "${insurance_status}" في سجل الموظف`);
+        }
       }
     }
 
@@ -175,7 +193,7 @@ export async function POST(request: NextRequest) {
           .from('sheet_data')
           .select('id')
           .eq('sheet_id', discSheet.id)
-          .or(`row_national_id.eq.${national_id || ''},row_code.eq.${employee_code || ''}`)
+          .eq(rowMatchCol, rowMatchVal)
           .eq('is_latest', true)
           .limit(1)
           .maybeSingle();
@@ -227,7 +245,7 @@ export async function POST(request: NextRequest) {
           .from('sheet_data')
           .select('id')
           .eq('sheet_id', incomingSheet.id)
-          .or(`row_national_id.eq.${national_id || ''},row_code.eq.${employee_code || ''}`)
+          .eq(rowMatchCol, rowMatchVal)
           .eq('is_latest', true)
           .limit(1)
           .maybeSingle();
@@ -276,7 +294,7 @@ export async function POST(request: NextRequest) {
           .from('sheet_data')
           .select('id, row_data')
           .eq('sheet_id', archSheet.id)
-          .or(`row_national_id.eq.${national_id || ''},row_code.eq.${employee_code || ''}`)
+          .eq(rowMatchCol, rowMatchVal)
           .eq('is_latest', true)
           .limit(1)
           .maybeSingle();
@@ -343,7 +361,7 @@ export async function POST(request: NextRequest) {
           .from('sheet_data')
           .select('id, row_data')
           .eq('sheet_id', resSheet.id)
-          .or(`row_national_id.eq.${national_id || ''},row_code.eq.${employee_code || ''}`)
+          .eq(rowMatchCol, rowMatchVal)
           .eq('is_latest', true)
           .limit(1)
           .maybeSingle();
@@ -380,14 +398,22 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Also ensure updated in resignation_records table
-      await supabaseServer
-        .from('resignation_records')
-        .update({
-          insurance_supply_type: res_supply_type || 'يدوي',
-          supply_date: res_supply_date || now.split('T')[0],
-        })
-        .or(orConds.join(','));
+      // Also ensure updated in resignation_records table (person-keyed,
+      // no account column: fail closed when the account is unresolved,
+      // match by NID when present so a cross-account code collision
+      // cannot touch the other account's person)
+      if (employeeAccountId !== null) {
+        let resQ: any = supabaseServer
+          .from('resignation_records')
+          .update({
+            insurance_supply_type: res_supply_type || 'يدوي',
+            supply_date: res_supply_date || now.split('T')[0],
+          });
+        resQ = national_id ? resQ.eq('national_id', national_id) : resQ.or(orConds.join(','));
+        await resQ;
+      } else {
+        sideEffects.push(UNRESOLVED_WARN + ' (سجل الاستقالات)');
+      }
 
       sideEffects.push(`تم تأشير استمارة سن 6 كـ "${resStateLabel}" للموظف في شيت RES.`);
     }
@@ -404,7 +430,7 @@ export async function POST(request: NextRequest) {
           .from('sheet_data')
           .select('id')
           .eq('sheet_id', newSheet.id)
-          .or(`row_national_id.eq.${national_id || ''},row_code.eq.${employee_code || ''}`)
+          .eq(rowMatchCol, rowMatchVal)
           .eq('is_latest', true)
           .limit(1)
           .maybeSingle();
