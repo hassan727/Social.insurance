@@ -206,6 +206,21 @@ const dupj = await dup.json().catch(() => ({}));
 const dupWarnings = (dupj.detailed_results?.SheetB?.warnings) || [];
 check('same-batch duplicate import succeeds', dup.status === 200, String(dup.status));
 check('same-batch duplicate with different values raises a visible warning', dupWarnings.length >= 1 && dupWarnings[0].includes('مكرر'), JSON.stringify(dupWarnings).slice(0, 140));
+// official-print audit regression (executable, actual service via real route):
+// (a) conflict-withheld master hire_date must NOT fall back to a single source;
+// (b) an explicit-0-salary payroll record counts as PRESENT (not absent)
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, hire_date, consolidated_data) VALUES ('m.g', 2, '77777777777777', '7007', 'موظف تدقيق', 'Active', NULL, '{"field_conflicts":{"hire_date":[{"source":"Sheet1","value":"2020-01-01","at":"2026-11-01T00:00:00Z"},{"source":"SheetB","value":"2021-01-01","at":"2026-11-02T00:00:00Z"}]}}')`);
+await db.query(`INSERT INTO incoming_insurance_records (employee_code, employee_name, national_id, company_account, status, raw_data) VALUES ('7007', 'موظف تدقيق', '77777777777777', 'm.g', 'Active', '{"تاريخ استلام العمل":"2020-05-01"}')`);
+await db.query(`INSERT INTO import_logs (source_type, file_name, period_year, period_month, account_id) VALUES ('monthly_payroll', 'audit-fixture.xlsx', 2026, 10, 2)`);
+const mgLog = (await db.query(`SELECT id FROM import_logs WHERE file_name='audit-fixture.xlsx'`)).rows[0].id;
+await db.query(`INSERT INTO monthly_payroll_records (import_id, period_year, period_month, national_id, employee_code, employee_name, account_id, raw_data) VALUES ($1, 2026, 10, '77777777777777', '7007', 'موظف تدقيق', 2, '{"الراتب":"0"}')`, [mgLog]);
+const audit = await (await api('/api/official-print-audit?action=summary&account=ALL')).json();
+const auditRec = (audit.records || audit.sampleRecords || []).find((r) => r.nationalId === '77777777777777' || r.nid === '77777777777777' || (r.identifiers || {}).national_id === '77777777777777');
+check('official-print audit returns the fixture employee', !!auditRec, JSON.stringify(Object.keys(audit)).slice(0, 120));
+if (auditRec) {
+  check('withheld hire date: NO silent single-source fallback', String(auditRec.hireDate).includes('يحتاج مراجعة'), String(auditRec.hireDate));
+  check('explicit-0 payroll record counts as present', auditRec.foundInPayroll === true, JSON.stringify(auditRec.foundInPayroll));
+}
 
 const si = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); return fd; })() });
 check('smart-import execute w/o account → 400 (no bypass)', si.status === 400, String(si.status));
@@ -215,7 +230,7 @@ const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() =>
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
 
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 4 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count);
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 5 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 4 prior fixture employees + audit fixture 77777777777777
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 1 && qEg.data[0].national_id === '11111111111111', 'count=' + qEg.total_count);
 

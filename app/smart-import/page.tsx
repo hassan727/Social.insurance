@@ -51,6 +51,7 @@ interface ImportResult {
     updated_employees: number;
     skipped_rows: number;
     errors: string[];
+    warnings?: string[];
   }>;
 }
 
@@ -626,6 +627,25 @@ export default function SmartImportPage() {
             <p style={{ fontSize: 15, color: '#e2e8f0', padding: '16px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(148,163,184,0.1)', lineHeight: 1.6 }}>
               {importResult.message}
             </p>
+
+            {/* Non-fatal import warnings (e.g. same-file duplicate rows with
+                different values) — visible, never silently "verified". */}
+            {(() => {
+              const warns = Object.entries(importResult.detailed_results || {})
+                .flatMap(([sheet, r]) => (r.warnings || []).map((w) => ({ sheet, w })));
+              if (warns.length === 0) return null;
+              return (
+                <div style={{ marginTop: 16, padding: '14px 16px', borderRadius: 12, background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.35)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <AlertTriangle style={{ width: 15, height: 15, color: '#fbbf24' }} />
+                    <span style={{ fontSize: 13, fontWeight: 800, color: '#fbbf24' }}>تحذيرات تحتاج مراجعة ({warns.length})</span>
+                  </div>
+                  {warns.map((x, i) => (
+                    <p key={i} style={{ fontSize: 12, color: '#fde68a', margin: '0 0 4px', lineHeight: 1.6 }}>• [{x.sheet}] {x.w}</p>
+                  ))}
+                </div>
+              );
+            })()}
           </motion.div>
         )}
       </main>
