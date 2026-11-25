@@ -25,14 +25,21 @@
 -- snapshot that silently matures on read would leave lists/reports stale and
 -- hide writes inside GET requests. A move is recorded when it is real.
 --
--- ROLLBACK CAVEAT (honest): before any transfer/correction event exists,
--- rollback = DROP these functions + DROP the two columns, fully data-intact.
--- AFTER events are recorded, dropping effective_date/confirmed_by DESTROYS
--- their date and provenance values — that rollback is NOT data-intact and
--- must be presented as data-losing.
+-- ROLLBACK: use supabase/reversals/20261125000006_transfer_effective_dating.reversal.sql
+-- (code rollback FIRST, then that script). It archives every affected history
+-- row (dates + provenance) into public.employee_history_provenance_archive
+-- before dropping anything. Before any transfer/correction event exists the
+-- reversal is fully data-intact; AFTER events exist, the archive table is the
+-- ONLY surviving copy of effective_date/confirmed_by and must be verified and
+-- exported — never present that reversal as data-intact.
 --
--- PRIVILEGES: EXECUTE is revoked from PUBLIC and granted to the app's roles
--- (anon/authenticated/service_role), matching the existing table policies.
+-- PRIVILEGES: EXECUTE revoked from PUBLIC on all five functions. The pure
+-- read functions (canonical_company_text, compute_account_employee_uid,
+-- resolve_current_company) are granted to anon/authenticated/service_role;
+-- the MUTATING functions (confirm_account_transfer,
+-- apply_due_company_transfers) are granted to service_role ONLY — the sole
+-- caller is the session-validated server route holding the server-only
+-- SUPABASE_SERVICE_ROLE_KEY.
 -- All functions are SECURITY INVOKER (no definer escalation). NOTE (residual,
 -- pre-existing posture): the app connects with the public anon key, so
 -- RPC/table exposure through that key is unchanged by this migration; the

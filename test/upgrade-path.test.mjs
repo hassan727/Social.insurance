@@ -105,10 +105,24 @@ check('upgrade: populated master switched with effective date', upgMaster.compan
 const upgHist = (await db.query(`SELECT change_type, effective_date, confirmed_by FROM employee_history WHERE employee_id=$1`, [empId])).rows;
 check('upgrade: history row carries effective_date + provenance on upgraded schema', upgHist.length === 1 && upgHist[0].change_type === 'account_transfer' && !!upgHist[0].effective_date && upgHist[0].confirmed_by === 'tester', JSON.stringify(upgHist).slice(0, 200));
 
-// Rollback plan: restoring the baseline function body is the inverse
-// CREATE OR REPLACE (documented in the migration header; not executed here).
-// NOTE: dropping effective_date/confirmed_by AFTER events exist is a
-// data-LOSING rollback (migration header states this honestly).
+// Phase 9: 06 REVERSAL on the upgraded DB that now carries a real event
+// (Phase 8). The reversal script must preserve dates/provenance in the
+// archive, drop functions+index+columns, leave the master snapshot intact,
+// and be idempotent. Code rollback would precede this in a real rollback;
+// here we verify the script's own contract.
+const reversal = readFileSync(new URL('../supabase/reversals/20261125000006_transfer_effective_dating.reversal.sql', import.meta.url), 'utf8');
+await db.query(reversal);
+const arch = (await db.query(`SELECT employee_id, change_type, effective_date, confirmed_by FROM public.employee_history_provenance_archive WHERE employee_id=$1`, [empId])).rows;
+check('reversal: archive preserved the event with date + provenance', arch.length === 1 && arch[0].change_type === 'account_transfer' && !!arch[0].effective_date && arch[0].confirmed_by === 'tester', JSON.stringify(arch).slice(0, 200));
+const cols = (await db.query(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='employee_history' AND column_name IN ('effective_date','confirmed_by')`)).rows;
+check('reversal: effective_date + confirmed_by columns dropped', cols.length === 0, JSON.stringify(cols));
+const funcs = (await db.query(`SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND proname IN ('confirm_account_transfer','apply_due_company_transfers','resolve_current_company','compute_account_employee_uid','canonical_company_text')`)).rows;
+check('reversal: all five 06 functions dropped (grants die with them)', funcs.length === 0, JSON.stringify(funcs));
+const masterAfter = (await db.query(`SELECT company_account FROM employees_master WHERE id=$1`, [empId])).rows[0];
+check('reversal: master snapshot untouched by reversal', masterAfter.company_account === 'E.G', JSON.stringify(masterAfter));
+await db.query(reversal);
+const arch2 = (await db.query(`SELECT count(*)::int AS n FROM public.employee_history_provenance_archive WHERE employee_id=$1`, [empId])).rows[0];
+check('reversal: idempotent second run (archive not duplicated)', arch2.n === 1, JSON.stringify(arch2));
 console.log(`${pass} passed, ${fail} failed`);
 await db.end(); await ep.stop();
 process.exit(fail ? 1 : 0);
