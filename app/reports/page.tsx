@@ -167,7 +167,7 @@ export default function ReportsPage() {
       }
     }
   }, []);
-  const [account, setAccount] = useState<'E.G' | 'm.g' | 'ALL'>('E.G');
+  const [account, setAccount] = useState<'E.G' | 'm.g' | 'ALL'>('ALL'); // no silent single-company default
   const [reportType, setReportType] = useState<string>('hr_letter');
   const [quarter, setQuarter] = useState<string>('Q3');
   const [month, setMonth] = useState<number>(9);
