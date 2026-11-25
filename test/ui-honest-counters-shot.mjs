@@ -28,10 +28,11 @@ for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
     const hasErrBlock = body.includes('صفوف لم تُستورد وتحتاج مراجعة');
     const hasConflict = body.includes('تعارض حسابات');
     const hasPartialMsg = body.includes('اكتمل الاستيراد جزئيًا') || body.includes('لم تُعتمد اللقطة كاملة');
+    const hasHonestSheetCount = body.includes('ورقة ناجحة بالكامل') && body.includes('جزئيًا') && !body.includes('1/1\nورقة ناجحة');
     const noFalseSuccess = !body.includes('تم استيراد 1 ورقة بنجاح');
-    console.log(`${tag}: counterCard=${hasCounterCard} errBlock=${hasErrBlock} conflict=${hasConflict} partialMsg=${hasPartialMsg} noFalseSuccess=${noFalseSuccess}`);
+    console.log(`${tag}: counterCard=${hasCounterCard} errBlock=${hasErrBlock} conflict=${hasConflict} partialMsg=${hasPartialMsg} noFalseSuccess=${noFalseSuccess} honestSheets=${hasHonestSheetCount}`);
     await page.screenshot({ path: `/downloads/e2e-honest-counters-${tag}.png`, fullPage: true });
-    if (!hasCounterCard || !hasErrBlock || !hasConflict || !hasPartialMsg || !noFalseSuccess) failures++;
+    if (!hasCounterCard || !hasErrBlock || !hasConflict || !hasPartialMsg || !noFalseSuccess || !hasHonestSheetCount) failures++;
   } catch (e) {
     failures++;
     await page.screenshot({ path: `/downloads/e2e-honest-counters-FAIL-${tag}.png`, fullPage: true }).catch(() => {});
