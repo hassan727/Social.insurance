@@ -199,8 +199,10 @@ export default function SmartImportPage() {
           combinedSummary.total_errors += data.summary.total_errors || 0;
           combinedSummary.sheets_success += data.summary.sheets_success || 1;
         }
-        if (data.sheet_results) {
-          Object.assign(combinedSheetResults, data.sheet_results);
+        // Route returns detailed_results; accept sheet_results for safety.
+        const perSheet = data.detailed_results || data.sheet_results;
+        if (perSheet) {
+          Object.assign(combinedSheetResults, perSheet);
         }
 
         const nextPercent = Math.round(((sIdx + 1) / selectedSheets.length) * 100);

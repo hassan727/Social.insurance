@@ -206,6 +206,13 @@ const dupj = await dup.json().catch(() => ({}));
 const dupWarnings = (dupj.detailed_results?.SheetB?.warnings) || [];
 check('same-batch duplicate import succeeds', dup.status === 200, String(dup.status));
 check('same-batch duplicate with different values raises a visible warning', dupWarnings.length >= 1 && dupWarnings[0].includes('مكرر'), JSON.stringify(dupWarnings).slice(0, 140));
+// Regression: duplicate warning must also fire on the FIRST import of a
+// brand-new employee (seenInFile previously only tracked existing employees).
+const dupNewRows = mkXlsx([{ 'الرقم القومي': '88888888888888', 'الاسم': 'موظف مكرر جديد', 'الكود': '8008', 'الوظيفه': 'محاسب' }, { 'الرقم القومي': '88888888888888', 'الاسم': 'موظف مكرر جديد', 'الكود': '8008', 'الوظيفه': 'محاسب أول' }]);
+const dupNew = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([dupNewRows]), 't7.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'EG'); return fd; })() });
+const dupNewj = await dupNew.json().catch(() => ({}));
+const dupNewWarnings = (dupNewj.detailed_results?.Sheet1?.warnings) || [];
+check('first-import duplicate (new employee) also warns', dupNew.status === 200 && dupNewWarnings.length >= 1 && dupNewWarnings[0].includes('مكرر'), String(dupNew.status) + ' ' + JSON.stringify(dupNewWarnings).slice(0, 140));
 // official-print audit regression (executable, actual service via real route):
 // (a) conflict-withheld master hire_date must NOT fall back to a single source;
 // (b) an explicit-0-salary payroll record counts as PRESENT (not absent)
@@ -230,9 +237,9 @@ const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() =>
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
 
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 5 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 4 prior fixture employees + audit fixture 77777777777777
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 6 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 4 prior fixture employees + audit fixture 77777777777777 + first-import dup fixture 88888888888888
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
-check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 1 && qEg.data[0].national_id === '11111111111111', 'count=' + qEg.total_count);
+check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count); // +1: first-import dup fixture 88888888888888 (EG)
 
 // Convergence clearing: correct the master record upstream (both fields a
 // real correction would touch) -> conflict must clear on next read, monthly

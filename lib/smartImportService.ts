@@ -1018,6 +1018,9 @@ export async function importSheet(
 
             // Update memory index maps so subsequent rows in this file match immediately
             const lookupRecord = newEmpRecord as unknown as EmployeeLookup;
+            // Same-file duplicate tracking for NEW employees too: without this,
+            // a duplicate row only warns from the second import onward.
+            seenInFile.set(newId, rowData as Record<string, unknown>);
             if (rawNatId && rawNatId.length === 14) byNatIdMap.set(rawNatId, lookupRecord);
             if (newEmpRecord.insurance_number) byInsNoMap.set(String(newEmpRecord.insurance_number).trim(), lookupRecord);
             if (rawCode) {
