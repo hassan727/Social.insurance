@@ -21,12 +21,10 @@ for (const f of baseline) {
   await db.query(readFileSync(MIG_DIR + f, 'utf8'));
   console.log('applied:', f);
 }
-await db.query(`GRANT USAGE ON SCHEMA public TO anon, service_role;
-  GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, service_role;
-  GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, service_role;
-  GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;
-  REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
-  REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;`);
+await db.query(`GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role;
+  GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role;
+  GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO service_role;`);
 
 // ── Synthetic fixtures ──────────────────────────────────────────────────────
 await db.query(`

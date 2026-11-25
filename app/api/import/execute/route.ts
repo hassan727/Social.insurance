@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { SourceType } from '@/lib/excelParser';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 import { cleanNationalId } from '@/lib/smartImportService';
 import { invalidateReportsCache } from '@/lib/reportsEngine';
 import type { Json } from '@/types/supabase';
@@ -23,7 +23,7 @@ function normalizeArabicText(text: string): string {
 async function resolveAccount(raw: string): Promise<{ id: number; code: string } | null> {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const { data, error } = await supabaseServer
+  const { data, error } = await supabaseService
     .from('company_accounts')
     .select('id, account_code, aliases')
     .eq('is_active', true);
@@ -98,7 +98,7 @@ export async function POST(request: Request) {
     // company's re-import never touches another company's data.
     let hasExisting = false;
     if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
-      const { count } = await supabaseServer
+      const { count } = await supabaseService
         .from('import_logs')
         .select('*', { count: 'exact', head: true })
         .eq('source_type', sourceType)
@@ -107,7 +107,7 @@ export async function POST(request: Request) {
         .eq('account_id', accountId!);
       hasExisting = (count || 0) > 0;
     } else {
-      const { count } = await supabaseServer
+      const { count } = await supabaseService
         .from('import_logs')
         .select('*', { count: 'exact', head: true })
         .eq('source_type', sourceType);
@@ -115,7 +115,7 @@ export async function POST(request: Request) {
     }
 
     if (hasExisting && !confirmOverwrite) {
-      let existingQuery = supabaseServer
+      let existingQuery = supabaseService
         .from('import_logs')
         .select('id, file_name, created_at, rows_accepted')
         .eq('source_type', sourceType);
@@ -209,13 +209,13 @@ export async function POST(request: Request) {
     // Handle overwrite cleanup if confirmed
     if (confirmOverwrite && hasExisting) {
       if (sourceType === 'monthly_payroll') {
-        await supabaseServer
+        await supabaseService
           .from('monthly_payroll_records')
           .delete()
           .eq('period_year', periodYear!)
           .eq('period_month', periodMonth!)
           .eq('account_id', accountId!);
-        await supabaseServer
+        await supabaseService
           .from('import_logs')
           .delete()
           .eq('source_type', sourceType)
@@ -223,13 +223,13 @@ export async function POST(request: Request) {
           .eq('period_month', periodMonth!)
           .eq('account_id', accountId!);
       } else if (sourceType === 'monthly_insurance') {
-        await supabaseServer
+        await supabaseService
           .from('monthly_insurance_records')
           .delete()
           .eq('period_year', periodYear!)
           .eq('period_month', periodMonth!)
           .eq('account_id', accountId!);
-        await supabaseServer
+        await supabaseService
           .from('import_logs')
           .delete()
           .eq('source_type', sourceType)
@@ -265,7 +265,7 @@ export async function POST(request: Request) {
         let preservedCount = 0;
         let fromIdx = 0;
         for (;;) {
-          const { data: page } = await supabaseServer
+          const { data: page } = await supabaseService
             .from('incoming_insurance_records')
             .select('id, company_account, form_type')
             .range(fromIdx, fromIdx + 999);
@@ -283,17 +283,17 @@ export async function POST(request: Request) {
           fromIdx += 1000;
         }
         for (let i = 0; i < deletableIds.length; i += 500) {
-          await supabaseServer.from('incoming_insurance_records').delete().in('id', deletableIds.slice(i, i + 500));
+          await supabaseService.from('incoming_insurance_records').delete().in('id', deletableIds.slice(i, i + 500));
         }
         if (preservedCount > 0) {
           overwriteNotes.push(`تم الاحتفاظ بـ ${preservedCount} سجل يخص حسابات أخرى أو غير منسوب — لم يمسّه الاستبدال`);
         }
       } else if (sourceType === 'res') {
-        await supabaseServer
+        await supabaseService
           .from('resignation_records')
           .delete()
           .neq('id', '00000000-0000-0000-0000-000000000000');
-        await supabaseServer
+        await supabaseService
           .from('import_logs')
           .delete()
           .eq('source_type', sourceType);
@@ -301,7 +301,7 @@ export async function POST(request: Request) {
     }
 
     // Create import log record first
-    const { data: logEntry, error: logError } = await supabaseServer
+    const { data: logEntry, error: logError } = await supabaseService
       .from('import_logs')
       .insert({
         source_type: sourceType,
@@ -402,7 +402,7 @@ export async function POST(request: Request) {
         if (rowCompanyUnresolved) {
           rowAccountId = null;
           rowsNeedingReview++;
-          await supabaseServer.from('matching_conflicts').insert({
+          await supabaseService.from('matching_conflicts').insert({
             conflict_type: 'unknown_row_company',
             conflict_data: {
               source_type: sourceType,
@@ -508,7 +508,7 @@ export async function POST(request: Request) {
     for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
       const chunk = recordsToInsert.slice(i, i + BATCH_SIZE);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { error: insertErr } = await (supabaseServer.from(targetTable as any) as any).insert(chunk);
+      const { error: insertErr } = await (supabaseService.from(targetTable as any) as any).insert(chunk);
       if (insertErr) {
         throw new Error(`خطأ أثناء إدخال الدفعة (${i + 1} إلى ${i + chunk.length}): ${insertErr.message}`);
       }
@@ -518,7 +518,7 @@ export async function POST(request: Request) {
     // SYNC WITH EMPLOYEES_MASTER (DYNAMIC ENTERPRISE UNIFICATION)
     // ═══════════════════════════════════════════════════════════════════════════
     try {
-      const { data: existingEmps } = await supabaseServer
+      const { data: existingEmps } = await supabaseService
         .from('employees_master')
         .select('id, company_account, account_id, employee_code, national_id, employee_name, current_job_title, consolidated_data');
 
@@ -592,7 +592,7 @@ export async function POST(request: Request) {
               } else {
                 // Same NID in a DIFFERENT account: never merge across accounts —
                 // review, per the same fail-closed guard as the smart import.
-                await supabaseServer.from('matching_conflicts').insert({
+                await supabaseService.from('matching_conflicts').insert({
                   conflict_type: 'cross_account_national_id',
                   conflict_data: {
                     source_type: sourceType,
@@ -652,7 +652,7 @@ export async function POST(request: Request) {
               const normCurrent = normalizeArabicText(matched.current_job_title);
               const normIns = normalizeArabicText(insJobVal);
               if (normCurrent !== normIns && !normCurrent.includes(normIns) && !normIns.includes(normCurrent)) {
-                await supabaseServer.from('matching_conflicts').insert({
+                await supabaseService.from('matching_conflicts').insert({
                   conflict_type: 'job_title_conflict',
                   conflict_data: {
                     employee_id: matched.id,
@@ -702,7 +702,7 @@ export async function POST(request: Request) {
             // ID a row can neither match nor create a master record (a master
             // without an NID could never be matched later and would duplicate
             // the person when the NID arrives). Route to review instead.
-            await supabaseServer.from('matching_conflicts').insert({
+            await supabaseService.from('matching_conflicts').insert({
               conflict_type: 'invalid_national_id',
               conflict_data: {
                 source_type: sourceType,
@@ -725,7 +725,7 @@ export async function POST(request: Request) {
               // Same account+code but a DIFFERENT national ID: identity
               // contradiction (schema also forbids two masters on the same
               // account code). Never merge, never overwrite — review.
-              await supabaseServer.from('matching_conflicts').insert({
+              await supabaseService.from('matching_conflicts').insert({
                 conflict_type: 'code_nid_conflict',
                 conflict_data: {
                   source_type: sourceType,
@@ -829,7 +829,7 @@ export async function POST(request: Request) {
       for (let i = 0; i < employeesToInsert.length; i += 150) {
         const chunk = employeesToInsert.slice(i, i + 150);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (supabaseServer.from('employees_master') as any).insert(chunk);
+        await (supabaseService.from('employees_master') as any).insert(chunk);
       }
 
       // Batch update existing employees in chunks of 25
@@ -838,7 +838,7 @@ export async function POST(request: Request) {
         await Promise.all(
           chunk.map((item) =>
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (supabaseServer.from('employees_master') as any).update(item.data).eq('id', item.id)
+            (supabaseService.from('employees_master') as any).update(item.data).eq('id', item.id)
           )
         );
       }
@@ -851,7 +851,7 @@ export async function POST(request: Request) {
 
     // Update import_logs with final metrics
     const reviewNote = rowsNeedingReview > 0 ? `${rowsNeedingReview} صف بدون رقم قومي صحيح يحتاج مراجعة (المطابقة بالرقم القومي فقط)` : '';
-    await supabaseServer
+    await supabaseService
       .from('import_logs')
       .update({
         rows_accepted: rowsAccepted,

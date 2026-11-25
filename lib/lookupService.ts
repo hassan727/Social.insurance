@@ -1,4 +1,4 @@
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 import { resolveAccountRecord } from '@/lib/accountResolver';
 
 export interface S1CalculationInfo {
@@ -412,7 +412,7 @@ async function enrichPersonDrafts(
 
         const [incomingRes, payData, miData, resData, masterData] = await Promise.all([
           // Fetch from incoming_insurance (ordered latest first)
-          supabaseServer
+          supabaseService
             .from('incoming_insurance_records')
             .select('company_account, status, insurance_status, employee_name, insurance_number, job_title, insurance_job_title, subscription_start_date, subscription_end_date, termination_reason')
             .or(orClause)
@@ -420,7 +420,7 @@ async function enrichPersonDrafts(
             .limit(5),
 
           // Fetch all payroll records ordered ascending
-          supabaseServer
+          supabaseService
             .from('monthly_payroll_records')
             .select('period_year, period_month, attendance_days')
             .or(orClause)
@@ -428,7 +428,7 @@ async function enrichPersonDrafts(
             .order('period_month', { ascending: true }),
 
           // Fetch all monthly insurance records ordered ascending
-          supabaseServer
+          supabaseService
             .from('monthly_insurance_records')
             .select('period_year, period_month')
             .or(orClause)
@@ -436,7 +436,7 @@ async function enrichPersonDrafts(
             .order('period_month', { ascending: true }),
 
           // Fetch resignation records
-          supabaseServer
+          supabaseService
             .from('resignation_records')
             .select('resignation_date, resignation_type, last_working_day')
             .or(orClause)
@@ -444,7 +444,7 @@ async function enrichPersonDrafts(
             .maybeSingle(),
 
           // Fetch from employees_master
-          supabaseServer
+          supabaseService
             .from('employees_master')
             .select('company_account, current_status, insurance_status, employee_name, insurance_number, current_job_title, insurance_job_title, insurance_start_date, hire_date, phone_number')
             .or(orClause)
@@ -728,11 +728,11 @@ export async function searchEmployees(
 
     if (batchNatIds.length > 0) {
       const [mRes, iRes, pRes, miRes, rRes] = await Promise.all([
-        supabaseServer.from('employees_master').select('*').in('national_id', batchNatIds),
-        supabaseServer.from('incoming_insurance_records').select('*').in('national_id', batchNatIds),
-        supabaseServer.from('monthly_payroll_records').select('*').in('national_id', batchNatIds),
-        supabaseServer.from('monthly_insurance_records').select('*').in('national_id', batchNatIds),
-        supabaseServer.from('resignation_records').select('*').in('national_id', batchNatIds),
+        supabaseService.from('employees_master').select('*').in('national_id', batchNatIds),
+        supabaseService.from('incoming_insurance_records').select('*').in('national_id', batchNatIds),
+        supabaseService.from('monthly_payroll_records').select('*').in('national_id', batchNatIds),
+        supabaseService.from('monthly_insurance_records').select('*').in('national_id', batchNatIds),
+        supabaseService.from('resignation_records').select('*').in('national_id', batchNatIds),
       ]);
       mergeIntoPersonMap(personMap, mRes.data || [], 'سجل الموظفين Master');
       mergeIntoPersonMap(personMap, iRes.data || [], 'وارد التأمين');
@@ -755,11 +755,11 @@ export async function searchEmployees(
     const personMap = new Map<string, PersonDraft>();
 
     const [masterRes, insRes, payRes, miRes, resRes] = await Promise.all([
-      supabaseServer.from('employees_master').select('*').eq('national_id', digitsOnly).limit(5),
-      supabaseServer.from('incoming_insurance_records').select('*').eq('national_id', digitsOnly).limit(5),
-      supabaseServer.from('monthly_payroll_records').select('*').eq('national_id', digitsOnly).limit(5),
-      supabaseServer.from('monthly_insurance_records').select('*').eq('national_id', digitsOnly).limit(5),
-      supabaseServer.from('resignation_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseService.from('employees_master').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseService.from('incoming_insurance_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseService.from('monthly_payroll_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseService.from('monthly_insurance_records').select('*').eq('national_id', digitsOnly).limit(5),
+      supabaseService.from('resignation_records').select('*').eq('national_id', digitsOnly).limit(5),
     ]);
 
     mergeIntoPersonMap(personMap, masterRes.data || [], 'سجل الموظفين Master');
@@ -788,7 +788,7 @@ export interface MonthAvailability {
 }
 
 export async function getAvailableImportedPeriods(accountId?: number | null): Promise<MonthAvailability[]> {
-  let logsQuery = supabaseServer
+  let logsQuery = supabaseService
     .from('import_logs')
     .select('source_type, period_year, period_month')
     .not('period_year', 'is', null)
@@ -1022,7 +1022,7 @@ export async function getEmployeeFullDetails(params: {
   // Account catalog FIRST: a requested-account filter must match by account
   // IDENTITY (code/aliases), never by raw text equality — the UI passes the
   // canonical code (MG) while sources store text (m.g / مودرن جاس).
-  const { data: allAccounts } = await supabaseServer
+  const { data: allAccounts } = await supabaseService
     .from('company_accounts')
     .select('id, account_code, aliases')
     .eq('is_active', true);
@@ -1046,7 +1046,7 @@ export async function getEmployeeFullDetails(params: {
   // account evidence is available before any monthly fact is fetched.
   let masterEmp: Record<string, unknown> | null = null;
   if (hasValidNid) {
-    let mQuery = supabaseServer.from('employees_master').select('*').eq('national_id', cleanNid);
+    let mQuery = supabaseService.from('employees_master').select('*').eq('national_id', cleanNid);
     if (requestedAccountId !== null) {
       const aliasOr = [`account_id.eq.${requestedAccountId}`, ...aliasTextsOf(requestedAccountId).map((t) => `company_account.ilike.${t}`)].join(',');
       mQuery = mQuery.or(aliasOr);
@@ -1058,7 +1058,7 @@ export async function getEmployeeFullDetails(params: {
   }
 
   // 1. Fetch matching incoming insurance records
-  let incomingQuery = supabaseServer.from('incoming_insurance_records').select('*');
+  let incomingQuery = supabaseService.from('incoming_insurance_records').select('*');
   if (hasValidNid) {
     // STRICT ISOLATION: When a 14-digit National ID is provided, ONLY match that exact National ID.
     // Never combine with employee_code using OR, as codes overlap between companies.
@@ -1106,7 +1106,7 @@ export async function getEmployeeFullDetails(params: {
   }
 
   // 2. Fetch resignation (RES.) records
-  let resQuery = supabaseServer.from('resignation_records').select('*');
+  let resQuery = supabaseService.from('resignation_records').select('*');
   if (hasValidNid) {
     resQuery = resQuery.eq('national_id', cleanNid);
   } else {
@@ -1163,7 +1163,7 @@ export async function getEmployeeFullDetails(params: {
   if (resolvedAccountId === null && !accountContradiction && (hasValidNid || employee_code)) {
     const probes: { account_id: number | null }[] = [];
     for (const table of ['monthly_payroll_records', 'monthly_insurance_records'] as const) {
-      let q = supabaseServer.from(table).select('account_id');
+      let q = supabaseService.from(table).select('account_id');
       if (hasValidNid) q = q.eq('national_id', cleanNid);
       else if (employee_code) q = q.eq('employee_code', employee_code);
       const { data: probeRows } = await q.limit(5000);
@@ -1197,7 +1197,7 @@ export async function getEmployeeFullDetails(params: {
   // all (a name alone must never pull an unfiltered monthly scan).
   let payrollRecords: Record<string, unknown>[] = [];
   if ((hasValidNid || employee_code) && !withholdMonthly && !accountContradiction) {
-    let payrollQuery = supabaseServer.from('monthly_payroll_records').select('*');
+    let payrollQuery = supabaseService.from('monthly_payroll_records').select('*');
     if (hasValidNid) {
       payrollQuery = payrollQuery.eq('national_id', cleanNid);
     } else {
@@ -1215,7 +1215,7 @@ export async function getEmployeeFullDetails(params: {
     // Quarantine surface: same person's rows with NO account attribution are
     // excluded above; count and report them instead of silently mixing.
     if (hasValidNid && resolvedAccountId !== null) {
-      const { count: quarantinedPay } = await supabaseServer
+      const { count: quarantinedPay } = await supabaseService
         .from('monthly_payroll_records')
         .select('*', { count: 'exact', head: true })
         .eq('national_id', cleanNid)
@@ -1232,7 +1232,7 @@ export async function getEmployeeFullDetails(params: {
   // account scoping and no-identifier guard as payroll.
   let monthlyInsRecords: Record<string, unknown>[] = [];
   if ((hasValidNid || employee_code) && !withholdMonthly && !accountContradiction) {
-    let miQuery = supabaseServer.from('monthly_insurance_records').select('*');
+    let miQuery = supabaseService.from('monthly_insurance_records').select('*');
     if (hasValidNid) {
       miQuery = miQuery.eq('national_id', cleanNid);
     } else {
@@ -1248,7 +1248,7 @@ export async function getEmployeeFullDetails(params: {
     if (miData) monthlyInsRecords = miData;
 
     if (hasValidNid && resolvedAccountId !== null) {
-      const { count: quarantinedIns } = await supabaseServer
+      const { count: quarantinedIns } = await supabaseService
         .from('monthly_insurance_records')
         .select('*', { count: 'exact', head: true })
         .eq('national_id', cleanNid)
@@ -1411,7 +1411,7 @@ export async function getEmployeeFullDetails(params: {
     if (targetCode) masterOrConds.push(`employee_code.eq.${targetCode}`);
 
     if (masterOrConds.length > 0) {
-      const { data: mData } = await supabaseServer
+      const { data: mData } = await supabaseService
         .from('employees_master')
         .select('*')
         .or(masterOrConds.join(','))
@@ -1438,7 +1438,7 @@ export async function getEmployeeFullDetails(params: {
   }> = [];
 
   if (sheetOrConds.length > 0) {
-    const { data: sRows } = await supabaseServer
+    const { data: sRows } = await supabaseService
       .from('sheet_data')
       .select('sheet_id, row_data, dynamic_sheets(sheet_name, display_name)')
       .or(sheetOrConds.join(','))
@@ -1452,7 +1452,7 @@ export async function getEmployeeFullDetails(params: {
   // Fallback search in sheet_data if row_code or row_national_id had shifted columns
   if (allSheetRecords.length === 0 && (hasValidNid || targetCode)) {
     // Attempt finding in sheet_data where row_data contains code or nid
-    const { data: fallbackRows } = await supabaseServer
+    const { data: fallbackRows } = await supabaseService
       .from('sheet_data')
       .select('sheet_id, row_data, dynamic_sheets(sheet_name, display_name)')
       .limit(200);

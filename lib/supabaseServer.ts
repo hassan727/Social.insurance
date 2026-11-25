@@ -38,7 +38,25 @@ export function getSupabaseServiceClient() {
   });
 }
 
+// Lazy service proxy: the ONLY client server code should use for data access.
+// Runs as service_role — the sole Postgres role with table/function rights
+// after the direct-access lockdown. The middleware session gate is the
+// authorization boundary in front of every route that uses this.
+export const supabaseService = new Proxy({} as ReturnType<typeof getSupabaseServiceClient>, {
+  get(_target, prop) {
+    const client = getSupabaseServiceClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const val = (client as any)[prop];
+    if (typeof val === 'function') {
+      return val.bind(client);
+    }
+    return val;
+  },
+});
+
 // Lazy proxy that initializes the client per call, ensuring env vars are loaded even in serverless edge/node workers
+// DEPRECATED for data access: the anon key has no table/function privileges.
+// Kept exported only so an intentional pre-auth use would be explicit.
 export const supabaseServer = new Proxy({} as ReturnType<typeof getSupabaseServerClient>, {
   get(_target, prop) {
     const client = getSupabaseServerClient();

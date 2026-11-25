@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 import type { Database } from '@/types/supabase';
 
 // Type-safe table name — only tables that actually exist in Supabase
@@ -110,8 +110,8 @@ async function fetchAllRecords(table: PublicTableName, selectFields = '*') {
   let from = 0;
   const step = 1000;
   while (true) {
-    const { data, error } = await (supabaseServer
-      .from(table) as ReturnType<typeof supabaseServer.from>)
+    const { data, error } = await (supabaseService
+      .from(table) as ReturnType<typeof supabaseService.from>)
       .select(selectFields)
       .range(from, from + step - 1);
     if (error) {

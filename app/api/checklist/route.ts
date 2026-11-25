@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 // ══════════════════════════════════════════════════════════════════
 // GET /api/checklist?national_id=&employee_code=
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
     if (employee_code) orConds.push(`employee_code.eq.${employee_code}`);
 
     // Load from employees_master (insurance_status + meta)
-    const { data: master } = await supabaseServer
+    const { data: master } = await supabaseService
       .from('employees_master')
       .select('id, insurance_status, current_status, insurance_number')
       .or(orConds.join(','))
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
     if (national_id)   checklistOrConds.push(`national_id.eq.${national_id}`);
     if (employee_code) checklistOrConds.push(`employee_code.eq.${employee_code}`);
 
-    const { data: clRow } = await (supabaseServer as unknown as { from: (table: string) => any })
+    const { data: clRow } = await (supabaseService as unknown as { from: (table: string) => any })
       .from('checklist_records')
       .select('*')
       .or(checklistOrConds.join(','))
@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
     // cannot be determined must not be written anywhere.
     let employeeAccountId: number | null = null;
     if (validNid) {
-      const { data: mastersForAccount } = await supabaseServer
+      const { data: mastersForAccount } = await supabaseService
         .from('employees_master')
         .select('account_id')
         .eq('national_id', national_id);
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
       sideEffects.push(NID_REVIEW_WARN);
     } else if (employee_code) {
       // warn-only cross-check: the code NEVER identifies the person
-      const { data: codeOthers } = await supabaseServer
+      const { data: codeOthers } = await supabaseService
         .from('employees_master')
         .select('national_id')
         .eq('employee_code', employee_code)
@@ -152,7 +152,7 @@ export async function POST(request: NextRequest) {
       nameFilter: { or?: string; ilike?: string },
     ): Promise<{ sheet: SheetRef | null; warning: string | null }> => {
       if (employeeAccountId === null) return { sheet: null, warning: validNid ? UNRESOLVED_WARN : null };
-      let q: any = supabaseServer.from('dynamic_sheets').select('id, sheet_name, account_id');
+      let q: any = supabaseService.from('dynamic_sheets').select('id, sheet_name, account_id');
       if (nameFilter.or) q = q.or(nameFilter.or);
       if (nameFilter.ilike) q = q.ilike('sheet_name', nameFilter.ilike);
       const { data: matches } = await q;
@@ -180,7 +180,7 @@ export async function POST(request: NextRequest) {
       if (employeeAccountId === null) {
         if (validNid) sideEffects.push(UNRESOLVED_WARN + ' (سجل الموظف)');
       } else {
-        const { error: updateErr } = await supabaseServer
+        const { error: updateErr } = await supabaseService
           .from('employees_master')
           .update({
             insurance_status,
@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
 
       if (discSheet) {
         // Check if already exists
-        const { data: existingDisc } = await supabaseServer
+        const { data: existingDisc } = await supabaseService
           .from('sheet_data')
           .select('id')
           .eq('sheet_id', discSheet.id)
@@ -227,13 +227,13 @@ export async function POST(request: NextRequest) {
         };
 
         if (existingDisc) {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .update({ row_data: discRowData, updated_at: now })
             .eq('id', existingDisc.id);
           sideEffects.push('تم تحديث سجل الموظف في شيت المناقضات');
         } else {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .insert({
               sheet_id:        discSheet.id,
@@ -258,7 +258,7 @@ export async function POST(request: NextRequest) {
       if (incWarn) sideEffects.push(incWarn);
 
       if (incomingSheet) {
-        const { data: existingInc } = await supabaseServer
+        const { data: existingInc } = await supabaseService
           .from('sheet_data')
           .select('id')
           .eq('sheet_id', incomingSheet.id)
@@ -278,13 +278,13 @@ export async function POST(request: NextRequest) {
         };
 
         if (existingInc) {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .update({ row_data: incRowData, updated_at: now })
             .eq('id', existingInc.id);
           sideEffects.push('تم تحديث حالة الموظف في شيت أرقام وارد التأمين');
         } else {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .insert({
               sheet_id:        incomingSheet.id,
@@ -307,7 +307,7 @@ export async function POST(request: NextRequest) {
       if (archWarn) sideEffects.push(archWarn);
 
       if (archSheet) {
-        const { data: archRow } = await supabaseServer
+        const { data: archRow } = await supabaseService
           .from('sheet_data')
           .select('id, row_data')
           .eq('sheet_id', archSheet.id)
@@ -343,13 +343,13 @@ export async function POST(request: NextRequest) {
         };
 
         if (archRow) {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .update({ row_data: updatedRowData, updated_at: now })
             .eq('id', archRow.id);
           sideEffects.push('تم تحديث حالة وثائق التوريد في شيت Archives');
         } else {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .insert({
               sheet_id:        archSheet.id,
@@ -374,7 +374,7 @@ export async function POST(request: NextRequest) {
       const resStateLabel = res_supplied_s6 ? 'تم التوريد' : 'جاهز لتوريد سن 6';
 
       if (resSheet) {
-        const { data: existingRes } = await supabaseServer
+        const { data: existingRes } = await supabaseService
           .from('sheet_data')
           .select('id, row_data')
           .eq('sheet_id', resSheet.id)
@@ -397,12 +397,12 @@ export async function POST(request: NextRequest) {
         };
 
         if (existingRes) {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .update({ row_data: resRowData, updated_at: now })
             .eq('id', existingRes.id);
         } else {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .insert({
               sheet_id:        resSheet.id,
@@ -420,7 +420,7 @@ export async function POST(request: NextRequest) {
       // matched strictly by NID so a cross-account code collision cannot
       // touch the other account's person)
       if (employeeAccountId !== null) {
-        await supabaseServer
+        await supabaseService
           .from('resignation_records')
           .update({
             insurance_supply_type: res_supply_type || 'يدوي',
@@ -444,7 +444,7 @@ export async function POST(request: NextRequest) {
       if (newWarn) sideEffects.push(newWarn);
 
       if (newSheet) {
-        const { data: existingNew } = await supabaseServer
+        const { data: existingNew } = await supabaseService
           .from('sheet_data')
           .select('id')
           .eq('sheet_id', newSheet.id)
@@ -468,13 +468,13 @@ export async function POST(request: NextRequest) {
         };
 
         if (existingNew) {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .update({ row_data: newRowData, updated_at: now })
             .eq('id', existingNew.id);
           sideEffects.push('تم تحديث بيانات الموظف في شيت New (الموظفين الجدد)');
         } else {
-          await supabaseServer
+          await supabaseService
             .from('sheet_data')
             .insert({
               sheet_id:        newSheet.id,
@@ -497,7 +497,7 @@ export async function POST(request: NextRequest) {
       if (reqWarn) sideEffects.push(reqWarn);
 
       if (reqSheet) {
-        await supabaseServer
+        await supabaseService
           .from('sheet_data')
           .insert({
             sheet_id:        reqSheet.id,
@@ -523,7 +523,7 @@ export async function POST(request: NextRequest) {
 
     // ── 8. Synchronize with search_history for live daily audit reporting ──
     if (validNid) try {
-      const { data: recentSearch } = await supabaseServer
+      const { data: recentSearch } = await supabaseService
         .from('search_history')
         .select('id, insurance_status, search_result')
         .eq('national_id', national_id)
@@ -555,7 +555,7 @@ export async function POST(request: NextRequest) {
           },
         };
 
-        await supabaseServer
+        await supabaseService
           .from('search_history')
           .update({
             insurance_status: insurance_status || recentSearch.insurance_status,
@@ -590,7 +590,7 @@ export async function POST(request: NextRequest) {
     // NID-keyed only; without a valid NID nothing is logged (review warning above).
     let clErr: { message: string } | null = null;
     if (validNid) {
-      const { error } = await (supabaseServer as unknown as { from: (table: string) => any })
+      const { error } = await (supabaseService as unknown as { from: (table: string) => any })
         .from('checklist_records')
         .upsert(checklistPayload, {
           onConflict: 'national_id',

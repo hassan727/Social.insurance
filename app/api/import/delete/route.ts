@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * DELETE /api/import/delete
@@ -35,7 +35,7 @@ export async function DELETE(request: Request) {
       source_type === 'monthly_payroll' ? 'monthly_payroll_records' : 'monthly_insurance_records';
 
     // 1. Delete all records from the data table
-    const { error: recordsDeleteError, count: deletedCount } = await supabaseServer
+    const { error: recordsDeleteError, count: deletedCount } = await supabaseService
       .from(targetTable as 'monthly_payroll_records')
       .delete({ count: 'exact' })
       .eq('period_year', period_year)
@@ -48,7 +48,7 @@ export async function DELETE(request: Request) {
     }
 
     // 2. Delete import log entries for this sheet
-    const { error: logDeleteError } = await supabaseServer
+    const { error: logDeleteError } = await supabaseService
       .from('import_logs')
       .delete()
       .eq('source_type', source_type)

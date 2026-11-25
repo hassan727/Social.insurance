@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * GET /api/conflict-review
@@ -17,9 +17,9 @@ export async function GET(request: NextRequest) {
     // ── Stats action ──────────────────────────────────────────────────────
     if (searchParams.get('action') === 'stats') {
       const [pending, approved, rejected] = await Promise.all([
-        supabaseServer.from('field_conflicts').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-        supabaseServer.from('field_conflicts').select('id', { count: 'exact', head: true }).eq('status', 'approved'),
-        supabaseServer.from('field_conflicts').select('id', { count: 'exact', head: true }).eq('status', 'rejected'),
+        supabaseService.from('field_conflicts').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        supabaseService.from('field_conflicts').select('id', { count: 'exact', head: true }).eq('status', 'approved'),
+        supabaseService.from('field_conflicts').select('id', { count: 'exact', head: true }).eq('status', 'rejected'),
       ]);
       return NextResponse.json({
         pending: pending.count ?? 0,
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     // ── Deduplication action ──────────────────────────────────────────────
     if (searchParams.get('action') === 'deduplicate') {
       const sheetName = searchParams.get('sheet_name') || null;
-      const { data, error } = await supabaseServer
+      const { data, error } = await supabaseService
         .rpc('deduplicate_sheet_data', { target_sheet_name: sheetName });
       if (error) throw new Error(error.message);
       return NextResponse.json({ success: true, results: data });
@@ -39,14 +39,14 @@ export async function GET(request: NextRequest) {
 
     // ── Detect conflicts action ───────────────────────────────────────────
     if (searchParams.get('action') === 'detect') {
-      const { data, error } = await supabaseServer
+      const { data, error } = await supabaseService
         .rpc('detect_all_field_conflicts');
       if (error) throw new Error(error.message);
       return NextResponse.json({ success: true, result: data?.[0] ?? null });
     }
 
     // ── Fetch conflicts list ──────────────────────────────────────────────
-    let query = supabaseServer
+    let query = supabaseService
       .from('field_conflicts')
       .select(`
         id, employee_id, field_name,
@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'decision must be approved, rejected, or merged' }, { status: 400 });
       }
 
-      const { data, error } = await supabaseServer.rpc('apply_conflict_decision', {
+      const { data, error } = await supabaseService.rpc('apply_conflict_decision', {
         conflict_id_param: conflict_id,
         decision,
         merged_val: merged_value || null,
@@ -128,7 +128,7 @@ export async function POST(request: NextRequest) {
 
       const results = await Promise.allSettled(
         conflict_ids.map((cid: string) =>
-          supabaseServer.rpc('apply_conflict_decision', {
+          supabaseService.rpc('apply_conflict_decision', {
             conflict_id_param: cid,
             decision,
             merged_val: null,
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
       const { employee_id } = body;
       if (!employee_id) return NextResponse.json({ error: 'employee_id required' }, { status: 400 });
 
-      const { data, error } = await supabaseServer.rpc('detect_employee_field_conflicts', {
+      const { data, error } = await supabaseService.rpc('detect_employee_field_conflicts', {
         employee_id_param: employee_id,
         import_id_param: null,
       });

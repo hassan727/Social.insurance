@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 export async function GET() {
   try {
-    const { data: logs, error } = await supabaseServer
+    const { data: logs, error } = await supabaseService
       .from('import_logs')
       .select('*')
       .order('created_at', { ascending: false });
@@ -29,7 +29,7 @@ export async function DELETE(request: Request) {
     }
 
     // 1. Fetch log entry metadata first to determine target table
-    const { data: logEntry, error: fetchErr } = await supabaseServer
+    const { data: logEntry, error: fetchErr } = await supabaseService
       .from('import_logs')
       .select('id, source_type, period_year, period_month, file_name')
       .eq('id', id)
@@ -44,41 +44,41 @@ export async function DELETE(request: Request) {
     // 2. Explicitly clean child table first to prevent cascade lock timeouts
     if (source_type === 'monthly_payroll') {
       if (period_year && period_month) {
-        await supabaseServer
+        await supabaseService
           .from('monthly_payroll_records')
           .delete()
           .eq('period_year', period_year)
           .eq('period_month', period_month);
       } else {
-        await supabaseServer.from('monthly_payroll_records').delete().eq('import_id', id);
+        await supabaseService.from('monthly_payroll_records').delete().eq('import_id', id);
       }
     } else if (source_type === 'monthly_insurance') {
       if (period_year && period_month) {
-        await supabaseServer
+        await supabaseService
           .from('monthly_insurance_records')
           .delete()
           .eq('period_year', period_year)
           .eq('period_month', period_month);
       } else {
-        await supabaseServer.from('monthly_insurance_records').delete().eq('import_id', id);
+        await supabaseService.from('monthly_insurance_records').delete().eq('import_id', id);
       }
     } else if (source_type === 'incoming_insurance') {
-      await supabaseServer.from('incoming_insurance_records').delete().eq('import_id', id);
+      await supabaseService.from('incoming_insurance_records').delete().eq('import_id', id);
     } else if (source_type === 'res') {
-      await supabaseServer.from('resignation_records').delete().eq('import_id', id);
+      await supabaseService.from('resignation_records').delete().eq('import_id', id);
     } else if (source_type === 'multi_sheet_import') {
       await Promise.all([
-        supabaseServer.from('sheet_data').delete().eq('import_id', id),
-        supabaseServer.from('incoming_insurance_records').delete().eq('import_id', id),
-        supabaseServer.from('resignation_records').delete().eq('import_id', id),
-        supabaseServer.from('monthly_payroll_records').delete().eq('import_id', id),
-        supabaseServer.from('monthly_insurance_records').delete().eq('import_id', id),
-        supabaseServer.from('employee_history').delete().eq('import_id', id),
+        supabaseService.from('sheet_data').delete().eq('import_id', id),
+        supabaseService.from('incoming_insurance_records').delete().eq('import_id', id),
+        supabaseService.from('resignation_records').delete().eq('import_id', id),
+        supabaseService.from('monthly_payroll_records').delete().eq('import_id', id),
+        supabaseService.from('monthly_insurance_records').delete().eq('import_id', id),
+        supabaseService.from('employee_history').delete().eq('import_id', id),
       ]);
     }
 
     // 3. Delete the log entry itself
-    const { error: deleteLogErr } = await supabaseServer
+    const { error: deleteLogErr } = await supabaseService
       .from('import_logs')
       .delete()
       .eq('id', id);

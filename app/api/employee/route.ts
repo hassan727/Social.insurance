@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * GET /api/employee
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
     const sortBy = searchParams.get('sort_by') ?? 'employee_code';
     const sortOrder = searchParams.get('sort_order') === 'desc' ? false : true;
 
-    let query = supabaseServer
+    let query = supabaseService
       .from('employees_master')
       .select(
         `id, company_account, employee_code, national_id, employee_name,
@@ -98,7 +98,7 @@ export async function GET(request: NextRequest) {
 
     // Aggregate stats for filters
     const [statusCounts, accountCounts] = await Promise.all([
-      supabaseServer
+      supabaseService
         .from('employees_master')
         .select('current_status')
         .then(({ data: d }) => {
@@ -109,7 +109,7 @@ export async function GET(request: NextRequest) {
           }
           return map;
         }),
-      supabaseServer
+      supabaseService
         .from('employees_master')
         .select('company_account')
         .then(({ data: d }) => {

@@ -3,7 +3,7 @@
  * Automatically detects and fixes corrupted employee data
  */
 
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 
 interface DataQualityIssue {
   employee_id: string;
@@ -18,7 +18,7 @@ interface DataQualityIssue {
  * Detect data quality issues in employees_master
  */
 export async function detectDataQualityIssues(): Promise<DataQualityIssue[]> {
-  const { data: employees, error } = await supabaseServer
+  const { data: employees, error } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, national_id, employee_name, phone_number, current_job_title, hire_date')
     .limit(1000);
@@ -87,7 +87,7 @@ export async function detectDataQualityIssues(): Promise<DataQualityIssue[]> {
  * Attempt to auto-fix corrupted data by analyzing patterns
  */
 export async function attemptAutoFix(employeeId: string): Promise<boolean> {
-  const { data: emp, error } = await supabaseServer
+  const { data: emp, error } = await supabaseService
     .from('employees_master')
     .select('*')
     .eq('id', employeeId)
@@ -120,7 +120,7 @@ export async function attemptAutoFix(employeeId: string): Promise<boolean> {
   if (Object.keys(fixes).length === 0) return false;
 
   // Apply fixes
-  const { error: updateError } = await supabaseServer
+  const { error: updateError } = await supabaseService
     .from('employees_master')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic subset of fields from corruption detection
     .update(fixes as any)
@@ -159,7 +159,7 @@ export async function flagCorruptedEmployees(): Promise<number> {
 
   if (employeeIds.length === 0) return 0;
 
-  const { error } = await supabaseServer
+  const { error } = await supabaseService
     .from('employees_master')
     .update({ has_duplicate_risk: true }) // Re-use this flag for now
     .in('id', employeeIds);

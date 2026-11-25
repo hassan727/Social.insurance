@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { importMultiSheetExcel } from '@/lib/smartImportService';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 import { resolveAccountId } from '@/lib/accountResolver';
 
 export const maxDuration = 300; // 5 minutes for large imports
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
     if (accountId === null) {
       return NextResponse.json({ error: 'الحساب المحدد غير معروف. أضفه أولاً في الحسابات أو راجع الإدخال — لا يوجد افتراض تلقائي.' }, { status: 400 });
     }
-    const { data: accountRow } = await supabaseServer
+    const { data: accountRow } = await supabaseService
       .from('company_accounts')
       .select('account_code, aliases')
       .eq('id', accountId)

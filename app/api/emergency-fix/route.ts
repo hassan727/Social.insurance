@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * POST /api/emergency-fix
@@ -9,7 +9,7 @@ import { supabaseServer } from '@/lib/supabaseServer';
 export async function POST() {
   try {
     // Step 1: Get ALL employees and filter in-memory
-    const { data: allEmployees, error: fetchError } = await supabaseServer
+    const { data: allEmployees, error: fetchError } = await supabaseService
       .from('employees_master')
       .select('id, employee_name, national_id, phone_number, current_job_title');
 
@@ -54,7 +54,7 @@ export async function POST() {
     let deleted = 0;
     for (let i = 0; i < corruptedIds.length; i += 1000) {
       const batch = corruptedIds.slice(i, i + 1000);
-      const { error: delError } = await supabaseServer
+      const { error: delError } = await supabaseService
         .from('employees_master')
         .delete()
         .in('id', batch);

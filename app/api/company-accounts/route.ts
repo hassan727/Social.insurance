@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 // Lists active company accounts for the import page's explicit account selector.
 export async function GET() {
   try {
-    const { data, error } = await supabaseServer
+    const { data, error } = await supabaseService
       .from('company_accounts')
       .select('id, account_code, account_name, aliases')
       .eq('is_active', true)

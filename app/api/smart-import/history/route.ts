@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * Get import history
@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!, 10) : 50;
 
-    const { data: imports, error } = await supabaseServer
+    const { data: imports, error } = await supabaseService
       .from('import_logs')
       .select('*')
       .eq('source_type', 'multi_sheet_import')
@@ -21,7 +21,7 @@ export async function GET(request: Request) {
     }
 
     // Get employee history for transfers
-    const { data: transfers, error: transfersError } = await supabaseServer
+    const { data: transfers, error: transfersError } = await supabaseService
       .from('employee_history')
       .select('*')
       .eq('change_type', 'account_transfer')

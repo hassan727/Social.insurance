@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * GET /api/database-control
@@ -25,17 +25,17 @@ export async function GET() {
       sheetsList,
       importLogs,
     ] = await Promise.all([
-      supabaseServer.from('incoming_insurance_records').select('id', { count: 'exact', head: true }),
-      supabaseServer.from('incoming_insurance_records').select('id', { count: 'exact', head: true }).not('insurance_number', 'is', null),
-      supabaseServer.from('resignation_records').select('id', { count: 'exact', head: true }),
-      supabaseServer.from('resignation_records').select('id', { count: 'exact', head: true }).not('resignation_date', 'is', null),
-      supabaseServer.from('sheet_data').select('id', { count: 'exact', head: true }),
-      supabaseServer.from('sheet_data').select('id', { count: 'exact', head: true }).eq('is_latest', false),
-      supabaseServer.from('employees_master').select('id', { count: 'exact', head: true }),
-      supabaseServer.from('employees_master').select('id', { count: 'exact', head: true }).is('insurance_number', null),
-      supabaseServer.from('employees_master').select('id', { count: 'exact', head: true }).or('current_status.ilike.%مستقيل%,current_status.ilike.%resign%'),
-      supabaseServer.from('dynamic_sheets').select('id, sheet_name, display_name, total_records_imported, last_import_date').order('sheet_name'),
-      supabaseServer.from('import_logs').select('*').order('created_at', { ascending: false }).limit(20),
+      supabaseService.from('incoming_insurance_records').select('id', { count: 'exact', head: true }),
+      supabaseService.from('incoming_insurance_records').select('id', { count: 'exact', head: true }).not('insurance_number', 'is', null),
+      supabaseService.from('resignation_records').select('id', { count: 'exact', head: true }),
+      supabaseService.from('resignation_records').select('id', { count: 'exact', head: true }).not('resignation_date', 'is', null),
+      supabaseService.from('sheet_data').select('id', { count: 'exact', head: true }),
+      supabaseService.from('sheet_data').select('id', { count: 'exact', head: true }).eq('is_latest', false),
+      supabaseService.from('employees_master').select('id', { count: 'exact', head: true }),
+      supabaseService.from('employees_master').select('id', { count: 'exact', head: true }).is('insurance_number', null),
+      supabaseService.from('employees_master').select('id', { count: 'exact', head: true }).or('current_status.ilike.%مستقيل%,current_status.ilike.%resign%'),
+      supabaseService.from('dynamic_sheets').select('id, sheet_name, display_name, total_records_imported, last_import_date').order('sheet_name'),
+      supabaseService.from('import_logs').select('*').order('created_at', { ascending: false }).limit(20),
     ]);
 
     return NextResponse.json({
@@ -92,28 +92,28 @@ export async function POST(request: NextRequest) {
 
       let deletedCount = 0;
       if (table === 'incoming_insurance') {
-        const { count, error } = await supabaseServer
+        const { count, error } = await supabaseService
           .from('incoming_insurance_records')
           .delete({ count: 'exact' })
           .neq('id', '00000000-0000-0000-0000-000000000000');
         if (error) throw error;
         deletedCount = count ?? 0;
       } else if (table === 'resignation') {
-        const { count, error } = await supabaseServer
+        const { count, error } = await supabaseService
           .from('resignation_records')
           .delete({ count: 'exact' })
           .neq('id', '00000000-0000-0000-0000-000000000000');
         if (error) throw error;
         deletedCount = count ?? 0;
       } else if (table === 'sheet_data') {
-        const { count, error } = await supabaseServer
+        const { count, error } = await supabaseService
           .from('sheet_data')
           .delete({ count: 'exact' })
           .neq('id', '00000000-0000-0000-0000-000000000000');
         if (error) throw error;
         deletedCount = count ?? 0;
       } else if (table === 'field_conflicts') {
-        const { count, error } = await supabaseServer
+        const { count, error } = await supabaseService
           .from('field_conflicts')
           .delete({ count: 'exact' })
           .neq('id', '00000000-0000-0000-0000-000000000000');
@@ -137,16 +137,16 @@ export async function POST(request: NextRequest) {
 
       // Clean all child data associated with this import
       await Promise.allSettled([
-        supabaseServer.from('sheet_data').delete().eq('import_id', import_id),
-        supabaseServer.from('incoming_insurance_records').delete().eq('import_id', import_id),
-        supabaseServer.from('resignation_records').delete().eq('import_id', import_id),
-        supabaseServer.from('monthly_payroll_records').delete().eq('import_id', import_id),
-        supabaseServer.from('monthly_insurance_records').delete().eq('import_id', import_id),
-        supabaseServer.from('employee_history').delete().eq('import_id', import_id),
-        supabaseServer.from('field_conflicts').delete().eq('proposed_import_id', import_id),
+        supabaseService.from('sheet_data').delete().eq('import_id', import_id),
+        supabaseService.from('incoming_insurance_records').delete().eq('import_id', import_id),
+        supabaseService.from('resignation_records').delete().eq('import_id', import_id),
+        supabaseService.from('monthly_payroll_records').delete().eq('import_id', import_id),
+        supabaseService.from('monthly_insurance_records').delete().eq('import_id', import_id),
+        supabaseService.from('employee_history').delete().eq('import_id', import_id),
+        supabaseService.from('field_conflicts').delete().eq('proposed_import_id', import_id),
       ]);
 
-      const { error: logErr } = await supabaseServer
+      const { error: logErr } = await supabaseService
         .from('import_logs')
         .delete()
         .eq('id', import_id);
@@ -167,7 +167,7 @@ export async function POST(request: NextRequest) {
       let matchedAndUpdated = 0;
 
       while (hasMore) {
-        const { data: chunk, error } = await supabaseServer
+        const { data: chunk, error } = await supabaseService
           .from('incoming_insurance_records')
           .select('national_id, employee_code, company_account, insurance_number, insurance_status, insurance_job_title, subscription_start_date')
           .not('insurance_number', 'is', null)
@@ -187,7 +187,7 @@ export async function POST(request: NextRequest) {
               const code = r.employee_code ? String(r.employee_code).trim() : null;
 
               if (nid && nid.length >= 10) {
-                const { count } = await supabaseServer
+                const { count } = await supabaseService
                   .from('employees_master')
                   .update({
                     insurance_number: r.insurance_number,
@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
                   .is('insurance_number', null);
                 if (count && count > 0) matchedAndUpdated += count;
               } else if (code && r.company_account) {
-                const { count } = await supabaseServer
+                const { count } = await supabaseService
                   .from('employees_master')
                   .update({
                     insurance_number: r.insurance_number,
@@ -231,7 +231,7 @@ export async function POST(request: NextRequest) {
 
     // ── 4. Sync Resignations to Employees Master ───────────────────────────
     if (action === 'sync_resignation_to_master') {
-      const { data: resList, error } = await supabaseServer
+      const { data: resList, error } = await supabaseService
         .from('resignation_records')
         .select('national_id, employee_code, resignation_date, last_working_day, resignation_type')
         .not('resignation_date', 'is', null);
@@ -244,7 +244,7 @@ export async function POST(request: NextRequest) {
         const code = r.employee_code ? String(r.employee_code).trim() : null;
 
         if (nid && nid.length >= 10) {
-          const { count } = await supabaseServer
+          const { count } = await supabaseService
             .from('employees_master')
             .update({
               resignation_date: r.resignation_date,
@@ -255,7 +255,7 @@ export async function POST(request: NextRequest) {
             .eq('national_id', nid);
           if (count && count > 0) updatedCount += count;
         } else if (code) {
-          const { count } = await supabaseServer
+          const { count } = await supabaseService
             .from('employees_master')
             .update({
               resignation_date: r.resignation_date,
@@ -278,7 +278,7 @@ export async function POST(request: NextRequest) {
     // ── 5. Deduplicate Sheet Data ─────────────────────────────────────────
     if (action === 'deduplicate_sheets') {
       const { sheet_name } = body;
-      const { data, error } = await supabaseServer.rpc('deduplicate_sheet_data', {
+      const { data, error } = await supabaseService.rpc('deduplicate_sheet_data', {
         target_sheet_name: sheet_name || null,
       });
       if (error) throw error;

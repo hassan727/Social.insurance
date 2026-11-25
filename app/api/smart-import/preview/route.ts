@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 import { resolveAccountId } from '@/lib/accountResolver';
 
 export async function POST(request: Request) {
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
     }
 
     // Get registered sheets from database
-    const { data: registeredSheets, error: sheetsError } = await supabaseServer
+    const { data: registeredSheets, error: sheetsError } = await supabaseService
       .from('dynamic_sheets')
       .select('sheet_name, display_name, description, is_active, column_definitions, matching_keys')
       .eq('is_active', true);

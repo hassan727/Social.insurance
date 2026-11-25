@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { autoMapColumns, SOURCE_COLUMNS, SourceType } from '@/lib/excelParser';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 export async function POST(request: Request) {
   try {
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
 
     if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
       if (periodYear && periodMonth) {
-        const { data: existing } = await supabaseServer
+        const { data: existing } = await supabaseService
           .from('import_logs')
           .select('id, file_name, created_at, rows_accepted')
           .eq('source_type', sourceType)
@@ -110,7 +110,7 @@ export async function POST(request: Request) {
       }
     } else {
       // Non-monthly files
-      const { data: existing } = await supabaseServer
+      const { data: existing } = await supabaseService
         .from('import_logs')
         .select('id, file_name, created_at, rows_accepted')
         .eq('source_type', sourceType)

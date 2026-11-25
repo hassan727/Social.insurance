@@ -3,7 +3,7 @@
  * Purpose: Intelligently import multi-sheet Excel files with automatic matching and update logic
  */
 
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 import * as XLSX from 'xlsx';
 import { invalidateReportsCache } from './reportsEngine';
 import type { Json, Database } from '@/types/supabase';
@@ -319,7 +319,7 @@ export async function findMatchingEmployee(
 
   // Priority 1: Match by national_id (Global Sovereign Unique ID - 14 digits)
   if (row_national_id && row_national_id.length === 14) {
-    const { data: byNationalId } = await supabaseServer
+    const { data: byNationalId } = await supabaseService
       .from('employees_master')
       .select('id, company_account, employee_code')
       .eq('national_id', row_national_id)
@@ -337,7 +337,7 @@ export async function findMatchingEmployee(
 
   // Priority 2: Match by insurance_number (State insurance unique ID)
   if (cleanInsNo && cleanInsNo.length >= 7) {
-    const { data: byIns } = await supabaseServer
+    const { data: byIns } = await supabaseService
       .from('employees_master')
       .select('id, company_account, employee_code')
       .eq('insurance_number', cleanInsNo)
@@ -355,7 +355,7 @@ export async function findMatchingEmployee(
 
   // Priority 3: Match by employee_code (Universal Employee Code across accounts)
   if (row_code) {
-    const { data: byCodeList } = await supabaseServer
+    const { data: byCodeList } = await supabaseService
       .from('employees_master')
       .select('id, company_account, employee_code, employee_name')
       .eq('employee_code', row_code)
@@ -384,7 +384,7 @@ export async function findMatchingEmployee(
   // Priority 4: Match by normalized name
   if (row_name) {
     const normalizedInputName = normalizeText(row_name);
-    const { data: byName } = await supabaseServer
+    const { data: byName } = await supabaseService
       .from('employees_master')
       .select('id, employee_name')
       .ilike('employee_name', `%${normalizedInputName.slice(0, 6)}%`)
@@ -436,7 +436,7 @@ export async function upsertEmployee(
 
   if (matchResult.matched && matchResult.employee_id) {
     // UPDATE existing employee
-    const { data: existingEmp } = await supabaseServer
+    const { data: existingEmp } = await supabaseService
       .from('employees_master')
       .select('*')
       .eq('id', matchResult.employee_id)
@@ -481,7 +481,7 @@ export async function upsertEmployee(
     }
 
     // Update employee
-    const { error: updateError } = await supabaseServer
+    const { error: updateError } = await supabaseService
       .from('employees_master')
       .update({
         company_account: companyAccount,
@@ -498,7 +498,7 @@ export async function upsertEmployee(
 
     // Log changes to employee_history
     if (changedFields.length > 0) {
-      await supabaseServer.from('employee_history').insert({
+      await supabaseService.from('employee_history').insert({
         employee_id: matchResult.employee_id,
         change_type: changedFields.includes('company_account') ? 'account_transfer' : 'data_update',
         from_company_account: oldValues.company_account as string | undefined,
@@ -519,7 +519,7 @@ export async function upsertEmployee(
     };
   } else {
     // INSERT new employee
-    const { data: newEmp, error: insertError } = await supabaseServer
+    const { data: newEmp, error: insertError } = await supabaseService
       .from('employees_master')
       .insert({
         company_account: companyAccount,
@@ -539,7 +539,7 @@ export async function upsertEmployee(
     if (insertError) throw insertError;
 
     // Log to history
-    await supabaseServer.from('employee_history').insert({
+    await supabaseService.from('employee_history').insert({
       employee_id: newEmp.id,
       change_type: 'initial_import',
       to_company_account: companyAccount,
@@ -588,7 +588,7 @@ export async function importSheet(
     // Matching is deterministic: an exact name match always wins its tier, and
     // a tier with no exact match and more than one candidate is AMBIGUOUS —
     // the import fails closed for review instead of picking by arrival order.
-    const { data: allActiveSheets } = await supabaseServer
+    const { data: allActiveSheets } = await supabaseService
       .from('dynamic_sheets')
       .select('*')
       .eq('is_active', true);
@@ -637,7 +637,7 @@ export async function importSheet(
         };
       }
       // Grounding check: who actually uses this legacy sheet?
-      const { data: usageRows } = await supabaseServer
+      const { data: usageRows } = await supabaseService
         .from('sheet_data')
         .select('employees_master!inner(account_id)')
         .eq('sheet_id', legacyShared.id)
@@ -653,14 +653,14 @@ export async function importSheet(
           // Guarded claim: only if still unclaimed, then VERIFY the stamp
           // landed. A unique-index conflict or a lost race must never leave
           // the import attached to an unscoped shared row.
-          const { error: claimErr } = await supabaseServer
+          const { error: claimErr } = await supabaseService
             .from('dynamic_sheets')
             .update({ account_id: accountId })
             .eq('id', legacyShared.id)
             .is('account_id', null);
           let claimed = false;
           if (!claimErr) {
-            const { data: verify } = await supabaseServer
+            const { data: verify } = await supabaseService
               .from('dynamic_sheets')
               .select('account_id')
               .eq('id', legacyShared.id)
@@ -782,7 +782,7 @@ export async function importSheet(
       // (No global upsert: a same-named sheet of another account is a
       // different source.) On the rare race where the scoped unique index
       // rejects the insert, re-read the winner.
-      const { data: insertedSheet, error: insSheetErr } = await supabaseServer.from('dynamic_sheets').insert({
+      const { data: insertedSheet, error: insSheetErr } = await supabaseService.from('dynamic_sheets').insert({
         sheet_name: sheetName,
         display_name: sheetName,
         description: `ورقة "${sheetName}" - تم التسجيل التلقائي`,
@@ -799,7 +799,7 @@ export async function importSheet(
       if (insertedSheet) {
         currentSheetId = insertedSheet.id;
       } else if (insSheetErr && accountId !== null) {
-        const { data: winner } = await supabaseServer.from('dynamic_sheets')
+        const { data: winner } = await supabaseService.from('dynamic_sheets')
           .select('id').eq('account_id', accountId).eq('sheet_name', sheetName).maybeSingle();
         if (winner) currentSheetId = winner.id;
       }
@@ -815,13 +815,13 @@ export async function importSheet(
       const hit = sheetIdByAccount.get(acct);
       if (hit) return hit;
       if (acct === null) return currentSheetId;
-      const { data: existing } = await supabaseServer.from('dynamic_sheets')
+      const { data: existing } = await supabaseService.from('dynamic_sheets')
         .select('id').eq('account_id', acct).eq('sheet_name', sheetName).maybeSingle();
       if (existing?.id) {
         sheetIdByAccount.set(acct, existing.id as string);
         return existing.id as string;
       }
-      const { data: inserted } = await supabaseServer.from('dynamic_sheets').insert({
+      const { data: inserted } = await supabaseService.from('dynamic_sheets').insert({
         sheet_name: sheetName,
         display_name: sheetName,
         description: `ورقة "${sheetName}" - تم التسجيل التلقائي`,
@@ -838,7 +838,7 @@ export async function importSheet(
         sheetIdByAccount.set(acct, inserted.id as string);
         return inserted.id as string;
       }
-      const { data: winner } = await supabaseServer.from('dynamic_sheets')
+      const { data: winner } = await supabaseService.from('dynamic_sheets')
         .select('id').eq('account_id', acct).eq('sheet_name', sheetName).maybeSingle();
       if (winner?.id) {
         sheetIdByAccount.set(acct, winner.id as string);
@@ -872,12 +872,12 @@ export async function importSheet(
     }
 
     // 5. Pre-load existing employees into memory for high-speed matching (1 single query instead of thousands)
-    const { data: existingEmps } = await supabaseServer
+    const { data: existingEmps } = await supabaseService
       .from('employees_master')
       .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data, account_employee_uid');
 
     // Row-account resolution (shared with the bridge phase below).
-    const { data: rowAccounts } = await supabaseServer
+    const { data: rowAccounts } = await supabaseService
       .from('company_accounts')
       .select('id, account_code, aliases')
       .eq('is_active', true);
@@ -1365,10 +1365,10 @@ export async function importSheet(
     const failedEmpIds = new Set<string>();
     for (let i = 0; i < employeesToInsert.length; i += 150) {
         const chunk = employeesToInsert.slice(i, i + 150);
-        const { error } = await supabaseServer.from('employees_master').insert(chunk);
+        const { error } = await supabaseService.from('employees_master').insert(chunk);
         if (!error) { newEmployees += chunk.length; continue; }
         for (const row of chunk) {
-          const { error: rowErr } = await supabaseServer.from('employees_master').insert(row);
+          const { error: rowErr } = await supabaseService.from('employees_master').insert(row);
           if (!rowErr) { newEmployees++; continue; }
           const rn = empRowNumberById.get(row.id as string);
           errors.push(`صف ${rn ?? '?'}: تعذّر إدراج الموظف الجديد (${rowErr.message}) — لم يُستورد؛ يحتاج مراجعة`);
@@ -1383,7 +1383,7 @@ export async function importSheet(
         const chunk = employeesToUpdate.slice(i, i + 20);
         await Promise.all(
           chunk.map(async (item) => {
-            const { error: upErr } = await supabaseServer.from('employees_master').update(item.data).eq('id', item.id);
+            const { error: upErr } = await supabaseService.from('employees_master').update(item.data).eq('id', item.id);
             if (!upErr) { updatedEmployees++; return; }
             const rn = empRowNumberById.get(item.id);
             errors.push(`صف ${rn ?? '?'}: تعذّر تحديث الموظف (${upErr.message}) — لم يُحدَّث؛ يحتاج مراجعة`);
@@ -1413,7 +1413,7 @@ export async function importSheet(
       for (const [sid, empSet] of Array.from(empIdsBySheet.entries())) {
         const ids = Array.from(empSet);
         for (let i = 0; i < ids.length; i += 200) {
-          const { error: supErr } = await supabaseServer
+          const { error: supErr } = await supabaseService
             .from('sheet_data')
             .update({ is_latest: false })
             .eq('sheet_id', sid)
@@ -1441,10 +1441,10 @@ export async function importSheet(
       };
       for (let i = 0; i < sheetDataFiltered.length; i += 250) {
         const chunk = sheetDataFiltered.slice(i, i + 250);
-        const { error } = await supabaseServer.from('sheet_data').insert(chunk);
+        const { error } = await supabaseService.from('sheet_data').insert(chunk);
         if (!error) continue;
         for (const row of chunk) {
-          const { error: rowErr } = await supabaseServer.from('sheet_data').insert(row);
+          const { error: rowErr } = await supabaseService.from('sheet_data').insert(row);
           if (rowErr) noteSheetDataFailure(row, rowErr.message);
         }
       }
@@ -1453,7 +1453,7 @@ export async function importSheet(
       const historyFiltered = historyToInsert.filter((h) => !failedEmpIds.has(h.employee_id as string));
       for (let i = 0; i < historyFiltered.length; i += 250) {
         const chunk = historyFiltered.slice(i, i + 250);
-        const { error: histErr } = await supabaseServer.from('employee_history').insert(chunk);
+        const { error: histErr } = await supabaseService.from('employee_history').insert(chunk);
         if (histErr) { errors.push(`خطأ في حفظ سجل التاريخ: ${histErr.message}`); processingFailures++; }
       }
 
@@ -1476,7 +1476,7 @@ export async function importSheet(
       for (let i = 0; i < incomingBatch.length; i += 150) {
         const chunk = incomingBatch.slice(i, i + 150);
         // Upsert: update existing record if same employee in same company_account
-        const { error } = await supabaseServer
+        const { error } = await supabaseService
           .from('incoming_insurance_records')
           .upsert(chunk, {
             onConflict: 'employee_code,company_account',
@@ -1484,23 +1484,23 @@ export async function importSheet(
           });
         if (error) {
           // Fallback: plain insert if upsert fails (e.g. constraint not set up yet)
-          const { error: insertErr } = await supabaseServer.from('incoming_insurance_records').insert(chunk);
+          const { error: insertErr } = await supabaseService.from('incoming_insurance_records').insert(chunk);
           if (insertErr) console.error('Bridge incoming_insurance error:', insertErr.message);
         }
       }
       for (let i = 0; i < resignationBatch.length; i += 150) {
         const chunk = resignationBatch.slice(i, i + 150);
-        const { error } = await supabaseServer.from('resignation_records').insert(chunk);
+        const { error } = await supabaseService.from('resignation_records').insert(chunk);
         if (error) console.error('Bridge resignation_records error:', error.message);
       }
       for (let i = 0; i < payrollBatch.length; i += 150) {
         const chunk = payrollBatch.slice(i, i + 150);
-        const { error } = await supabaseServer.from('monthly_payroll_records').insert(chunk);
+        const { error } = await supabaseService.from('monthly_payroll_records').insert(chunk);
         if (error) { errors.push(`Bridge monthly_payroll error: ${error.message}`); processingFailures++; }
       }
       for (let i = 0; i < insuranceBatch.length; i += 150) {
         const chunk = insuranceBatch.slice(i, i + 150);
-        const { error } = await supabaseServer.from('monthly_insurance_records').insert(chunk);
+        const { error } = await supabaseService.from('monthly_insurance_records').insert(chunk);
         if (error) { errors.push(`Bridge monthly_insurance error: ${error.message}`); processingFailures++; }
       }
 
@@ -1524,12 +1524,12 @@ export async function importSheet(
         // that account's absent employees AND (b) were written by THIS
         // stream's imports. Rows routed here from another company's workbook,
         // or with no import linkage, are never touched (fail closed).
-        const { data: streamLogs } = await supabaseServer
+        const { data: streamLogs } = await supabaseService
           .from('import_logs')
           .select('id')
           .eq('account_id', accountId);
         const streamLogIds = (streamLogs || []).map((l) => l.id as string);
-        const { data: nameSheets } = await supabaseServer
+        const { data: nameSheets } = await supabaseService
           .from('dynamic_sheets')
           .select('id, account_id')
           .eq('sheet_name', sheetName)
@@ -1538,7 +1538,7 @@ export async function importSheet(
           const acct = cat.account_id;
           const acctSheetId = cat.id;
           const importedEmpIds = empIdsBySheet.get(acctSheetId) || new Set<string>();
-          const { data: accEmps, error: accErr } = await supabaseServer
+          const { data: accEmps, error: accErr } = await supabaseService
             .from('employees_master')
             .select('id')
             .eq('account_id', acct);
@@ -1551,7 +1551,7 @@ export async function importSheet(
             .filter((id) => !importedEmpIds.has(id));
           for (let i = 0; i < staleEmpIds.length; i += 200) {
             const chunk = staleEmpIds.slice(i, i + 200);
-            let flipQ = supabaseServer
+            let flipQ = supabaseService
               .from('sheet_data')
               .update({ is_latest: false })
               .eq('sheet_id', acctSheetId)
@@ -1582,7 +1582,7 @@ export async function importSheet(
 
       // 9. Update sheet statistics
       if (currentSheetId) {
-        await supabaseServer
+        await supabaseService
           .from('dynamic_sheets')
           .update({
             last_import_date: new Date().toISOString(),
@@ -1634,7 +1634,7 @@ export async function importMultiSheetExcel(
     const results: Record<string, ImportResult> = {};
 
     // Create import log
-    const { data: importLog, error: logError } = await supabaseServer
+    const { data: importLog, error: logError } = await supabaseService
       .from('import_logs')
       .insert({
         source_type: 'multi_sheet_import',
@@ -1659,7 +1659,7 @@ export async function importMultiSheetExcel(
     const totalUpdated = Object.values(results).reduce((sum, r) => sum + r.updated_employees, 0);
     const totalSkipped = Object.values(results).reduce((sum, r) => sum + r.skipped_rows, 0);
 
-    await supabaseServer
+    await supabaseService
       .from('import_logs')
       .update({
         rows_accepted: totalNew + totalUpdated,
@@ -1678,7 +1678,7 @@ export async function importMultiSheetExcel(
     // Run conflict detection after import (non-blocking — fires and forgets)
     // The Postgres function detect_all_field_conflicts() scans all employees
     // and inserts into field_conflicts for any field-level mismatch.
-    (supabaseServer.rpc('detect_all_field_conflicts') as unknown as Promise<unknown>).then(() => {
+    (supabaseService.rpc('detect_all_field_conflicts') as unknown as Promise<unknown>).then(() => {
       console.log('[smartImport] Conflict detection complete after import');
     }).catch((e: unknown) => {
       console.warn('[smartImport] Conflict detection failed (non-critical):', e);

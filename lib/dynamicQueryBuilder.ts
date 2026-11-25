@@ -3,7 +3,7 @@
  * Purpose: Flexible report generation from employees_master and sheet_data
  */
 
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 import * as XLSX from 'xlsx';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -77,7 +77,7 @@ export async function executeQuery(request: QueryRequest): Promise<QueryResult> 
     } = request;
 
     // Start building query
-    let query = supabaseServer
+    let query = supabaseService
       .from('employees_master')
       .select('*', { count: 'exact' });
 
@@ -171,7 +171,7 @@ export async function executeQuery(request: QueryRequest): Promise<QueryResult> 
     // Fetch specific sheet data in batch if requested
     if (include_sheets.length > 0 && employees.length > 0) {
       const empIds = employees.map((e) => e.id).filter(Boolean);
-      const { data: batchSheetData } = await supabaseServer
+      const { data: batchSheetData } = await supabaseService
         .from('sheet_data')
         .select('employee_id, sheet_id, row_data, dynamic_sheets(sheet_name, display_name)')
         .in('employee_id', empIds)

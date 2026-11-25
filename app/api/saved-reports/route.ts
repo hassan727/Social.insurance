@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 export async function GET() {
   try {
-    const { data, error } = await supabaseServer
+    const { data, error } = await supabaseService
       .from('saved_reports')
       .select('*')
       .order('is_pinned', { ascending: false })
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'report_name and report_config are required' }, { status: 400 });
     }
 
-    const { data, error } = await supabaseServer
+    const { data, error } = await supabaseService
       .from('saved_reports')
       .insert({
         report_name,
@@ -57,7 +57,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    const { error } = await supabaseServer
+    const { error } = await supabaseService
       .from('saved_reports')
       .delete()
       .eq('id', id);

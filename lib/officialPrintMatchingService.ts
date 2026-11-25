@@ -14,7 +14,7 @@
 
 import * as fs from 'fs';
 import * as XLSX from 'xlsx';
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 import { normalizeArabicText } from './matchingEngine';
 import { cleanNationalId } from './smartImportService';
 
@@ -336,7 +336,7 @@ async function fetchAllRows<T = Record<string, any>>(tableName: string, selectFi
   const step = 1000;
   while (true) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data, error } = await (supabaseServer.from(tableName as any) as any)
+    const { data, error } = await (supabaseService.from(tableName as any) as any)
       .select(selectFields)
       .range(from, from + step - 1);
     if (error) {

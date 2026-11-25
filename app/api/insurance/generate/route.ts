@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * POST /api/insurance/generate
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     const payrollRows: any[] = [];
 
     while (true) {
-      const { data, error: payErr } = await supabaseServer
+      const { data, error: payErr } = await supabaseService
         .from('monthly_payroll_records')
         .select('*')
         .eq('period_year', period_year)
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
 
     // 2. Build Master Insurance Registry from incoming & previous insurance months
     // A) From incoming_insurance_records
-    const { data: incomingData } = await supabaseServer
+    const { data: incomingData } = await supabaseService
       .from('incoming_insurance_records')
       .select('employee_code, national_id, insurance_number, insurance_job_title, job_title');
 
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     for (let m = period_month - 1; m >= 1; m--) {
       let histPage = 0;
       while (true) {
-        const { data: pageRecs, error: hErr } = await supabaseServer
+        const { data: pageRecs, error: hErr } = await supabaseService
           .from('monthly_insurance_records')
           .select('employee_code, national_id, insurance_number, raw_data')
           .eq('period_year', period_year)
@@ -109,13 +109,13 @@ export async function POST(request: Request) {
     }
 
     // 3. Clean up any existing records for this month (clean overwrite)
-    await supabaseServer
+    await supabaseService
       .from('monthly_insurance_records')
       .delete()
       .eq('period_year', period_year)
       .eq('period_month', period_month);
 
-    await supabaseServer
+    await supabaseService
       .from('import_logs')
       .delete()
       .eq('source_type', 'monthly_insurance')
@@ -130,7 +130,7 @@ export async function POST(request: Request) {
     const monthName = monthNames[period_month] || `شهر ${period_month}`;
     const generatedFileName = `التأمينات الاجتماعية ${monthName} ${period_year} (توليد آلي من المرتبات).xlsx`;
 
-    const { data: logEntry, error: logErr } = await supabaseServer
+    const { data: logEntry, error: logErr } = await supabaseService
       .from('import_logs')
       .insert({
         source_type: 'monthly_insurance',
@@ -226,7 +226,7 @@ export async function POST(request: Request) {
     const batchSize = 500;
     for (let i = 0; i < recordsToInsert.length; i += batchSize) {
       const batch = recordsToInsert.slice(i, i + batchSize);
-      const { error: insBatchErr } = await supabaseServer
+      const { error: insBatchErr } = await supabaseService
         .from('monthly_insurance_records')
         .insert(batch);
       if (insBatchErr) throw insBatchErr;

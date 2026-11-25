@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * GET /api/import/logs
@@ -8,7 +8,7 @@ import { supabaseServer } from '@/lib/supabaseServer';
  */
 export async function GET() {
   try {
-    const { data, error } = await supabaseServer
+    const { data, error } = await supabaseService
       .from('import_logs')
       .select('source_type, period_month, period_year, file_name, rows_accepted, created_at')
       .order('period_year', { ascending: true })

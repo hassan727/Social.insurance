@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 import * as XLSX from 'xlsx';
 
 // ── Types ──
@@ -245,7 +245,7 @@ async function handleExport(request: NextRequest, body: AnyRecord) {
   }
 
   // 1. Fetch search history records
-  let query = supabaseServer
+  let query = supabaseService
     .from('search_history')
     .select('*')
     .eq('result_found', true)

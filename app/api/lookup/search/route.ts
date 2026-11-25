@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { searchEmployees } from '@/lib/lookupService';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type JsonValue = any;
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
           };
 
           // Check if a record for this national_id already exists today
-          const { data: existing } = await supabaseServer
+          const { data: existing } = await supabaseService
             .from('search_history')
             .select('id')
             .gte('search_timestamp', `${todayStr}T00:00:00.000Z`)
@@ -94,13 +94,13 @@ export async function GET(request: Request) {
 
           if (existing?.id) {
             // UPDATE — refresh data, do NOT create duplicate
-            await supabaseServer
+            await supabaseService
               .from('search_history')
               .update(basePayload)
               .eq('id', existing.id);
           } else {
             // INSERT — first search for this national ID today
-            await supabaseServer.from('search_history').insert(basePayload);
+            await supabaseService.from('search_history').insert(basePayload);
           }
         }
       } catch (logError) {
@@ -115,7 +115,7 @@ export async function GET(request: Request) {
         const todayStr = new Date().toISOString().split('T')[0];
 
         // Deduplicate not-found logs for the same national ID on the same day
-        const { data: existingNotFound } = await supabaseServer
+        const { data: existingNotFound } = await supabaseService
           .from('search_history')
           .select('id')
           .gte('search_timestamp', `${todayStr}T00:00:00.000Z`)
@@ -125,7 +125,7 @@ export async function GET(request: Request) {
           .maybeSingle();
 
         if (!existingNotFound) {
-          await supabaseServer.from('search_history').insert({
+          await supabaseService.from('search_history').insert({
             search_query: digitsOnly,
             national_id: digitsOnly,
             result_found: false,

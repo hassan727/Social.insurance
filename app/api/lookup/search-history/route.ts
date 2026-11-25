@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 export interface EnrichedSearchHistoryRecord {
   id: string;
@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
     const searchQuery = (searchParams.get('search') || '').toLowerCase().trim();
 
     // Base query
-    let query = supabaseServer
+    let query = supabaseService
       .from('search_history')
       .select('*')
       .eq('result_found', true)
@@ -351,7 +351,7 @@ export async function POST(request: NextRequest) {
       search_result: searchResultData as never,
     };
 
-    const { data, error } = await supabaseServer
+    const { data, error } = await supabaseService
       .from('search_history')
       .insert(newRecord)
       .select()
@@ -426,7 +426,7 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ success: false, error: 'يجب تحديد الحالة التأمينية للتحديث الجماعي' }, { status: 400 });
       }
 
-      const { data: recordsToUpdate } = await supabaseServer
+      const { data: recordsToUpdate } = await supabaseService
         .from('search_history')
         .select('id, national_id, employee_code, employee_name, search_result')
         .in('id', ids);
@@ -451,7 +451,7 @@ export async function PATCH(request: NextRequest) {
             },
           };
 
-          await supabaseServer
+          await supabaseService
             .from('search_history')
             .update({
               insurance_status,
@@ -481,7 +481,7 @@ export async function PATCH(request: NextRequest) {
     let targetRecord: { id: string; national_id: string | null; employee_code: string | null; employee_name: string | null; search_result: unknown } | null = null;
 
     if (id) {
-      const { data: ex, error: loadErr } = await supabaseServer
+      const { data: ex, error: loadErr } = await supabaseService
         .from('search_history')
         .select('*')
         .eq('id', id)
@@ -495,7 +495,7 @@ export async function PATCH(request: NextRequest) {
       if (national_id) conds.push(`national_id.eq.${national_id}`);
       if (employee_code) conds.push(`employee_code.eq.${employee_code}`);
 
-      const { data: exFallback } = await supabaseServer
+      const { data: exFallback } = await supabaseService
         .from('search_history')
         .select('*')
         .or(conds.join(','))
@@ -564,7 +564,7 @@ export async function PATCH(request: NextRequest) {
       if (first_both_month !== undefined) updateFields.first_both_month = first_both_month;
       if (attendance_days !== undefined)  updateFields.attendance_days = attendance_days;
 
-      const { data: uRec, error: updateErr } = await supabaseServer
+      const { data: uRec, error: updateErr } = await supabaseService
         .from('search_history')
         .update(updateFields as never)
         .eq('id', targetRecord.id)
@@ -577,7 +577,7 @@ export async function PATCH(request: NextRequest) {
       updatedRecord = uRec;
     } else {
       // If no history record existed at all, insert one
-      const { data: iRec } = await supabaseServer
+      const { data: iRec } = await supabaseService
         .from('search_history')
         .insert({
           search_query: newName || newNid || newCode,
@@ -606,7 +606,7 @@ export async function PATCH(request: NextRequest) {
       if (prevNid) histConds.push(`national_id.eq.${prevNid}`);
       if (prevCode) histConds.push(`employee_code.eq.${prevCode}`);
       if (histConds.length > 0) {
-        await supabaseServer
+        await supabaseService
           .from('search_history')
           .update({
             ...(newNid ? { national_id: newNid } : {}),
@@ -699,7 +699,7 @@ async function syncEmployeeWithDatabase(params: {
   if (targetNid && !masterConds.includes(`national_id.eq.${targetNid}`)) masterConds.push(`national_id.eq.${targetNid}`);
   if (targetCode && !masterConds.includes(`employee_code.eq.${targetCode}`)) masterConds.push(`employee_code.eq.${targetCode}`);
 
-  const { data: existingMaster } = await supabaseServer
+  const { data: existingMaster } = await supabaseService
     .from('employees_master')
     .select('id, employee_name, employee_code, national_id, company_account')
     .or(masterConds.join(','))
@@ -722,13 +722,13 @@ async function syncEmployeeWithDatabase(params: {
   if (subscription_start_date !== undefined) masterUpdateData.insurance_start_date = subscription_start_date || null;
 
   if (existingMaster?.id) {
-    await supabaseServer
+    await supabaseService
       .from('employees_master')
       .update(masterUpdateData as never)
       .eq('id', existingMaster.id);
   } else {
     // Insert new employee master row
-    await supabaseServer
+    await supabaseService
       .from('employees_master')
       .insert({
         id: crypto.randomUUID(),
@@ -769,7 +769,7 @@ async function syncEmployeeWithDatabase(params: {
     if (status !== undefined) incUpdate.status = status;
 
     if (Object.keys(incUpdate).length > 0) {
-      await supabaseServer
+      await supabaseService
         .from('incoming_insurance_records')
         .update(incUpdate as never)
         .or(incConds.join(','));
@@ -784,7 +784,7 @@ async function syncEmployeeWithDatabase(params: {
   if (targetCode) sheetLookupConds.push(`row_code.eq.${targetCode}`);
 
   if (sheetLookupConds.length > 0) {
-    const { data: sheetsToUpdate } = await supabaseServer
+    const { data: sheetsToUpdate } = await supabaseService
       .from('sheet_data')
       .select('id, row_data')
       .or(sheetLookupConds.join(','))
@@ -805,7 +805,7 @@ async function syncEmployeeWithDatabase(params: {
           _action_date: now,
         };
 
-        await supabaseServer
+        await supabaseService
           .from('sheet_data')
           .update({
             row_national_id: targetNid || null,
@@ -821,7 +821,7 @@ async function syncEmployeeWithDatabase(params: {
 
   // 4. Special sheets: شيت المنقاضات / أرقام وارد التأمين
   if (insurance_status === 'مناقضة') {
-    const { data: discSheet } = await supabaseServer
+    const { data: discSheet } = await supabaseService
       .from('dynamic_sheets')
       .select('id')
       .or('sheet_name.eq.شيت المنقاضات,sheet_name.eq.المنقاضات')
@@ -829,7 +829,7 @@ async function syncEmployeeWithDatabase(params: {
       .maybeSingle();
 
     if (discSheet) {
-      const { data: exDisc } = await supabaseServer
+      const { data: exDisc } = await supabaseService
         .from('sheet_data')
         .select('id')
         .eq('sheet_id', discSheet.id)
@@ -847,9 +847,9 @@ async function syncEmployeeWithDatabase(params: {
       };
 
       if (exDisc) {
-        await supabaseServer.from('sheet_data').update({ row_data: discRow, updated_at: now }).eq('id', exDisc.id);
+        await supabaseService.from('sheet_data').update({ row_data: discRow, updated_at: now }).eq('id', exDisc.id);
       } else {
-        await supabaseServer.from('sheet_data').insert({
+        await supabaseService.from('sheet_data').insert({
           sheet_id: discSheet.id,
           row_national_id: targetNid || null,
           row_code: targetCode || null,
@@ -863,7 +863,7 @@ async function syncEmployeeWithDatabase(params: {
   }
 
   if (insurance_status === 'تم التوريد') {
-    const { data: incSheet } = await supabaseServer
+    const { data: incSheet } = await supabaseService
       .from('dynamic_sheets')
       .select('id')
       .ilike('sheet_name', '%وارد%')
@@ -871,7 +871,7 @@ async function syncEmployeeWithDatabase(params: {
       .maybeSingle();
 
     if (incSheet) {
-      const { data: exInc } = await supabaseServer
+      const { data: exInc } = await supabaseService
         .from('sheet_data')
         .select('id')
         .eq('sheet_id', incSheet.id)
@@ -889,9 +889,9 @@ async function syncEmployeeWithDatabase(params: {
       };
 
       if (exInc) {
-        await supabaseServer.from('sheet_data').update({ row_data: incRow, updated_at: now }).eq('id', exInc.id);
+        await supabaseService.from('sheet_data').update({ row_data: incRow, updated_at: now }).eq('id', exInc.id);
       } else {
-        await supabaseServer.from('sheet_data').insert({
+        await supabaseService.from('sheet_data').insert({
           sheet_id: incSheet.id,
           row_national_id: targetNid || null,
           row_code: targetCode || null,
@@ -920,7 +920,7 @@ export async function DELETE(request: NextRequest) {
 
     // 1. Clear all or clear today
     if (action === 'clear_all') {
-      const { error } = await supabaseServer
+      const { error } = await supabaseService
         .from('search_history')
         .delete()
         .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all
@@ -931,7 +931,7 @@ export async function DELETE(request: NextRequest) {
 
     if (action === 'clear_today') {
       const todayStr = new Date().toISOString().split('T')[0];
-      const { error } = await supabaseServer
+      const { error } = await supabaseService
         .from('search_history')
         .delete()
         .gte('search_timestamp', `${todayStr}T00:00:00.000Z`);
@@ -943,13 +943,13 @@ export async function DELETE(request: NextRequest) {
     // 2. Bulk delete (Delete all selected employees and all their duplicate historical search logs)
     if (ids.length > 0) {
       // First fetch employee identifiers for all selected rows
-      const { data: matchedRecords } = await supabaseServer
+      const { data: matchedRecords } = await supabaseService
         .from('search_history')
         .select('id, national_id, employee_code, employee_name')
         .in('id', ids);
 
       // Delete by exact IDs
-      const { error: delErr } = await supabaseServer
+      const { error: delErr } = await supabaseService
         .from('search_history')
         .delete()
         .in('id', ids);
@@ -963,13 +963,13 @@ export async function DELETE(request: NextRequest) {
         const names = Array.from(new Set(matchedRecords.map((r) => r.employee_name).filter(Boolean))) as string[];
 
         if (nids.length > 0) {
-          await supabaseServer.from('search_history').delete().in('national_id', nids);
+          await supabaseService.from('search_history').delete().in('national_id', nids);
         }
         if (codes.length > 0) {
-          await supabaseServer.from('search_history').delete().in('employee_code', codes);
+          await supabaseService.from('search_history').delete().in('employee_code', codes);
         }
         if (names.length > 0 && nids.length === 0 && codes.length === 0) {
-          await supabaseServer.from('search_history').delete().in('employee_name', names);
+          await supabaseService.from('search_history').delete().in('employee_name', names);
         }
       }
 
@@ -981,13 +981,13 @@ export async function DELETE(request: NextRequest) {
 
     // 3. Single delete
     if (id) {
-      const { data: singleRec } = await supabaseServer
+      const { data: singleRec } = await supabaseService
         .from('search_history')
         .select('id, national_id, employee_code, employee_name')
         .eq('id', id)
         .maybeSingle();
 
-      const { error } = await supabaseServer
+      const { error } = await supabaseService
         .from('search_history')
         .delete()
         .eq('id', id);
@@ -996,13 +996,13 @@ export async function DELETE(request: NextRequest) {
 
       if (singleRec) {
         if (singleRec.national_id) {
-          await supabaseServer.from('search_history').delete().eq('national_id', singleRec.national_id);
+          await supabaseService.from('search_history').delete().eq('national_id', singleRec.national_id);
         }
         if (singleRec.employee_code) {
-          await supabaseServer.from('search_history').delete().eq('employee_code', singleRec.employee_code);
+          await supabaseService.from('search_history').delete().eq('employee_code', singleRec.employee_code);
         }
         if (!singleRec.national_id && !singleRec.employee_code && singleRec.employee_name) {
-          await supabaseServer.from('search_history').delete().eq('employee_name', singleRec.employee_name);
+          await supabaseService.from('search_history').delete().eq('employee_name', singleRec.employee_name);
         }
       }
 

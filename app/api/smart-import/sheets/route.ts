@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 /**
  * Get list of registered sheets
  */
 export async function GET() {
   try {
-    const { data: sheets, error } = await supabaseServer
+    const { data: sheets, error } = await supabaseService
       .from('dynamic_sheets')
       .select('*')
       .eq('is_active', true)

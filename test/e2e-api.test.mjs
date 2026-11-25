@@ -19,11 +19,10 @@ const db = new pg.Client({ host: '127.0.0.1', port: 5545, user: 'postgres', pass
 await db.connect();
 await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon, authenticated, service_role TO authenticator;`);
 for (const f of readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort()) await db.query(readFileSync(MIG_DIR + f, 'utf8'));
-await db.query(`GRANT USAGE ON SCHEMA public TO anon, service_role; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, service_role; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, service_role; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;`);
-// Re-assert migration 06's final posture (the blanket harness grant above
-// would otherwise re-open the mutating RPCs to the anon role):
-await db.query(`REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;`);
+// Post-20261125000007 posture: the public roles get schema USAGE only; ALL
+// data/function access belongs to service_role (the migrations already
+// revoke — these grants mirror the final state, never re-open it).
+await db.query(`GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO service_role;`);
 await db.query(`
   INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
     ('E.G', 1, '11111111111111', '1001', 'موظف تعارض', 'Active'),
@@ -71,14 +70,24 @@ const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], {
   env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, SUPABASE_SERVICE_ROLE_KEY: SVC_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' },
   stdio: 'ignore',
 });
+let SESSION = ''; // session cookie attached to every API call unless opts.noAuth
 const api = async (path, opts = {}) => {
+  const { noAuth, ...rest } = opts;
+  const headers = { ...(rest.headers || {}) };
+  if (!noAuth && SESSION && !headers.Cookie) headers.Cookie = SESSION;
   for (let i = 0; i < 60; i++) {
-    try { const r = await fetch('http://127.0.0.1:3100' + path, opts); return r; } catch { await sleep(1500); }
+    try { const r = await fetch('http://127.0.0.1:3100' + path, { ...rest, headers }); return r; } catch { await sleep(1500); }
   }
   throw new Error('dev server never came up');
 };
-await api('/api/company-accounts');
+await api('/api/company-accounts', { noAuth: true });
 console.log('dev server up');
+
+// The middleware gate now requires a session for every data route: log in
+// once, up front, exactly like a real user session.
+const bootLogin = await api('/api/auth/login', { noAuth: true, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin@insurance2026' }) });
+SESSION = (((bootLogin.headers.getSetCookie ? bootLogin.headers.getSetCookie()[0] : bootLogin.headers.get('set-cookie')) || '').split(';')[0]);
+check('boot: session login for the gated API surface', bootLogin.status === 200 && SESSION.startsWith('emp_auth_session='), 'status=' + bootLogin.status);
 
 // ── TESTS ──
 const accs = await (await api('/api/company-accounts')).json();
@@ -1000,9 +1009,9 @@ await db.query(`INSERT INTO employees_master (company_account, account_id, natio
 const id71 = (await db.query(`SELECT id FROM employees_master WHERE national_id='99990000000071'`)).rows[0].id;
 const id61 = (await db.query(`SELECT id FROM employees_master WHERE national_id='88880000000061'`)).rows[0].id;
 const yday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-const transferCall = (empId, body, cookie) => api(`/api/employee/${empId}/transfer`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+const transferCall = (empId, body, cookie, noAuth = false) => api(`/api/employee/${empId}/transfer`, { method: 'POST', noAuth, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
 
-const tNo = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, confirmed_by: 'e2e-tester' });
+const tNo = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, confirmed_by: 'e2e-tester' }, undefined, true);
 check('CAT10: transfer without login -> 401', tNo.status === 401, 'status=' + tNo.status);
 
 // Direct PostgREST RPC bypass attempts: the mutating function is executable
@@ -1073,6 +1082,31 @@ const cat10imp = await api('/api/smart-import/execute', { method: 'POST', body: 
 const cat10sheet = (await cat10imp.json().catch(() => ({})))?.detailed_results?.Sheet1 || {};
 const cat10item = (cat10sheet.cross_account_conflicts || [])[0] || {};
 check('CAT10: import conflict carries employee_id for one-click reviewed transfer', cat10item.employee_id === id61 && cat10item.existing_account === 'E.G' && (cat10item.import_account || '').toLowerCase() === 'm.g', JSON.stringify(cat10item));
+
+// ── CAT11: direct database access is CLOSED; the app path is the only path ──
+// 20261125000007 revoked all table/sequence/function privileges from anon +
+// authenticated; middleware gates every API route and page behind the session.
+const pgrest = (path, jwt, opts = {}) => fetch('http://127.0.0.1:3002' + path, { ...opts, headers: { 'Content-Type': 'application/json', apikey: ANON_JWT, Authorization: `Bearer ${jwt}`, ...(opts.headers || {}) } });
+const dRead = await pgrest('/employees_master?select=id&limit=1', ANON_JWT);
+const dReadJ = await dRead.json().catch(() => ({}));
+check('CAT11: direct table READ with anon key -> denied', (dRead.status === 401 || dRead.status === 403) && String(dReadJ.code || '') === '42501', `status=${dRead.status} ${JSON.stringify(dReadJ).slice(0, 120)}`);
+const dWrite = await pgrest('/employees_master', ANON_JWT, { method: 'POST', body: JSON.stringify({ national_id: '00000000000000', company_account: 'E.G' }) });
+const dWriteJ = await dWrite.json().catch(() => ({}));
+check('CAT11: direct table WRITE with anon key -> denied', (dWrite.status === 401 || dWrite.status === 403) && String(dWriteJ.code || '') === '42501', `status=${dWrite.status} ${JSON.stringify(dWriteJ).slice(0, 120)}`);
+const dAuthed = await pgrest('/employees_master?select=id&limit=1', AUTHED_JWT);
+const dAuthedJ = await dAuthed.json().catch(() => ({}));
+check('CAT11: direct table READ with authenticated role -> denied', (dAuthed.status === 401 || dAuthed.status === 403) && String(dAuthedJ.code || '') === '42501', `status=${dAuthed.status} ${JSON.stringify(dAuthedJ).slice(0, 120)}`);
+const dRpc = await pgrest('/rpc/resolve_current_company', ANON_JWT, { method: 'POST', body: JSON.stringify({ p_employee_id: id71, p_as_of: yday }) });
+const dRpcJ = await dRpc.json().catch(() => ({}));
+check('CAT11: direct read-only RPC with anon key -> denied', (dRpc.status === 401 || dRpc.status === 403) && String(dRpcJ.code || '') === '42501', `status=${dRpc.status} ${JSON.stringify(dRpcJ).slice(0, 120)}`);
+const apiNoAuth = await api('/api/employee?limit=1', { noAuth: true });
+check('CAT11: API route without session -> 401 (middleware gate)', apiNoAuth.status === 401, 'status=' + apiNoAuth.status);
+const pageNoAuth = await fetch('http://127.0.0.1:3100/lookup', { redirect: 'manual' });
+check('CAT11: app page without session -> redirect to /login', pageNoAuth.status === 307 && (pageNoAuth.headers.get('location') || '').includes('/login'), `status=${pageNoAuth.status} loc=${pageNoAuth.headers.get('location')}`);
+const loginPage = await fetch('http://127.0.0.1:3100/login', { redirect: 'manual' });
+check('CAT11: login page reachable without session', loginPage.status === 200, 'status=' + loginPage.status);
+const apiAuthed = await api('/api/employee?limit=1');
+check('CAT11: API route with session -> works (the only data path left)', apiAuthed.status === 200, 'status=' + apiAuthed.status);
 
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();

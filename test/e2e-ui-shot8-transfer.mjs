@@ -24,9 +24,7 @@ const db = new pg.Client({ host: '127.0.0.1', port: 5545, user: 'postgres', pass
 await db.connect();
 await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon, authenticated, service_role TO authenticator;`);
 for (const f of readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort()) await db.query(readFileSync(MIG_DIR + f, 'utf8'));
-await db.query(`GRANT USAGE ON SCHEMA public TO anon, service_role; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, service_role; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, service_role; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;`);
-await db.query(`REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;`);
+await db.query(`GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO service_role; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO service_role; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO service_role;`);
 await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, current_job_title) VALUES
   ('E.G', 1, '88888888888881', '8101', 'موظف منقول تجريبي', 'Active', 'فني')`);
 const empId = (await db.query(`SELECT id FROM employees_master WHERE national_id='88888888888881'`)).rows[0].id;

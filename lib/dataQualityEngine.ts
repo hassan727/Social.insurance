@@ -7,7 +7,7 @@
  * القاعدة: لا يتم حسم أي تعارض تلقائياً — كل شيء يُعرض للمراجعة البشرية.
  */
 
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -120,7 +120,7 @@ async function upsertDiscrepancies(records: DiscrepancyRecord[]): Promise<number
       if (rec.employee_id) matchConds.employee_id = rec.employee_id;
       if (rec.field_name) matchConds.field_name = rec.field_name;
 
-      const { data: existing } = await supabaseServer
+      const { data: existing } = await supabaseService
         .from('data_discrepancies')
         .select('id')
         .match(matchConds)
@@ -128,13 +128,13 @@ async function upsertDiscrepancies(records: DiscrepancyRecord[]): Promise<number
 
       if (existing) {
         // Update last_checked_at only
-        await supabaseServer
+        await supabaseService
           .from('data_discrepancies')
           .update({ last_checked_at: new Date().toISOString() })
           .eq('id', existing.id);
       } else {
         // Insert new discrepancy
-        const { error } = await supabaseServer.from('data_discrepancies').insert({
+        const { error } = await supabaseService.from('data_discrepancies').insert({
           employee_id: rec.employee_id,
           raw_employee_code: rec.raw_employee_code ?? null,
           raw_national_id: rec.raw_national_id ?? null,
@@ -162,7 +162,7 @@ async function upsertDiscrepancies(records: DiscrepancyRecord[]): Promise<number
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function checkActiveMissingInsurance(): Promise<DiscrepancyRecord[]> {
-  const { data } = await supabaseServer
+  const { data } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, national_id, employee_name, company_account, current_status, insurance_number')
     .in('current_status', ['Active', 'نشط', 'مستمر'])
@@ -189,7 +189,7 @@ async function checkActiveMissingInsurance(): Promise<DiscrepancyRecord[]> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function checkMissingNationalId(): Promise<DiscrepancyRecord[]> {
-  const { data } = await supabaseServer
+  const { data } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, employee_name, company_account, current_status')
     .is('national_id', null)
@@ -216,7 +216,7 @@ async function checkMissingNationalId(): Promise<DiscrepancyRecord[]> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function checkMissingPhone(): Promise<DiscrepancyRecord[]> {
-  const { data } = await supabaseServer
+  const { data } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, employee_name, company_account, current_status')
     .is('phone_number', null)
@@ -243,7 +243,7 @@ async function checkMissingPhone(): Promise<DiscrepancyRecord[]> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function checkMissingHireDate(): Promise<DiscrepancyRecord[]> {
-  const { data } = await supabaseServer
+  const { data } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, employee_name, company_account, current_status')
     .is('hire_date', null)
@@ -271,7 +271,7 @@ async function checkMissingHireDate(): Promise<DiscrepancyRecord[]> {
 
 async function checkNationalIdMultipleCodes(): Promise<DiscrepancyRecord[]> {
   // Direct query via JS grouping to find duplicated national_ids
-  const { data: allEmps } = await supabaseServer
+  const { data: allEmps } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, employee_name, company_account, national_id')
     .not('national_id', 'is', null);
@@ -312,7 +312,7 @@ async function checkNationalIdMultipleCodes(): Promise<DiscrepancyRecord[]> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function checkInsuranceNumberDuplicate(): Promise<DiscrepancyRecord[]> {
-  const { data: allEmps } = await supabaseServer
+  const { data: allEmps } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, employee_name, company_account, insurance_number')
     .not('insurance_number', 'is', null)
@@ -359,7 +359,7 @@ async function checkActiveResignedConflict(): Promise<DiscrepancyRecord[]> {
   // so a single maybeSingle() would error or silently cover one account.
   // Rows are linked to employees (person-centric), so checking every
   // account's RES sheet is correct coverage.
-  const { data: resSheets } = await supabaseServer
+  const { data: resSheets } = await supabaseService
     .from('dynamic_sheets')
     .select('id')
     .or('sheet_name.eq.RES,sheet_name.eq.RES.');
@@ -367,7 +367,7 @@ async function checkActiveResignedConflict(): Promise<DiscrepancyRecord[]> {
   if (!resSheets || resSheets.length === 0) return [];
   const resSheetIds = resSheets.map((s) => s.id as string);
 
-  const { data: resignedRows } = await supabaseServer
+  const { data: resignedRows } = await supabaseService
     .from('sheet_data')
     .select('employee_id, row_data, row_code, row_national_id, row_name')
     .in('sheet_id', resSheetIds)
@@ -380,7 +380,7 @@ async function checkActiveResignedConflict(): Promise<DiscrepancyRecord[]> {
     if (!row.employee_id) continue;
 
     // Check if this employee is Active in master
-    const { data: master } = await supabaseServer
+    const { data: master } = await supabaseService
       .from('employees_master')
       .select('id, employee_code, employee_name, company_account, current_status')
       .eq('id', row.employee_id)
@@ -412,7 +412,7 @@ async function checkActiveResignedConflict(): Promise<DiscrepancyRecord[]> {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function checkJobTitleMismatch(): Promise<DiscrepancyRecord[]> {
-  const { data } = await supabaseServer
+  const { data } = await supabaseService
     .from('employees_master')
     .select('id, employee_code, employee_name, company_account, current_job_title, insurance_job_title')
     .not('current_job_title', 'is', null)
@@ -450,7 +450,7 @@ async function checkJobTitleMismatch(): Promise<DiscrepancyRecord[]> {
 
 async function checkInInsuranceNotInMaster(): Promise<DiscrepancyRecord[]> {
   // Get all employee codes + national_ids from incoming_insurance_records
-  const { data: insRecords } = await supabaseServer
+  const { data: insRecords } = await supabaseService
     .from('incoming_insurance_records')
     .select('id, employee_code, national_id, employee_name, company_account, status')
     .in('status', ['Active', 'نشط', 'مؤمن عليه', 'مستمر'])
@@ -463,7 +463,7 @@ async function checkInInsuranceNotInMaster(): Promise<DiscrepancyRecord[]> {
     let found = false;
 
     if (rec.national_id) {
-      const { data } = await supabaseServer
+      const { data } = await supabaseService
         .from('employees_master')
         .select('id')
         .eq('national_id', rec.national_id)
@@ -472,7 +472,7 @@ async function checkInInsuranceNotInMaster(): Promise<DiscrepancyRecord[]> {
     }
 
     if (!found && rec.employee_code) {
-      const { data } = await supabaseServer
+      const { data } = await supabaseService
         .from('employees_master')
         .select('id')
         .eq('employee_code', rec.employee_code)
@@ -534,7 +534,7 @@ export async function runDataQualityCheck(options?: {
     runChecks === 'all' || (Array.isArray(runChecks) && runChecks.includes(type));
 
   // Get total employees count for summary
-  const { count: totalEmployees } = await supabaseServer
+  const { count: totalEmployees } = await supabaseService
     .from('employees_master')
     .select('id', { count: 'exact', head: true });
 
@@ -580,7 +580,7 @@ export async function runDataQualityCheck(options?: {
   };
 
   // Log the run
-  const { data: runLog } = await supabaseServer
+  const { data: runLog } = await supabaseService
     .from('quality_run_log')
     .insert({
       run_type: 'full',
@@ -614,17 +614,17 @@ export async function runDataQualityCheck(options?: {
 
 export async function getDiscrepancyStats(): Promise<DiscrepancyStats> {
   const [countResult, byTypeResult, lastRunResult] = await Promise.all([
-    supabaseServer
+    supabaseService
       .from('data_discrepancies')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'open'),
 
-    supabaseServer
+    supabaseService
       .from('data_discrepancies')
       .select('discrepancy_type, severity')
       .eq('status', 'open'),
 
-    supabaseServer
+    supabaseService
       .from('quality_run_log')
       .select('created_at')
       .order('created_at', { ascending: false })
@@ -675,7 +675,7 @@ export async function getDiscrepancies(options?: {
   limit?: number;
   offset?: number;
 }) {
-  let query = supabaseServer
+  let query = supabaseService
     .from('data_discrepancies')
     .select(`
       id, discrepancy_type, severity, status,
@@ -709,7 +709,7 @@ export async function resolveDiscrepancy(
   action: 'resolved' | 'ignored' | 'false_positive',
   notes?: string
 ) {
-  const { error } = await supabaseServer
+  const { error } = await supabaseService
     .from('data_discrepancies')
     .update({
       status: action,

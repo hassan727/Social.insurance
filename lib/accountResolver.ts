@@ -1,4 +1,4 @@
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 
 // Resolve an operator-selected account against company_accounts (id, code,
 // or alias). Returns null when unknown — callers reject, never default.
@@ -7,7 +7,7 @@ import { supabaseServer } from '@/lib/supabaseServer';
 export async function resolveAccountRecord(raw: string): Promise<{ id: number; account_code: string } | null> {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const { data, error } = await supabaseServer
+  const { data, error } = await supabaseService
     .from('company_accounts')
     .select('id, account_code, aliases')
     .eq('is_active', true);

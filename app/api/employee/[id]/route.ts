@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { supabaseService } from '@/lib/supabaseServer';
 import { getDiscrepancies } from '@/lib/dataQualityEngine';
 
 /**
@@ -26,14 +26,14 @@ export async function GET(
     // Fetch in parallel for speed
     const [masterResult, historyResult, sheetDataResult, discrepanciesResult] = await Promise.all([
       // 1. Core employee record
-      supabaseServer
+      supabaseService
         .from('employees_master')
         .select('*')
         .eq('id', id)
         .maybeSingle(),
 
       // 2. Change history
-      supabaseServer
+      supabaseService
         .from('employee_history')
         .select('*')
         .eq('employee_id', id)
@@ -41,7 +41,7 @@ export async function GET(
         .limit(50),
 
       // 3. Sheet data — all latest rows for this employee
-      supabaseServer
+      supabaseService
         .from('sheet_data')
         .select(`
           id, row_data, row_code, row_national_id, row_name,
@@ -162,7 +162,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
     }
 
-    const { error } = await supabaseServer
+    const { error } = await supabaseService
       .from('employees_master')
       .update(updates as any)
       .eq('id', id);

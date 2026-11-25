@@ -9,7 +9,7 @@
  *    companies and time.
  */
 
-import { supabaseServer } from './supabaseServer';
+import { supabaseService } from './supabaseServer';
 import { cleanNationalId } from './smartImportService';
 import type { Json } from '@/types/supabase';
 
@@ -99,7 +99,7 @@ export async function matchIncomingRow(params: {
 
   // ── PRIORITY 1: Exact National ID (14 digits) ── Global Unique Identifier
   if (natId && natId.length === 14) {
-    const { data: byNatId } = await supabaseServer
+    const { data: byNatId } = await supabaseService
       .from('employees_master')
       .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
       .eq('national_id', natId)
@@ -121,7 +121,7 @@ export async function matchIncomingRow(params: {
 
   // ── Insurance Number: REVIEW HINT ONLY (never auto-match, user rule) ──
   if (insNo && insNo.length >= 7) {
-    const { data: byIns } = await supabaseServer
+    const { data: byIns } = await supabaseService
       .from('employees_master')
       .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
       .eq('insurance_number', insNo)
@@ -130,7 +130,7 @@ export async function matchIncomingRow(params: {
     if (byIns && byIns.length >= 1) {
       const emp = byIns[0];
       const nidContradiction = !!(natId && emp.national_id && String(emp.national_id).trim() !== natId);
-      const { data: insertedCandidate } = await supabaseServer
+      const { data: insertedCandidate } = await supabaseService
         .from('matching_candidates')
         .insert({
           import_id: params.import_id ?? null,
@@ -166,7 +166,7 @@ export async function matchIncomingRow(params: {
 
   // ── Employee Code: REVIEW HINT ONLY (never auto-match, user rule) ──
   if (code) {
-    const { data: byCodeAll } = await supabaseServer
+    const { data: byCodeAll } = await supabaseService
       .from('employees_master')
       .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
       .eq('employee_code', code)
@@ -175,7 +175,7 @@ export async function matchIncomingRow(params: {
     const hint = (byCodeAll || []).find(e => e.company_account.toLowerCase() === account.toLowerCase()) || (byCodeAll || [])[0];
     if (hint) {
       const nidContradiction = !!(natId && hint.national_id && String(hint.national_id).trim() !== natId);
-      const { data: insertedCandidate } = await supabaseServer
+      const { data: insertedCandidate } = await supabaseService
         .from('matching_candidates')
         .insert({
           import_id: params.import_id ?? null,
@@ -218,7 +218,7 @@ export async function matchIncomingRow(params: {
     // Extract first word of the normalized name to use as a DB filter anchor
     const firstWord = normName.split(' ')[0] || normName;
 
-    const { data: candidateEmps } = await supabaseServer
+    const { data: candidateEmps } = await supabaseService
       .from('employees_master')
       .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
       .ilike('employee_name', `%${firstWord.slice(0, 6)}%`)
@@ -261,7 +261,7 @@ export async function matchIncomingRow(params: {
     }
 
     if (bestCandidate && highestScore >= 0.5) {
-      const { data: insertedCandidate } = await supabaseServer
+      const { data: insertedCandidate } = await supabaseService
         .from('matching_candidates')
         .insert({
           import_id: params.import_id ?? null,
@@ -314,7 +314,7 @@ export async function getPendingCandidates(options?: {
   limit?: number;
   offset?: number;
 }) {
-  let query = supabaseServer
+  let query = supabaseService
     .from('matching_candidates')
     .select(`
       id, import_id, sheet_name, row_data, row_number,
@@ -355,7 +355,7 @@ export async function confirmCandidateMatch(
   targetEmployeeId: string,
   reviewedBy: string = 'User'
 ) {
-  const { data: candidate, error: fetchErr } = await supabaseServer
+  const { data: candidate, error: fetchErr } = await supabaseService
     .from('matching_candidates')
     .select('*')
     .eq('id', candidateId)
@@ -365,7 +365,7 @@ export async function confirmCandidateMatch(
     throw new Error('لم يتم العثور على سجل المراجعة');
   }
 
-  const { data: targetEmp, error: empErr } = await supabaseServer
+  const { data: targetEmp, error: empErr } = await supabaseService
     .from('employees_master')
     .select('id, employee_name, consolidated_data')
     .eq('id', targetEmployeeId)
@@ -380,7 +380,7 @@ export async function confirmCandidateMatch(
   const sheetKey = candidate.sheet_name || 'manual_match';
   currentConsolidated[sheetKey] = rawRow;
 
-  await supabaseServer
+  await supabaseService
     .from('employees_master')
     .update({
       consolidated_data: currentConsolidated as any,
@@ -388,7 +388,7 @@ export async function confirmCandidateMatch(
     })
     .eq('id', targetEmployeeId);
 
-  await supabaseServer
+  await supabaseService
     .from('matching_candidates')
     .update({
       status: 'confirmed_match',
@@ -408,7 +408,7 @@ export async function rejectCandidateMatch(
   candidateId: string,
   reviewedBy: string = 'User'
 ) {
-  const { data: candidate, error: fetchErr } = await supabaseServer
+  const { data: candidate, error: fetchErr } = await supabaseService
     .from('matching_candidates')
     .select('*')
     .eq('id', candidateId)
@@ -421,7 +421,7 @@ export async function rejectCandidateMatch(
   const rawRow = (candidate.row_data || {}) as Record<string, unknown>;
   const companyAccount = (rawRow.company_account as string) || (rawRow.account as string) || '';
 
-  const { data: newEmp, error: createErr } = await supabaseServer
+  const { data: newEmp, error: createErr } = await supabaseService
     .from('employees_master')
     .insert({
       company_account: companyAccount,
@@ -436,7 +436,7 @@ export async function rejectCandidateMatch(
 
   if (createErr) throw new Error(createErr.message);
 
-  await supabaseServer
+  await supabaseService
     .from('matching_candidates')
     .update({
       status: 'rejected_new_employee',
