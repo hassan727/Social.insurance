@@ -282,6 +282,34 @@ check('last source absent: scalar NULL, not resurrected', sn3.current_job_title 
 check('last source absent: status NULL, never guessed termination', sn3.current_status === null, String(sn3.current_status));
 check('last source absent: identity retained, blob sheet keys removed', sn3.national_id === '99999999999994' && sn3.consolidated_data['الوظيفه'] === undefined);
 
+// ── Fail-closed snapshot guards (no destructive prune on partial failure) ──
+// Header-only reimport of SheetH: must NOT prune SNAP4's previous snapshot.
+const snap4 = mkXlsxMulti({ SheetH: [{ 'الرقم القومي': '99999999999997', 'الاسم': 'موظف لقطة رابع', 'الكود': '9007', 'الوظيفه': 'محاسب' }] });
+await postSmart(snap4, ['SheetH']);
+const snap4Id = (await db.query(`SELECT id FROM employees_master WHERE national_id='99999999999997' AND account_id=2`)).rows[0].id;
+const headerOnly = mkXlsxMulti({ SheetH: [] });
+const hoRes = await postSmart(headerOnly, ['SheetH']);
+const hoj = await hoRes.json().catch(() => ({}));
+const hoWarns = (hoj.detailed_results?.SheetH?.warnings) || [];
+const snap4after = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [snap4Id])).rows[0];
+const sheetHlatest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='SheetH' AND sd.employee_id=$1 AND sd.is_latest=true`, [snap4Id])).rows[0].c;
+check('header-only reimport cannot mass-remove: previous snapshot kept', sheetHlatest === 1 && snap4after.current_job_title === 'محاسب' && snap4after.consolidated_data['الوظيفه'] === 'محاسب', 'latest=' + sheetHlatest + ' title=' + String(snap4after.current_job_title));
+check('header-only reimport surfaces a visible not-a-delete-snapshot warning', hoWarns.some((w) => w.includes('بدون صفوف بيانات')), JSON.stringify(hoWarns).slice(0, 160));
+
+// Unparseable file: import fails, prior snapshot intact
+const corrupt = Buffer.from('this is not an xlsx file at all');
+const corruptRes = await postSmart(corrupt, ['SheetH']);
+const snap4after2 = (await db.query(`SELECT current_job_title FROM employees_master WHERE id=$1`, [snap4Id])).rows[0];
+check('unparseable file cannot mass-remove: snapshot intact', corruptRes.status !== 200 && sheetHlatest === 1 && snap4after2.current_job_title === 'محاسب', 'status=' + String(corruptRes.status));
+
+// Benign trailing empty rows do NOT block the prune (normal Excel files)
+const snap5a = mkXlsxMulti({ SheetI: [{ 'الرقم القومي': '99999999999998', 'الاسم': 'موظف لقطة خامس', 'الكود': '9008', 'الوظيفه': 'فني' }, { 'الرقم القومي': '99999999999999', 'الاسم': 'موظف لقطة سادس', 'الكود': '9009', 'الوظيفه': 'حارس' }] });
+await postSmart(snap5a, ['SheetI']);
+const snap5b = mkXlsxMulti({ SheetI: [{ 'الرقم القومي': '99999999999998', 'الاسم': 'موظف لقطة خامس', 'الكود': '9008', 'الوظيفه': 'فني' }, {}, {}] });
+const s5b = await postSmart(snap5b, ['SheetI']);
+const snap6row = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id JOIN employees_master em ON em.id=sd.employee_id WHERE ds.sheet_name='SheetI' AND em.national_id='99999999999999' AND sd.is_latest=true`)).rows[0].c;
+check('valid rows + benign empty rows: prune still works', s5b.status === 200 && snap6row === 0, 'status=' + String(s5b.status) + ' latest=' + snap6row);
+
 // Unseen worksheet untouched: SNAP1's SheetD rows still latest after all SheetC/E/G reimports
 const sheetDlatest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='SheetD' AND sd.employee_id=$1 AND sd.is_latest=true`, [snapId])).rows[0].c;
 check("unseen worksheet untouched by other worksheets reimports", sheetDlatest === 1);
@@ -294,7 +322,7 @@ const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() =>
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
 
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 12 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 6 prior fixtures + 6 snapshot fixtures (99999999999991..96)
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 15 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 12 prior + snap4 99999999999997 + snap5/6 99999999999998/99 (99999999999996 was created in SheetE reimport; counted)
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count); // +1: first-import dup fixture 88888888888888 (EG)
 

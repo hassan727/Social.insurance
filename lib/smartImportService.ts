@@ -540,6 +540,8 @@ export async function importSheet(
   let newEmployees = 0;
   let updatedEmployees = 0;
   let skippedRows = 0;
+  let nonEmptyRows = 0;        // rows with any identity content (trailing blank rows are benign)
+  let processingFailures = 0;  // parse/write failures: block snapshot prune (fail closed)
 
   try {
     // 1. Get sheet definition from database (flexible matching for spaces and dots)
@@ -584,6 +586,9 @@ export async function importSheet(
         updated_employees: 0,
         skipped_rows: 0,
         errors: [`Sheet "${sheetName}" is empty`],
+        // Fail closed: an empty sheet is never a delete-snapshot. Prior
+        // latest rows are kept; full-sheet deletion needs explicit intent.
+        warnings: ['الورقة بدون صفوف بيانات فعلية — لم تُعتبر لقطة حذف؛ اللقطة السابقة محفوظة كما هي. حذف بيانات ورقة كاملة يحتاج تأكيدًا صريحًا.'],
         import_id: importLogId,
       };
     }
@@ -781,6 +786,7 @@ export async function importSheet(
           skippedRows++;
           continue;
         }
+        nonEmptyRows++;
 
         // ── Phase 1 Bridge Collection (Unifying the Two Worlds) ──
         if (isIncomingSheet) {
@@ -1057,6 +1063,7 @@ export async function importSheet(
           const errorMsg = `Row ${rowNumber}: ${rowError instanceof Error ? rowError.message : 'Unknown error'}`;
           errors.push(errorMsg);
           skippedRows++;
+          processingFailures++;
         }
       }
 
@@ -1065,7 +1072,7 @@ export async function importSheet(
     for (let i = 0; i < employeesToInsert.length; i += 150) {
         const chunk = employeesToInsert.slice(i, i + 150);
         const { error } = await supabaseServer.from('employees_master').insert(chunk);
-        if (error) errors.push(`Bulk insert error: ${error.message}`);
+        if (error) { errors.push(`Bulk insert error: ${error.message}`); processingFailures++; }
       }
 
       // B) Batch Update Existing Employees (parallel chunks of 20)
@@ -1082,41 +1089,7 @@ export async function importSheet(
       for (let i = 0; i < sheetDataToInsert.length; i += 250) {
         const chunk = sheetDataToInsert.slice(i, i + 250);
         const { error } = await supabaseServer.from('sheet_data').insert(chunk);
-        if (error) errors.push(`Bulk sheet_data error: ${error.message}`);
-      }
-
-      // C2) Per-worksheet snapshot semantics (user-approved 2026-11-25 12:05):
-      // a re-upload of THIS worksheet for THIS account is a new snapshot of
-      // that source. Rows whose employee is absent from the new file stop
-      // being latest (this source's contribution is recomputed away by the
-      // zz_sheet_data_contribution_removed trigger); rows for employees who
-      // ARE in the file keep their history, so a blank cell still never
-      // erases (newest non-blank wins within the source). A worksheet that
-      // is simply not part of this upload is untouched. When the account is
-      // unresolved (accountId null) the flip is skipped rather than guessed.
-      if (currentSheetId && accountId !== null) {
-        const importedEmpIds = new Set(sheetDataToInsert.map((r) => r.employee_id).filter(Boolean));
-        const { data: accEmps, error: accErr } = await supabaseServer
-          .from('employees_master')
-          .select('id')
-          .eq('account_id', accountId);
-        if (accErr) {
-          warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr.message}`);
-        } else {
-          const staleEmpIds = (accEmps || [])
-            .map((e) => e.id as string)
-            .filter((id) => !importedEmpIds.has(id));
-          for (let i = 0; i < staleEmpIds.length; i += 200) {
-            const chunk = staleEmpIds.slice(i, i + 200);
-            const { error: flipErr } = await supabaseServer
-              .from('sheet_data')
-              .update({ is_latest: false })
-              .eq('sheet_id', currentSheetId)
-              .eq('is_latest', true)
-              .in('employee_id', chunk);
-            if (flipErr) errors.push(`Snapshot flip error: ${flipErr.message}`);
-          }
-        }
+        if (error) { errors.push(`Bulk sheet_data error: ${error.message}`); processingFailures++; }
       }
 
       // D) Batch Insert History (chunks of 250)
@@ -1175,12 +1148,54 @@ export async function importSheet(
       for (let i = 0; i < payrollBatch.length; i += 150) {
         const chunk = payrollBatch.slice(i, i + 150);
         const { error } = await supabaseServer.from('monthly_payroll_records').insert(chunk);
-        if (error) console.error('Bridge monthly_payroll error:', error.message);
+        if (error) { errors.push(`Bridge monthly_payroll error: ${error.message}`); processingFailures++; }
       }
       for (let i = 0; i < insuranceBatch.length; i += 150) {
         const chunk = insuranceBatch.slice(i, i + 150);
         const { error } = await supabaseServer.from('monthly_insurance_records').insert(chunk);
-        if (error) console.error('Bridge monthly_insurance error:', error.message);
+        if (error) { errors.push(`Bridge monthly_insurance error: ${error.message}`); processingFailures++; }
+      }
+
+      // C2) Per-worksheet snapshot semantics (user-approved 2026-11-25 12:05):
+      // a re-upload of THIS worksheet for THIS account is a new snapshot of
+      // that source. Rows whose employee is absent from the new file stop
+      // being latest (this source's contribution is recomputed away by the
+      // zz_sheet_data_contribution_removed trigger); rows for employees who
+      // ARE in the file keep their history, so a blank cell still never
+      // erases (newest non-blank wins within the source). A worksheet that
+      // is simply not part of this upload is untouched. When the account is
+      // unresolved (accountId null) the flip is skipped rather than guessed.
+      // FAIL CLOSED: never prune on a partial/failed/empty sync. A prune is
+      // only a verified full snapshot of this (worksheet, account).
+      if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0) {
+        const importedEmpIds = new Set(sheetDataToInsert.map((r) => r.employee_id).filter(Boolean));
+        const { data: accEmps, error: accErr } = await supabaseServer
+          .from('employees_master')
+          .select('id')
+          .eq('account_id', accountId);
+        if (accErr) {
+          warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr.message}`);
+        } else {
+          const staleEmpIds = (accEmps || [])
+            .map((e) => e.id as string)
+            .filter((id) => !importedEmpIds.has(id));
+          for (let i = 0; i < staleEmpIds.length; i += 200) {
+            const chunk = staleEmpIds.slice(i, i + 200);
+            const { error: flipErr } = await supabaseServer
+              .from('sheet_data')
+              .update({ is_latest: false })
+              .eq('sheet_id', currentSheetId)
+              .eq('is_latest', true)
+              .in('employee_id', chunk);
+            if (flipErr) errors.push(`Snapshot flip error: ${flipErr.message}`);
+          }
+        }
+      } else if (currentSheetId && accountId === null) {
+        warnings.push('تعذر تحديد الحساب بدقة — تم الاحتفاظ بلقطة الورقة السابقة دون حذف أي صفوف قديمة.');
+      } else if (currentSheetId && processingFailures > 0) {
+        warnings.push(`المزامنة لم تكتمل: ${processingFailures} صف/عملية فشلت — تم الاحتفاظ بلقطة الورقة السابقة دون حذف أي صفوف قديمة، وراجع الأخطاء أعلاه.`);
+      } else if (currentSheetId && nonEmptyRows === 0) {
+        warnings.push('الورقة بدون صفوف بيانات فعلية — لم تُعتبر لقطة حذف؛ اللقطة السابقة محفوظة كما هي. حذف بيانات ورقة كاملة يحتاج تأكيدًا صريحًا.');
       }
 
       // 9. Update sheet statistics
