@@ -14,7 +14,7 @@ await ep.start();
 await ep.createDatabase('e2e');
 const db = new pg.Client({ host: '127.0.0.1', port: 5545, user: 'postgres', password: 'postgres', database: 'e2e' });
 await db.connect();
-await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon TO authenticator;`);
+await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon, authenticated, service_role TO authenticator;`);
 
 const baseline = readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort();
 for (const f of baseline) {
@@ -24,7 +24,9 @@ for (const f of baseline) {
 await db.query(`GRANT USAGE ON SCHEMA public TO anon, service_role;
   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, service_role;
   GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, service_role;
-  GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;`);
+  GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;
+  REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
+  REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;`);
 
 // ── Synthetic fixtures ──────────────────────────────────────────────────────
 await db.query(`

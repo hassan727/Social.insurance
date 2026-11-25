@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseServer } from '@/lib/supabaseServer';
+import { getSupabaseServiceClient } from '@/lib/supabaseServer';
 import { isAuthenticated, getSessionRole } from '@/lib/auth';
 
 /**
@@ -62,7 +62,11 @@ export async function POST(
     const sessionRole = await getSessionRole();
     const recordedBy = sessionRole ? `${String(confirmed_by).trim()} (${sessionRole})` : String(confirmed_by).trim();
 
-    const { data, error } = await supabaseServer.rpc('confirm_account_transfer', {
+    // confirm_account_transfer is executable by the service_role Postgres role
+    // ONLY (anon/authenticated EXECUTE revoked): the session check above plus
+    // this server-only credential are the authorization boundary. If the key
+    // is missing this throws and the route fails closed (no anon fallback).
+    const { data, error } = await getSupabaseServiceClient().rpc('confirm_account_transfer', {
       p_employee_id: id,
       p_to_company_account: String(to_company_account),
       p_effective_date: effective_date || null,
@@ -101,6 +105,9 @@ export async function POST(
     return NextResponse.json(result);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
+    if (message.includes('SUPABASE_SERVICE_ROLE_KEY')) {
+      return NextResponse.json({ error: 'service_unavailable', message: 'مسار النقل غير متاح — مفتاح التنفيذ الخادمي غير مُعدّ' }, { status: 503 });
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

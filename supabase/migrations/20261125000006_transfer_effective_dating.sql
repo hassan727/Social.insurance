@@ -142,6 +142,15 @@ $$ LANGUAGE plpgsql STABLE;
 -- events move the SNAPSHOT here (that is what they are for) but are never
 -- presented as real-world transfers.
 -- ─────────────────────────────────────────────────────────────────────────────
+-- resolve_current_company: read-side resolution from recorded events.
+-- HONEST SEMANTICS — initial state: when no event is applicable at p_as_of
+-- the function returns the EARLIEST recorded event's from-company. That is a
+-- display-continuity inference ("the snapshot before the first recorded
+-- event"), NOT proof the employee belonged to that company for all earlier
+-- time — history before the first recorded event is simply unrecorded.
+-- A stamp_correction applies from its own effective_date forward; it never
+-- rewrites resolution for earlier dates, so recording a correction cannot
+-- fabricate past employment at the corrected company.
 CREATE OR REPLACE FUNCTION public.resolve_current_company(
     p_employee_id UUID,
     p_as_of DATE DEFAULT CURRENT_DATE
@@ -390,5 +399,12 @@ REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEX
 GRANT EXECUTE ON FUNCTION public.canonical_company_text(TEXT) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.compute_account_employee_uid(TEXT, TEXT, TEXT, UUID) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.resolve_current_company(UUID, DATE) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) TO anon, authenticated, service_role;
+-- Mutating functions: trusted server execution identity ONLY. Neither the
+-- public anon key nor an authenticated end-user role may invoke them
+-- directly — the only caller is the session-validated Next.js route holding
+-- the server-only SUPABASE_SERVICE_ROLE_KEY. (The read functions above stay
+-- callable: they are pure/STABLE and move no state.)
+REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) TO service_role;

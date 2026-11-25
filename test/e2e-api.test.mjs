@@ -17,9 +17,13 @@ const ep = new EmbeddedPostgres({ databaseDir: '/tmp/pg-e2e', user: 'postgres', 
 await ep.initialise(); await ep.start(); await ep.createDatabase('e2e');
 const db = new pg.Client({ host: '127.0.0.1', port: 5545, user: 'postgres', password: 'postgres', database: 'e2e' });
 await db.connect();
-await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon TO authenticator;`);
+await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon, authenticated, service_role TO authenticator;`);
 for (const f of readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort()) await db.query(readFileSync(MIG_DIR + f, 'utf8'));
-await db.query(`GRANT USAGE ON SCHEMA public TO anon; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon;`);
+await db.query(`GRANT USAGE ON SCHEMA public TO anon, service_role; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, service_role; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, service_role; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;`);
+// Re-assert migration 06's final posture (the blanket harness grant above
+// would otherwise re-open the mutating RPCs to the anon role):
+await db.query(`REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;`);
 await db.query(`
   INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
     ('E.G', 1, '11111111111111', '1001', 'موظف تعارض', 'Active'),
@@ -47,6 +51,10 @@ const JWT_SECRET = 'e2e-test-only-secret-not-real-0123456789abcdef';
 const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const ANON_JWT = b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role: 'anon' }) + '.' +
   crypto.createHmac('sha256', JWT_SECRET).update(b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role: 'anon' })).digest('base64url');
+const mkJwt = (role) => b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role }) + '.' +
+  crypto.createHmac('sha256', JWT_SECRET).update(b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role })).digest('base64url');
+const SVC_JWT = mkJwt('service_role');
+const AUTHED_JWT = mkJwt('authenticated');
 writeFileSync('/tmp/postgrest.conf', `db-uri = "postgres://authenticator:authpw@127.0.0.1:5545/e2e"\ndb-schemas = "public"\ndb-anon-role = "anon"\nserver-port = 3001\njwt-secret = "${JWT_SECRET}"\n`);
 const pr = spawn('/tmp/postgrest', ['/tmp/postgrest.conf'], { stdio: 'ignore' });
 // 3. Prefix-strip proxy (supabase-js appends /rest/v1)
@@ -60,7 +68,7 @@ await sleep(2000);
 // 4. Next dev server
 const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], {
   cwd: new URL('..', import.meta.url).pathname,
-  env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' },
+  env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, SUPABASE_SERVICE_ROLE_KEY: SVC_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' },
   stdio: 'ignore',
 });
 const api = async (path, opts = {}) => {
@@ -996,6 +1004,19 @@ const transferCall = (empId, body, cookie) => api(`/api/employee/${empId}/transf
 
 const tNo = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, confirmed_by: 'e2e-tester' });
 check('CAT10: transfer without login -> 401', tNo.status === 401, 'status=' + tNo.status);
+
+// Direct PostgREST RPC bypass attempts: the mutating function is executable
+// by service_role ONLY. Anyone holding the PUBLIC anon key (shipped to every
+// browser) or an authenticated end-user role must be denied at the database.
+const rpcArgs = JSON.stringify({ p_employee_id: id71, p_to_company_account: 'E.G', p_effective_date: yday, p_change_type: 'account_transfer', p_confirmed_by: 'forged-direct-rpc' });
+const rpcAnon = await fetch('http://127.0.0.1:3002/rpc/confirm_account_transfer', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: ANON_JWT, Authorization: `Bearer ${ANON_JWT}` }, body: rpcArgs });
+const rpcAnonJ = await rpcAnon.json().catch(() => ({}));
+check('CAT10: direct RPC with anon key -> denied (42501)', (rpcAnon.status === 403 || rpcAnon.status === 401) && String(rpcAnonJ.code || '') === '42501', `status=${rpcAnon.status} ${JSON.stringify(rpcAnonJ).slice(0, 120)}`);
+const rpcAuthed = await fetch('http://127.0.0.1:3002/rpc/confirm_account_transfer', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: ANON_JWT, Authorization: `Bearer ${AUTHED_JWT}` }, body: rpcArgs });
+const rpcAuthedJ = await rpcAuthed.json().catch(() => ({}));
+check('CAT10: direct RPC with authenticated role -> denied (42501)', rpcAuthed.status === 403 && String(rpcAuthedJ.code || '') === '42501', `status=${rpcAuthed.status} ${JSON.stringify(rpcAuthedJ).slice(0, 120)}`);
+const mAfterBypass = (await db.query(`SELECT company_account FROM employees_master WHERE id=$1`, [id71])).rows[0];
+check('CAT10: bypass attempts wrote nothing', mAfterBypass.company_account === 'm.g', JSON.stringify(mAfterBypass));
 
 const login = await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin@insurance2026' }) });
 const setCookie = (login.headers.getSetCookie ? login.headers.getSetCookie()[0] : login.headers.get('set-cookie')) || '';

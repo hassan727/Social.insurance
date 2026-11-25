@@ -140,6 +140,34 @@ check('C2: correction is not misread as a transfer in the trail', (await hist(F)
 const rk1 = await confirm(F, { to: 'E.G', eff: '2026-06-01', by: 'hassan' });
 check('C2: later real transfer wins over earlier correction', rk1.applied_now === true && (await master(F)).company_account === 'E.G', '');
 
+// ── T-C3: correction never rewrites the past; effective-date order wins over insertion order ──
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
+  ('E.G', 1, '99999999999991', '9009', 'موظف ترتيب أ', 'Active'),
+  ('E.G', 1, '99999999999992', '9010', 'موظف ترتيب ب', 'Active');`);
+const C3A = await idOf('99999999999991');
+const C3B = await idOf('99999999999992');
+// C3A: real move in June, corrected today — the correction applies from its
+// own effective date forward and does NOT fabricate past employment at the
+// corrected company.
+await confirm(C3A, { to: 'M.G', eff: '2025-06-01', by: 'hassan' });
+const rc3a = await confirm(C3A, { to: 'E.G', type: 'stamp_correction', eff: TODAY, reason: 'النقل لم يحدث فعليًا', by: 'hassan' });
+check('C3: correction after backdated transfer takes the current snapshot', rc3a.success === true && (await master(C3A)).company_account === 'E.G', JSON.stringify(rc3a).slice(0, 140));
+check('C3: correction does NOT rewrite the past (Sept 2025 still resolves M.G)',
+  (await resolve(C3A, '2025-09-01')) === 'M.G' && (await resolve(C3A, TODAY)) === 'E.G', '');
+// C3B: correction recorded FIRST, backdated transfer inserted AFTER — the
+// resolver orders by effective_date, not by insertion order.
+await confirm(C3B, { to: 'M.G', type: 'stamp_correction', eff: TODAY, reason: 'إسناد غلط', by: 'hassan' });
+const rc3b = await confirm(C3B, { to: 'E.G', eff: '2025-06-01', by: 'hassan' });
+check('C3: backdated event inserted after a correction does not clobber the snapshot', rc3b.success === true && rc3b.applied_now === false && (await master(C3B)).company_account === 'M.G', JSON.stringify(rc3b).slice(0, 140));
+check('C3: effective-date order wins over insertion order (2025-07 -> E.G, today -> M.G)',
+  (await resolve(C3B, '2025-07-01')) === 'E.G' && (await resolve(C3B, TODAY)) === 'M.G', '');
+check('C3: pre-first-event fallback is the earliest event\'s from-company (documented inference, not proof)',
+  (await resolve(C3B, '2025-01-01')) === 'M.G', '');
+check('C3: history carries both kinds distinctly and in effective chronology',
+  (await hist(C3A)).length === 2 && (await hist(C3B)).length === 2 &&
+  (await hist(C3A)).some((h) => h.change_type === 'stamp_correction') &&
+  (await hist(C3A)).some((h) => h.change_type === 'account_transfer'), '');
+
 // ── T-D: self-transfer rejected by CANONICAL comparison (variant-proof) ─────
 const rd = await confirm(A, { to: 'm.g', eff: TODAY, by: 'hassan' });
 check('D: same-account text variant rejected as self_transfer', rd.success === false && rd.error === 'self_transfer', JSON.stringify(rd));

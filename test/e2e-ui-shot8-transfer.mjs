@@ -22,9 +22,11 @@ const ep = new EmbeddedPostgres({ databaseDir: '/tmp/pg-e2e', user: 'postgres', 
 await ep.initialise(); await ep.start(); await ep.createDatabase('e2e');
 const db = new pg.Client({ host: '127.0.0.1', port: 5545, user: 'postgres', password: 'postgres', database: 'e2e' });
 await db.connect();
-await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon TO authenticator;`);
+await db.query(`CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOINHERIT LOGIN PASSWORD 'authpw'; GRANT anon, authenticated, service_role TO authenticator;`);
 for (const f of readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort()) await db.query(readFileSync(MIG_DIR + f, 'utf8'));
-await db.query(`GRANT USAGE ON SCHEMA public TO anon; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon;`);
+await db.query(`GRANT USAGE ON SCHEMA public TO anon, service_role; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, service_role; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, service_role; GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, service_role;`);
+await db.query(`REVOKE EXECUTE ON FUNCTION public.apply_due_company_transfers(UUID) FROM anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.confirm_account_transfer(UUID, TEXT, DATE, TEXT, TEXT, TEXT, TEXT, TEXT, UUID) FROM anon, authenticated;`);
 await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, current_job_title) VALUES
   ('E.G', 1, '88888888888881', '8101', 'موظف منقول تجريبي', 'Active', 'فني')`);
 const empId = (await db.query(`SELECT id FROM employees_master WHERE national_id='88888888888881'`)).rows[0].id;
@@ -37,6 +39,7 @@ writeFileSync('/tmp/mg-transfer-case.xlsx', XLSX.write(wb, { type: 'buffer', boo
 const JWT_SECRET = 'e2e-test-only-secret-not-real-0123456789abcdef';
 const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const ANON_JWT = b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role: 'anon' }) + '.' + crypto.createHmac('sha256', JWT_SECRET).update(b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role: 'anon' })).digest('base64url');
+const SVC_JWT = b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role: 'service_role' }) + '.' + crypto.createHmac('sha256', JWT_SECRET).update(b64u({ alg: 'HS256', typ: 'JWT' }) + '.' + b64u({ role: 'service_role' })).digest('base64url');
 writeFileSync('/tmp/postgrest.conf', `db-uri = "postgres://authenticator:authpw@127.0.0.1:5545/e2e"\ndb-schemas = "public"\ndb-anon-role = "anon"\nserver-port = 3001\njwt-secret = "${JWT_SECRET}"\n`);
 const pr = spawn('/tmp/postgrest', ['/tmp/postgrest.conf'], { stdio: 'ignore' });
 http.createServer((req, res) => {
@@ -45,7 +48,7 @@ http.createServer((req, res) => {
   req.pipe(p); p.on('error', () => { res.statusCode = 502; res.end(); });
 }).listen(3002);
 await sleep(2000);
-const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], { cwd: new URL('..', import.meta.url).pathname, env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' }, stdio: 'ignore' });
+const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], { cwd: new URL('..', import.meta.url).pathname, env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, SUPABASE_SERVICE_ROLE_KEY: SVC_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' }, stdio: 'ignore' });
 for (let i = 0; i < 60; i++) { try { await fetch('http://localhost:3100/api/company-accounts'); break; } catch { await sleep(1500); } }
 console.log('stack up');
 

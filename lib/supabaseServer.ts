@@ -17,6 +17,27 @@ export function getSupabaseServerClient() {
   });
 }
 
+// Trusted server-execution client: uses the SERVICE ROLE key, which is a
+// server-only secret (never NEXT_PUBLIC_*, never shipped to the browser).
+// Mutating transfer RPCs are granted to the service_role Postgres role ONLY,
+// so this is the sole execution path for them. Fails closed: if the key is
+// not configured there is NO fallback to the anon key for mutations.
+export function getSupabaseServiceClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceKey) {
+    throw new Error('SUPABASE_SERVICE_ROLE_KEY is not configured — server-side trusted execution is unavailable');
+  }
+
+  return createClient<Database>(supabaseUrl, serviceKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+}
+
 // Lazy proxy that initializes the client per call, ensuring env vars are loaded even in serverless edge/node workers
 export const supabaseServer = new Proxy({} as ReturnType<typeof getSupabaseServerClient>, {
   get(_target, prop) {
