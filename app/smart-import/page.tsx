@@ -41,6 +41,7 @@ interface ImportResult {
     total_updated_employees: number;
     total_skipped_rows: number;
     total_errors: number;
+    total_cross_account_conflicts?: number;
     sheets_success: number;
     sheets_failed: number;
   };
@@ -52,6 +53,7 @@ interface ImportResult {
     skipped_rows: number;
     errors: string[];
     warnings?: string[];
+    cross_account_conflicts?: Array<{ national_id?: string; employee_name?: string; master_account?: string; row_account?: string }>;
   }>;
 }
 
@@ -154,6 +156,7 @@ export default function SmartImportPage() {
       total_updated_employees: 0,
       total_skipped_rows: 0,
       total_errors: 0,
+      total_cross_account_conflicts: 0,
       sheets_success: 0,
       sheets_failed: 0,
     };
@@ -197,7 +200,12 @@ export default function SmartImportPage() {
           combinedSummary.total_updated_employees += data.summary.total_updated_employees || 0;
           combinedSummary.total_skipped_rows += data.summary.total_skipped_rows || 0;
           combinedSummary.total_errors += data.summary.total_errors || 0;
-          combinedSummary.sheets_success += data.summary.sheets_success || 1;
+          combinedSummary.total_cross_account_conflicts += data.summary.total_cross_account_conflicts || 0;
+        }
+        if (data.success === false || (data.summary && data.summary.sheets_failed > 0)) {
+          combinedSummary.sheets_failed += 1;
+        } else {
+          combinedSummary.sheets_success += (data.summary && data.summary.sheets_success) || 1;
         }
         // Route returns detailed_results; accept sheet_results for safety.
         const perSheet = data.detailed_results || data.sheet_results;
@@ -217,22 +225,34 @@ export default function SmartImportPage() {
       }
 
       const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+      const issueCount = (combinedSummary.total_errors || 0) + (combinedSummary.total_cross_account_conflicts || 0);
+      const failedSheets = combinedSummary.sheets_failed || 0;
+      const hasIssues = issueCount > 0 || failedSheets > 0;
+      const finalMessage = failedSheets > 0
+        ? `فشل استيراد ${failedSheets} من ${selectedSheets.length} ورقة — راجع الأخطاء بالأسفل`
+        : hasIssues
+          ? `اكتمل الاستيراد جزئيًا في ${elapsedTime} ثانية: ${issueCount} صف/تعارض يحتاج مراجعة — لم تُعتمد اللقطة كاملة`
+          : `تم استيراد ${selectedSheets.length} ورقة بنجاح في ${elapsedTime} ثانية`;
       setImportProgress({
-        currentSheet: 'اكتمل بنجاح',
+        currentSheet: hasIssues ? 'اكتمل مع مراجعة' : 'اكتمل بنجاح',
         currentSheetIndex: selectedSheets.length,
         totalSheets: selectedSheets.length,
         currentSheetProgress: 100,
         overallProgress: 100,
-        message: `اكتمل استيراد جميع الشيتات بنجاح في ${elapsedTime} ثانية!`,
+        message: finalMessage,
       });
 
       setImportResult({
-        success: true,
-        message: `تم استيراد ${selectedSheets.length} ورقة بنجاح في ${elapsedTime} ثانية`,
+        success: !hasIssues,
+        message: finalMessage,
         summary: combinedSummary,
         detailed_results: combinedSheetResults,
       });
-      toast.success(`تم استيراد ${selectedSheets.length} ورقة بنجاح في ${elapsedTime} ثانية`);
+      if (hasIssues) {
+        toast.error(finalMessage);
+      } else {
+        toast.success(finalMessage);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'حدث خطأ أثناء الاستيراد');
       setImportProgress({
@@ -624,11 +644,42 @@ export default function SmartImportPage() {
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>ورقة ناجحة</div>
               </div>
+
+              <div className="glass-card" style={{ padding: '18px', borderRadius: 14, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)' }}>
+                <div style={{ fontSize: 32, fontWeight: 900, color: '#fbbf24', marginBottom: 6, letterSpacing: '-0.02em' }}>
+                  {(importResult.summary.total_errors || 0) + (importResult.summary.total_cross_account_conflicts || 0)}
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>خطأ/تعارض يحتاج مراجعة</div>
+              </div>
             </div>
 
             <p style={{ fontSize: 15, color: '#e2e8f0', padding: '16px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(148,163,184,0.1)', lineHeight: 1.6 }}>
               {importResult.message}
             </p>
+
+            {/* Per-sheet errors and cross-account conflicts — visible, never
+                silently "successful". A partial import is not a full snapshot. */}
+            {(() => {
+              const errs = Object.entries(importResult.detailed_results || {})
+                .flatMap(([sheet, r]) => (r.errors || []).map((e) => ({ sheet, e })));
+              const xconf = Object.entries(importResult.detailed_results || {})
+                .flatMap(([sheet, r]) => (r.cross_account_conflicts || []).map((c) => ({ sheet, c })));
+              if (errs.length === 0 && xconf.length === 0) return null;
+              return (
+                <div style={{ marginTop: 16, padding: '14px 16px', borderRadius: 12, background: 'rgba(251,113,133,0.08)', border: '1px solid rgba(251,113,133,0.35)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <AlertTriangle style={{ width: 15, height: 15, color: '#fb7185' }} />
+                    <span style={{ fontSize: 13, fontWeight: 800, color: '#fb7185' }}>صفوف لم تُستورد وتحتاج مراجعة ({errs.length + xconf.length})</span>
+                  </div>
+                  {errs.map((x, i) => (
+                    <p key={`e${i}`} style={{ fontSize: 12, color: '#fecdd3', margin: '0 0 4px', lineHeight: 1.6 }}>• [{x.sheet}] {x.e}</p>
+                  ))}
+                  {xconf.map((x, i) => (
+                    <p key={`c${i}`} style={{ fontSize: 12, color: '#fecdd3', margin: '0 0 4px', lineHeight: 1.6 }}>• [{x.sheet}] تعارض حسابات: {x.c.employee_name || x.c.national_id || 'صف'} — السجل الحالي {x.c.master_account || ''} والصف {x.c.row_account || ''}؛ لم يُنقل تلقائيًا</p>
+                  ))}
+                </div>
+              );
+            })()}
 
             {/* Non-fatal import warnings (e.g. same-file duplicate rows with
                 different values) — visible, never silently "verified". */}
