@@ -1130,6 +1130,24 @@ const sFutureF = await pgrest('/rpc/post07_future_fn', SVC_JWT, { method: 'POST'
 check('CAT11: NEW table + function still reachable by service_role (app path intact)',
   sFutureT.status === 200 && sFutureF.status === 200,
   `table=${sFutureT.status} fn=${sFutureF.status}`);
+// The enforcement trigger itself must be present and enabled.
+const trig = await db.query(`SELECT evtname, evtenabled FROM pg_event_trigger WHERE evtname='lockdown_new_objects'`);
+check('CAT11: lockdown_new_objects event trigger exists and is enabled', trig.rows.length === 1 && trig.rows[0].evtenabled === 'O', JSON.stringify(trig.rows));
+// Creator scope: a different (non-superuser) creator role gets the same
+// lockdown, because the event trigger does not depend on default privileges.
+await db.query(`CREATE ROLE post07_other_creator NOLOGIN; GRANT USAGE, CREATE ON SCHEMA public TO post07_other_creator;`);
+await db.query(`SET ROLE post07_other_creator; CREATE TABLE public.post07_other_table (id int); RESET ROLE;`);
+await db.query(`SELECT pg_notify('pgrst', 'reload schema cache');`).catch(() => {});
+pr.kill(); await sleep(500);
+pr = spawn('/tmp/postgrest', ['/tmp/postgrest.conf'], { stdio: 'ignore' });
+await sleep(1500);
+const dOther = await pgrest('/post07_other_table?select=*', ANON_JWT);
+const dOtherJ = await dOther.json().catch(() => ({}));
+const sOther = await pgrest('/post07_other_table?select=*', SVC_JWT);
+check('CAT11: object created by a NON-postgres role is also locked down (event trigger, not default privileges)',
+  (dOther.status === 401 || dOther.status === 403) && String(dOtherJ.code || '') === '42501' && sOther.status === 200,
+  `anon=${dOther.status}/${dOtherJ.code} svc=${sOther.status}`);
+await db.query(`DROP TABLE public.post07_other_table; DROP OWNED BY post07_other_creator; DROP ROLE post07_other_creator;`);
 await db.query(`DROP TABLE public.post07_future_check; DROP FUNCTION public.post07_future_fn();`);
 const apiNoAuth = await api('/api/employee?limit=1', { noAuth: true });
 check('CAT11: API route without session -> 401 (middleware gate)', apiNoAuth.status === 401, 'status=' + apiNoAuth.status);

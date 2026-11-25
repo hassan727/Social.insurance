@@ -32,8 +32,14 @@
 --     built-in PUBLIC EXECUTE into any non-empty default-privilege grant
 --     (verified empirically), so default privileges alone CANNOT keep a
 --     future function both closed to PUBLIC and open to service_role.
---     Creating the event trigger needs superuser; the migration runner
---     (postgres via supabase db push / dashboard SQL) has it.
+--     Event triggers normally need superuser; hosted Supabase grants the
+--     postgres role this capability through its supautils extension,
+--     installed on every project (official Supabase docs: Database,
+--     Postgres, Event Triggers). Creator scope, exactly: the trigger
+--     fires for every role EXCEPT superusers and platform reserved roles
+--     (supautils no-ops those), and the project's entire change path
+--     (supabase db push, dashboard SQL editor) runs as postgres, which
+--     is neither. This migration itself must run as postgres.
 -- =============================================================================
 
 -- Tables: no direct reads or writes for the public roles
@@ -66,7 +72,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO se
 
 -- Layer two: an event trigger that enforces the locked posture on every new
 -- object in schema public, whichever role creates it (default privileges only
--- bind to one role). Runs at ddl_command_end inside the creating transaction,
+-- bind to one role). Creator scope is exact: on hosted Supabase the trigger
+-- fires for every role except superusers and platform reserved roles
+-- (supautils skips those by design); the project's change path runs as
+-- postgres, so all app DDL is covered. Runs at ddl_command_end inside the
+-- creating transaction,
 -- so the locked state is what ever commits. If the trigger is ever dropped,
 -- new objects fail CLOSED (no service_role access -> visible errors), never
 -- silently open. A later migration that deliberately grants a role can still

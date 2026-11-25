@@ -1,3 +1,7 @@
+// Build-time boundary: any Client Component or browser bundle importing this
+// module fails the build (server-only package), so the service credential can
+// never leak client-side even if a future import sneaks in.
+import 'server-only';
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '@/types/supabase';
 
