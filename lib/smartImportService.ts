@@ -522,7 +522,8 @@ export async function importSheet(
   companyAccount: string,
   sheetName: string,
   workbook: XLSX.WorkBook,
-  importLogId: string
+  importLogId: string,
+  accountId: number | null = null
 ): Promise<ImportResult> {
   const errors: string[] = [];
   let newEmployees = 0;
@@ -1054,20 +1055,32 @@ export async function importSheet(
       }
 
       // E) Phase 1 Bridge Batches (Bridging the Two Worlds):
-      // Stamp account identity on monthly bridge rows with the same evidence
-      // rule as the migration (exact national_id -> employees_master).
-      // Unresolved rows keep account_id = null and land in quarantine.
-      const bridgeNids = [...new Set([...payrollBatch, ...insuranceBatch].map((r) => r.national_id).filter(Boolean))] as string[];
-      const accountByNid = new Map<string, number | null>();
-      for (let i = 0; i < bridgeNids.length; i += 500) {
-        const { data: masters } = await supabaseServer
-          .from('employees_master')
-          .select('national_id, account_id')
-          .in('national_id', bridgeNids.slice(i, i + 500));
-        (masters || []).forEach((m) => accountByNid.set(m.national_id as string, (m.account_id as number | null) ?? null));
-      }
-      payrollBatch.forEach((r) => { r.account_id = (r.national_id && accountByNid.get(r.national_id)) || null; });
-      insuranceBatch.forEach((r) => { r.account_id = (r.national_id && accountByNid.get(r.national_id)) || null; });
+      // Stamp monthly bridge rows with the import's EXPLICIT validated
+      // account. A row whose own company text contradicts the validated
+      // account is quarantined (account_id NULL), never silently stamped.
+      const { data: bridgeAccounts } = await supabaseServer
+        .from('company_accounts')
+        .select('id, account_code, aliases')
+        .eq('is_active', true);
+      const resolveRowAccount = (txt: unknown): number | null => {
+        const t = String(txt || '').trim().toLowerCase();
+        if (!t) return null;
+        const m = (bridgeAccounts || []).find(
+          (a) => a.account_code.toLowerCase() === t ||
+            (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === t))
+        );
+        return m ? (m.id as number) : null;
+      };
+      payrollBatch.forEach((r) => {
+        const rd = (r.raw_data || {}) as Record<string, unknown>;
+        const rowAcc = resolveRowAccount(rd['الشركه'] ?? rd['الشركة']);
+        r.account_id = accountId !== null && (rowAcc === null || rowAcc === accountId) ? accountId : null;
+      });
+      insuranceBatch.forEach((r) => {
+        const rd = (r.raw_data || {}) as Record<string, unknown>;
+        const rowAcc = resolveRowAccount(rd['الشركه'] ?? rd['الشركة']);
+        r.account_id = accountId !== null && (rowAcc === null || rowAcc === accountId) ? accountId : null;
+      });
       for (let i = 0; i < incomingBatch.length; i += 150) {
         const chunk = incomingBatch.slice(i, i + 150);
         // Upsert: update existing record if same employee in same company_account
@@ -1139,7 +1152,8 @@ export async function importMultiSheetExcel(
     companyAccount: string,
     workbook: XLSX.WorkBook,
     selectedSheets: string[],
-    fileName: string
+    fileName: string,
+    accountId?: number | null
   ): Promise<Record<string, ImportResult>> {
     const results: Record<string, ImportResult> = {};
 
@@ -1149,6 +1163,7 @@ export async function importMultiSheetExcel(
       .insert({
         source_type: 'multi_sheet_import',
         file_name: fileName,
+        account_id: accountId ?? null,
         notes: `Multi-sheet import for ${companyAccount}: ${selectedSheets.join(', ')}`,
       })
       .select('id')
@@ -1160,7 +1175,7 @@ export async function importMultiSheetExcel(
 
     // Import each selected sheet
     for (const sheetName of selectedSheets) {
-      results[sheetName] = await importSheet(companyAccount, sheetName, workbook, importLog.id);
+      results[sheetName] = await importSheet(companyAccount, sheetName, workbook, importLog.id, accountId ?? null);
     }
 
     // Update import log with summary

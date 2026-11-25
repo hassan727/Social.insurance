@@ -1,25 +1,62 @@
 import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { importMultiSheetExcel } from '@/lib/smartImportService';
+import { supabaseServer } from '@/lib/supabaseServer';
 
 export const maxDuration = 300; // 5 minutes for large imports
+
+// Resolve an operator-selected account against company_accounts (id, code,
+// or alias). Returns null when unknown — callers reject, never default.
+async function resolveAccountId(raw: string): Promise<number | null> {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const { data, error } = await supabaseServer
+    .from('company_accounts')
+    .select('id, account_code, aliases')
+    .eq('is_active', true);
+  if (error || !data) return null;
+  const asNum = Number(trimmed);
+  const lowered = trimmed.toLowerCase();
+  const match = data.find((a) =>
+    (Number.isInteger(asNum) && a.id === asNum) ||
+    a.account_code.toLowerCase() === lowered ||
+    (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === lowered))
+  );
+  return match ? match.id : null;
+}
 
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
-    const rawAccount = (formData.get('company_account') as string | null) || 'E.G';
+    const rawAccount = (formData.get('company_account') as string | null) || '';
     const selectedSheetsStr = formData.get('selected_sheets') as string | null;
 
     if (!file) {
       return NextResponse.json({ error: 'الملف مطلوب' }, { status: 400 });
     }
 
-    // Dynamic account normalization: default to E.G (Egypt Gas), normalize m.g/M.G
-    const normalizedAccount = (rawAccount.trim().toLowerCase().startsWith('m') || rawAccount.includes('مودرن'))
-      ? 'M.G'
-      : 'E.G';
-    const companyAccount = normalizedAccount;
+    // Explicit validated account context is mandatory — no Egypt Gas default,
+    // no name-prefix guessing. The resolved id is threaded through the import
+    // so every monthly bridge row is stamped with it.
+    if (!rawAccount.trim()) {
+      return NextResponse.json({ error: 'يجب اختيار الحساب (الشركة) صراحةً قبل الاستيراد — لا يوجد حساب افتراضي' }, { status: 400 });
+    }
+    const accountId = await resolveAccountId(rawAccount);
+    if (accountId === null) {
+      return NextResponse.json({ error: 'الحساب المحدد غير معروف. أضفه أولاً في الحسابات أو راجع الإدخال — لا يوجد افتراض تلقائي.' }, { status: 400 });
+    }
+    const { data: accountRow } = await supabaseServer
+      .from('company_accounts')
+      .select('account_code, aliases')
+      .eq('id', accountId)
+      .single();
+    // Canonical stored form for company_account text: the dotted alias used
+    // across existing rows (e.g. E.G / M.G), falling back to the code.
+    const companyAccount =
+      (accountRow?.aliases || []).find((a: string) => /^[A-Za-z]\.[A-Za-z]/.test(a.trim())) ||
+      accountRow?.account_code ||
+      rawAccount.trim();
 
     if (!selectedSheetsStr) {
       return NextResponse.json({ error: 'يجب اختيار ورقة واحدة على الأقل' }, { status: 400 });
@@ -56,7 +93,8 @@ export async function POST(request: Request) {
       companyAccount,
       workbook,
       selectedSheets,
-      file.name
+      file.name,
+      accountId
     );
 
     // Calculate summary

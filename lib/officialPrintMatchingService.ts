@@ -405,7 +405,7 @@ export async function runOfficialPrintForensicAudit(
       rawRows.forEach((row) => {
         const rawNid = String(row['الرقم القومى 2'] || row['الرقم القومي'] || row['الرقم القومى'] || '').replace(/[^\d]/g, '').trim();
         if (rawNid.length !== 14) return;
-        const comp = String(row['الشركه '] || row['الشركه'] || row['الشركة'] || 'E.G').trim();
+        const comp = String(row['الشركه '] || row['الشركه'] || row['الشركة'] || '').trim();
         if (targetAccount !== 'ALL' && comp.toUpperCase() !== targetAccount.toUpperCase()) return;
 
         const sal = parseFloat(String(row['قيمة الاجر'] || row['الاجر التأمينى'] || 0).replace(/[^\d.]/g, '')) || 0;
@@ -450,7 +450,7 @@ export async function runOfficialPrintForensicAudit(
     const nid = String(r.national_id || raw['الرقم القومى 2'] || raw['الرقم القومى'] || raw['الرقم القومي'] || '').replace(/[^\d]/g, '').trim();
     if (!nid || nid.length !== 14) return;
 
-    const acc = (r.company_account || raw['الشركه'] || raw['الشركة'] || 'E.G').trim();
+    const acc = (r.company_account || raw['الشركه'] || raw['الشركة'] || '').trim();
     if (targetAccount !== 'ALL' && acc.toUpperCase() !== targetAccount.toUpperCase()) return;
 
     // إذا لم يكن بالخريطة أو كان قادماً من استيراد برنت تأمينات رسمي صريح
@@ -514,7 +514,7 @@ export async function runOfficialPrintForensicAudit(
     const key = nid || code;
     if (!key) return;
 
-    const acc = (raw['الشركة'] || raw['الشركه'] || 'E.G').trim();
+    const acc = (raw['الشركة'] || raw['الشركه'] || '').trim();
     if (targetAccount !== 'ALL' && acc.toUpperCase() !== targetAccount.toUpperCase()) return;
 
     const sal = parseFloat(String(raw['الراتب'] || raw['اجمالي المستحق'] || raw['صافى التحويل'] || '0').replace(/[^\d.]/g, '')) || 0;
@@ -582,7 +582,7 @@ export async function runOfficialPrintForensicAudit(
 
     const empCode = masterRec?.employee_code || payRec?.code || printRec?.performance_number || incomingRec?.employee_code || '';
     const empName = masterRec?.employee_name || payRec?.name || incomingRec?.employee_name || printRec?.employee_name || 'بدون اسم';
-    const compAccount = masterRec?.company_account || payRec?.companyAccount || printRec?.company_account || incomingRec?.company_account || 'E.G';
+    const compAccount = masterRec?.company_account || payRec?.companyAccount || printRec?.company_account || incomingRec?.company_account || '';
 
     if (targetAccount !== 'ALL' && compAccount.toUpperCase() !== targetAccount.toUpperCase()) {
       continue;

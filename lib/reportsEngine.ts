@@ -212,7 +212,7 @@ export async function generateReportData(
       (r.company_account as string) ||
       raw['الشركه'] ||
       raw['الشركة'] ||
-      'E.G'
+      ''
     ).trim();
 
     const info = { nid, code, name, job, insJob, subDate, insNum, companyAcc };
@@ -291,13 +291,13 @@ export async function generateReportData(
       (r.company_account as string) ||
       raw['الشركه'] ||
       raw['الشركة'] ||
-      'E.G'
+      ''
     ).trim();
 
     if (account !== 'ALL') {
       const matchAcc =
         account === 'E.G'
-          ? companyAcc.toUpperCase() === 'E.G' || companyAcc === ''
+          ? companyAcc.toUpperCase() === 'E.G'
           : companyAcc.toLowerCase() === 'm.g';
       if (!matchAcc) return;
     }
@@ -326,12 +326,12 @@ export async function generateReportData(
     const nid = ((emp.national_id as string) || raw['الرقم القومى'] || raw['الرقم القومي'] || '').trim();
     const code = ((emp.employee_code as string) || raw['الكود'] || '').trim();
     const name = ((emp.employee_name as string) || raw['الاسم'] || '').trim();
-    const companyAcc = ((emp.company_account as string) || 'E.G').trim();
+    const companyAcc = ((emp.company_account as string) || '').trim();
 
     if (account !== 'ALL') {
       const matchAcc =
         account === 'E.G'
-          ? companyAcc.toUpperCase() === 'E.G' || companyAcc === ''
+          ? companyAcc.toUpperCase() === 'E.G'
           : companyAcc.toLowerCase() === 'm.g';
       if (!matchAcc) return;
     }
@@ -440,12 +440,12 @@ export async function generateReportData(
       if (!name && g.name) name = g.name as string;
     }
 
-    const companyAcc = (g.companyAcc as string) || 'E.G';
+    const companyAcc = (g.companyAcc as string) || '';
 
     if (account !== 'ALL') {
       const matchAcc =
         account === 'E.G'
-          ? companyAcc.toUpperCase() === 'E.G' || companyAcc === ''
+          ? companyAcc.toUpperCase() === 'E.G'
           : companyAcc.toLowerCase() === 'm.g';
       if (!matchAcc) return;
     }
@@ -1313,7 +1313,7 @@ export function generateBlankTemplate(reportType: ReportType, account: CompanyAc
       'الكود': '50012',
       'الاسم': 'أحمد إبراهيم محمود',
       'الرقم القومى': '29405010101234',
-      'الشركة (Account)': account === 'ALL' ? 'E.G' : account,
+      'الشركة (Account)': account === 'ALL' ? 'الكل' : account,
       'الوظيفة الفعلية': 'مهندس شبكات',
       'الوظيفة في التأمينات': 'مهندس',
       'الأجر التأميني (2700-16700)': '7500',
@@ -1400,7 +1400,7 @@ export function generateBlankTemplate(reportType: ReportType, account: CompanyAc
       'الكود': '1001',
       'الاسم': 'مثال لاسم الموظف',
       'الرقم القومى': '29001010100000',
-      'الشركة (Account)': account === 'ALL' ? 'E.G' : account,
+      'الشركة (Account)': account === 'ALL' ? 'الكل' : account,
       'الإدارة': 'المحطات',
       'المنطقة': 'غرب النيل',
       'الوظيفة': 'مساعد فني',

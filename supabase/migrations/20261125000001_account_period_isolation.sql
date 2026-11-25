@@ -26,24 +26,64 @@ ALTER TABLE public.monthly_insurance_records
 ALTER TABLE public.import_logs
     ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES public.company_accounts(id);
 
--- 2. Evidence-supported backfill (exact national_id → employees_master) -----
--- Rows whose national_id has no master record with a resolved account stay
--- NULL: quarantined, surfaced by v_unassigned_monthly_records below.
+-- 2. Evidence-supported backfill: stamp a row's account ONLY where two
+-- independent sources AGREE — the master record (employees_master.account_id)
+-- and the warad file's own per-row company text (incoming_insurance_records.
+-- company_account, resolved through company_accounts aliases). Case 1 proved
+-- master alone can be wrong (master E.G vs actual Modern), and case 2 proved
+-- the payroll channel name is not the employer — so neither master alone,
+-- nor warad alone, nor file names are sufficient. Any conflict, ambiguity
+-- (multiple warad accounts) or missing source leaves account_id NULL:
+-- quarantined for review, never guessed.
+WITH warad AS (
+    SELECT w.national_id,
+           COUNT(DISTINCT ca.id) AS distinct_accounts,
+           MIN(ca.id) AS account_id
+    FROM public.incoming_insurance_records w
+    JOIN public.company_accounts ca
+      ON ca.account_code = UPPER(TRIM(w.company_account))
+      OR TRIM(w.company_account) = ANY(ca.aliases)
+      OR LOWER(TRIM(w.company_account)) = ANY(ca.aliases)
+    WHERE w.national_id IS NOT NULL
+      AND w.company_account IS NOT NULL
+      AND TRIM(w.company_account) <> ''
+    GROUP BY w.national_id
+)
 UPDATE public.monthly_payroll_records
 SET account_id = em.account_id
 FROM public.employees_master em
+JOIN warad ON warad.national_id = em.national_id
 WHERE monthly_payroll_records.account_id IS NULL
   AND monthly_payroll_records.national_id IS NOT NULL
   AND monthly_payroll_records.national_id = em.national_id
-  AND em.account_id IS NOT NULL;
+  AND em.account_id IS NOT NULL
+  AND warad.distinct_accounts = 1
+  AND warad.account_id = em.account_id;
 
+WITH warad AS (
+    SELECT w.national_id,
+           COUNT(DISTINCT ca.id) AS distinct_accounts,
+           MIN(ca.id) AS account_id
+    FROM public.incoming_insurance_records w
+    JOIN public.company_accounts ca
+      ON ca.account_code = UPPER(TRIM(w.company_account))
+      OR TRIM(w.company_account) = ANY(ca.aliases)
+      OR LOWER(TRIM(w.company_account)) = ANY(ca.aliases)
+    WHERE w.national_id IS NOT NULL
+      AND w.company_account IS NOT NULL
+      AND TRIM(w.company_account) <> ''
+    GROUP BY w.national_id
+)
 UPDATE public.monthly_insurance_records
 SET account_id = em.account_id
 FROM public.employees_master em
+JOIN warad ON warad.national_id = em.national_id
 WHERE monthly_insurance_records.account_id IS NULL
   AND monthly_insurance_records.national_id IS NOT NULL
   AND monthly_insurance_records.national_id = em.national_id
-  AND em.account_id IS NOT NULL;
+  AND em.account_id IS NOT NULL
+  AND warad.distinct_accounts = 1
+  AND warad.account_id = em.account_id;
 
 -- 3. import_logs backfill: only when the batch's rows resolve to exactly ONE
 -- distinct account. Mixed or unresolved batches stay NULL = quarantined.

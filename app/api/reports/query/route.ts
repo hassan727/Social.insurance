@@ -10,7 +10,7 @@ import {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const account = (body.account || 'E.G') as CompanyAccount;
+    const account = (body.account || 'ALL') as CompanyAccount;
     const reportType = (body.reportType || 'hr_letter') as ReportType;
     const quarter = (body.quarter || 'Q3') as QuarterSelection;
     const method = (body.method || 'actual') as CalculationMethod;

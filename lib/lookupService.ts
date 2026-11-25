@@ -953,9 +953,8 @@ export async function getEmployeeFullDetails(params: {
   const cleanNid = national_id ? national_id.replace(/\D/g, '') : '';
   const hasValidNid = cleanNid.length === 14;
 
-  // 0. Resolve the employee's account FIRST (exact national_id match on
-  // employees_master). Every monthly fact below is scoped to this account.
-  // No resolved account => quarantine: facts are flagged, never guessed.
+  // 0. Resolve the employee's master record FIRST (exact national_id), so
+  // account evidence is available before any monthly fact is fetched.
   let masterEmp: Record<string, unknown> | null = null;
   if (hasValidNid) {
     let mQuery = supabaseServer.from('employees_master').select('*').eq('national_id', cleanNid);
@@ -965,7 +964,6 @@ export async function getEmployeeFullDetails(params: {
     const { data: mData } = await mQuery.limit(1).maybeSingle();
     if (mData) masterEmp = mData;
   }
-  const resolvedAccountId = (masterEmp?.account_id as number | null) ?? null;
 
   // 1. Fetch matching incoming insurance records
   let incomingQuery = supabaseServer.from('incoming_insurance_records').select('*');
@@ -1030,6 +1028,39 @@ export async function getEmployeeFullDetails(params: {
   let resignationRecords: Record<string, unknown>[] = [];
   const { data: resData } = await resQuery.limit(10);
   if (resData) resignationRecords = resData;
+
+  // Account resolution rule (consistent everywhere): scope by account ONLY
+  // when master and the warad file's own company text AGREE. A known
+  // contradiction (case 1: master says one company, warad says another) is
+  // surfaced as a conflict and facts stay UNscoped — never silently filtered
+  // by an untrusted source. A single available source scopes with a visible
+  // pending-confirmation note. No source at all stays unscoped + noted.
+  const { data: allAccounts } = await supabaseServer
+    .from('company_accounts')
+    .select('id, account_code, aliases')
+    .eq('is_active', true);
+  const resolveAccountText = (txt: unknown): number | null => {
+    const t = String(txt || '').trim().toLowerCase();
+    if (!t) return null;
+    const m = (allAccounts || []).find(
+      (a) => a.account_code.toLowerCase() === t ||
+        (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === t))
+    );
+    return m ? (m.id as number) : null;
+  };
+  const masterAccountId = (masterEmp?.account_id as number | null) ?? null;
+  const waradAccountId = resolveAccountText(incomingRecord?.company_account);
+  let resolvedAccountId: number | null = null;
+  if (masterAccountId !== null && waradAccountId !== null) {
+    if (masterAccountId === waradAccountId) {
+      resolvedAccountId = masterAccountId;
+    } else {
+      conflicts.push('تعارض حساب: الدليل ووارد التأمين ينسبان الموظف لحسابين مختلفين — عُرضت السجلات الشهرية بدون حصر بحساب وتحتاج مراجعة');
+    }
+  } else if (masterAccountId !== null || waradAccountId !== null) {
+    resolvedAccountId = masterAccountId ?? waradAccountId;
+    conflicts.push('نسبة الحساب معتمدة على مصدر واحد فقط — تحتاج تأكيداً من المصدر الآخر');
+  }
 
   // 3. Fetch all monthly payroll records for this employee — scoped to the
   // employee's account. Without a national_id or code there is NO fetch at

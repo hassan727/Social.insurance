@@ -386,7 +386,7 @@ export async function rejectCandidateMatch(
   }
 
   const rawRow = (candidate.row_data || {}) as Record<string, unknown>;
-  const companyAccount = (rawRow.company_account as string) || (rawRow.account as string) || 'E.G';
+  const companyAccount = (rawRow.company_account as string) || (rawRow.account as string) || '';
 
   const { data: newEmp, error: createErr } = await supabaseServer
     .from('employees_master')

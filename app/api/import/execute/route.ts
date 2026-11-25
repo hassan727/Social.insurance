@@ -441,7 +441,7 @@ export async function POST(request: Request) {
         const code = (rec.employee_code ? String(rec.employee_code).trim() : '') || raw['الكود'] || '';
         const nid = (rec.national_id ? String(rec.national_id).trim() : '') || raw['الرقم القومي'] || raw['القومي'] || '';
         const name = (rec.employee_name ? String(rec.employee_name).trim() : '') || raw['الاسم'] || '';
-        const acc = (rec.company_account ? String(rec.company_account).trim() : '') || raw['الشركة'] || raw['الشركه'] || 'E.G';
+        const acc = (rec.company_account ? String(rec.company_account).trim() : '') || raw['الشركة'] || raw['الشركه'] || '';
         const insNum = (rec.insurance_number ? String(rec.insurance_number).trim() : '') || raw['الرقم التأميني'] || raw['الرقم التاميني'] || raw['الرقم التأميني للمؤمن علية'] || '';
 
         let matched: EmpMasterLookup | null = null;

@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action') || 'data'; // 'data' | 'template'
-    const account = (searchParams.get('account') || 'E.G') as CompanyAccount;
+    const account = (searchParams.get('account') || 'ALL') as CompanyAccount;
     const reportType = (searchParams.get('reportType') || 'hr_letter') as ReportType;
     const quarter = (searchParams.get('quarter') || 'Q3') as QuarterSelection;
     const method = (searchParams.get('method') || 'actual') as CalculationMethod;
