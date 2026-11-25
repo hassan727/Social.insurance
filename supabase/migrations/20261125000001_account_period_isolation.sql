@@ -133,6 +133,17 @@ SELECT 'monthly_insurance'::text, id, period_year, period_month,
 FROM public.monthly_insurance_records
 WHERE account_id IS NULL;
 
+-- 5b. Alias coverage for text observed in production data -------------------
+-- Append-only and ORDER-PRESERVING: the smart-import route derives the
+-- canonical stored company text from the FIRST dotted alias, so the existing
+-- alias order must not be disturbed. Idempotent (skips aliases already there).
+UPDATE public.company_accounts
+SET aliases = aliases || (SELECT ARRAY(SELECT a FROM unnest(ARRAY['EGYPT GAS','egypt gas','Egypt Gas']) AS t(a) WHERE NOT (a = ANY(company_accounts.aliases))))
+WHERE account_code = 'EG';
+UPDATE public.company_accounts
+SET aliases = aliases || (SELECT ARRAY(SELECT a FROM unnest(ARRAY['modern gas','Modern Gas','MODERN GAS']) AS t(a) WHERE NOT (a = ANY(company_accounts.aliases))))
+WHERE account_code = 'MG';
+
 -- 6. Remove the silent Egypt Gas fallback from the account UID trigger -------
 -- Unmatched company text now leaves account_id NULL (quarantine) instead of
 -- inventing an Egypt Gas attribution. company_account text is never
@@ -157,7 +168,16 @@ BEGIN
         LIMIT 1;
     END IF;
 
-    NEW.account_id := v_account_id; -- NULL when unresolved: quarantined
+    -- Never erase a grounded existing attribution on unresolved/blank text:
+    -- keep the row's current account_id (and its real code for the UID
+    -- prefix). Only rows with no prior attribution quarantine as NULL.
+    IF v_account_id IS NULL AND NEW.account_id IS NOT NULL THEN
+        SELECT id, account_code INTO v_account_id, v_account_code
+        FROM public.company_accounts
+        WHERE id = NEW.account_id;
+    END IF;
+
+    NEW.account_id := v_account_id; -- NULL only when nothing grounded exists
 
     v_clean_code := NULLIF(REGEXP_REPLACE(COALESCE(NEW.employee_code, ''), '[^0-9a-zA-Z]', '', 'g'), '');
     v_clean_nat_id := NULLIF(REGEXP_REPLACE(COALESCE(NEW.national_id, ''), '[^0-9]', '', 'g'), '');
@@ -185,17 +205,20 @@ DO $$
 DECLARE
     conflict_count INT;
 BEGIN
+    -- Mirror the NEW index exactly: only duplicates the per-account index
+    -- would reject are conflicts. A national_id present in TWO DIFFERENT
+    -- accounts is the ambiguity we WANT to make visible, not a blocker.
     SELECT COUNT(*) INTO conflict_count
     FROM (
-        SELECT national_id
+        SELECT account_id, national_id
         FROM public.employees_master
-        WHERE national_id IS NOT NULL
-        GROUP BY national_id
+        WHERE national_id IS NOT NULL AND account_id IS NOT NULL
+        GROUP BY account_id, national_id
         HAVING COUNT(*) > 1
     ) d;
 
     IF conflict_count > 0 THEN
-        RAISE EXCEPTION 'employees_master has % duplicate national_id groups; resolve before re-scoping uniqueness', conflict_count;
+        RAISE EXCEPTION 'employees_master has % duplicate national_id groups within one account; resolve before re-scoping uniqueness', conflict_count;
     END IF;
 
     DROP INDEX IF EXISTS public.idx_employees_master_unique_national_global;

@@ -548,20 +548,57 @@ export async function importSheet(
     // Source identity is (account, worksheet name): prefer a sheet registered
     // for THIS account; legacy global (account_id NULL) sheets are a fallback
     // and are claimed or split only with grounding, never by guessing.
+    // Matching is deterministic: an exact name match always wins its tier, and
+    // a tier with no exact match and more than one candidate is AMBIGUOUS —
+    // the import fails closed for review instead of picking by arrival order.
     const { data: allActiveSheets } = await supabaseServer
       .from('dynamic_sheets')
       .select('*')
       .eq('is_active', true);
 
-    const flexMatch = (s: { sheet_name: string }) =>
-      s.sheet_name === sheetName ||
-      normalizeText(s.sheet_name) === normalizeText(sheetName) ||
-      normalizeText(s.sheet_name).replace(/[\s.]/g, '') === normalizeText(sheetName).replace(/[\s.]/g, '');
-    const matches = (allActiveSheets || []).filter(flexMatch);
-    let sheetDef = matches.find((s) => s.account_id !== null && s.account_id === accountId) || null;
-    let legacyShared = !sheetDef ? (matches.find((s) => s.account_id === null || s.account_id === undefined) || null) : null;
+    const flexNorm = (v: string) => normalizeText(v);
+    const flexTight = (v: string) => normalizeText(v).replace(/[\s.]/g, '');
+    const matches = (allActiveSheets || []).filter((s) =>
+      s.sheet_name === sheetName || flexNorm(s.sheet_name) === flexNorm(sheetName) || flexTight(s.sheet_name) === flexTight(sheetName));
+    const scopedMatches = matches.filter((s) => s.account_id !== null && s.account_id !== undefined && s.account_id === accountId);
+    const legacyMatches = matches.filter((s) => s.account_id === null || s.account_id === undefined);
     // A sheet scoped to a DIFFERENT account is never this import's source.
-    if (!sheetDef && legacyShared) {
+    const exactTier = <T extends { sheet_name: string }>(cands: T[]) => cands.filter((s) => s.sheet_name === sheetName);
+
+    let sheetDef: (NonNullable<typeof allActiveSheets>)[number] | null = null;
+    if (scopedMatches.length > 0) {
+      const exact = exactTier(scopedMatches);
+      if (exact.length === 1) {
+        sheetDef = exact[0];
+      } else if (exact.length === 0 && scopedMatches.length === 1) {
+        sheetDef = scopedMatches[0];
+      } else {
+        return {
+          success: false,
+          total_rows: 0,
+          new_employees: 0,
+          updated_employees: 0,
+          skipped_rows: 0,
+          errors: [`ورقة "${sheetName}" لها أكثر من تعريف محتمل لهذا الحساب (${scopedMatches.map((a) => `"${a.sheet_name}"`).join('، ')}) — لم تُستورد حتى تُراجع التعريفات. لم يُختر أي تعريف تلقائيًا.`],
+          import_id: importLogId,
+        };
+      }
+    } else if (legacyMatches.length > 0) {
+      const exact = exactTier(legacyMatches);
+      const legacyShared = exact.length === 1 ? legacyMatches.find((m) => m.id === exact[0].id)! : (exact.length === 0 && legacyMatches.length === 1 ? legacyMatches[0] : null);
+      if (!legacyShared) {
+        // Ambiguous legacy definitions (e.g. "RES" vs "RES."): never claim by
+        // arrival order — fail closed for manual review.
+        return {
+          success: false,
+          total_rows: 0,
+          new_employees: 0,
+          updated_employees: 0,
+          skipped_rows: 0,
+          errors: [`ورقة "${sheetName}" تطابق أكثر من تعريف قديم مشترك (${legacyMatches.map((a) => `"${a.sheet_name}"`).join('، ')}) — لم تُستورد ولم يُطالب بأي تعريف حتى تُراجع يدويًا.`],
+          import_id: importLogId,
+        };
+      }
       // Grounding check: who actually uses this legacy sheet?
       const { data: usageRows } = await supabaseServer
         .from('sheet_data')
@@ -576,10 +613,36 @@ export async function importSheet(
       if (usageAccs.size <= 1 && (usageAccs.size === 0 || accountId === null || usageAccs.has(accountId))) {
         // No data, or only this account's data: grounded to claim for this account.
         if (accountId !== null) {
-          await supabaseServer.from('dynamic_sheets').update({ account_id: accountId }).eq('id', legacyShared.id);
+          // Guarded claim: only if still unclaimed, then VERIFY the stamp
+          // landed. A unique-index conflict or a lost race must never leave
+          // the import attached to an unscoped shared row.
+          const { error: claimErr } = await supabaseServer
+            .from('dynamic_sheets')
+            .update({ account_id: accountId })
+            .eq('id', legacyShared.id)
+            .is('account_id', null);
+          let claimed = false;
+          if (!claimErr) {
+            const { data: verify } = await supabaseServer
+              .from('dynamic_sheets')
+              .select('account_id')
+              .eq('id', legacyShared.id)
+              .maybeSingle();
+            claimed = !!verify && verify.account_id === accountId;
+          }
+          if (!claimed) {
+            return {
+              success: false,
+              total_rows: 0,
+              new_employees: 0,
+              updated_employees: 0,
+              skipped_rows: 0,
+              errors: [`تعذر تثبيت تعريف ورقة "${sheetName}" لهذا الحساب (تعارض مع تعريف آخر أو مطالبة متزامنة) — لم تُستورد ولم تُربط بمصدر مشترك حتى تُراجع.`],
+              import_id: importLogId,
+            };
+          }
         }
         sheetDef = legacyShared;
-        legacyShared = null;
       } else {
         // Multi-account (or other-account) legacy sheet: do NOT attach this
         // import to it and do NOT split it. Create a private account-scoped

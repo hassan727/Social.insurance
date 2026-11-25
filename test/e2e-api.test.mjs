@@ -438,6 +438,49 @@ check('CAT5: EG same-named sheet UNTOUCHED by MG prune', zKept === 1, 'latest=' 
 const yAlive = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='66666666666671'`)).rows[0].c;
 check('CAT5: pruned employee row NOT deleted', yAlive === 1);
 
+// CAT6: deterministic exact-match first — variant pair "RES" / "RES." (real
+// live catalog pair). Importing "RES." must claim the EXACT row, never the
+// other variant by arrival order.
+await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES
+  ('RES','RES',true,'[{"key":"national_id","label":"الرقم القومي","type":"text","aliases":["الرقم القومي"]},{"key":"employee_name","label":"الاسم","type":"text","aliases":["الاسم"]},{"key":"employee_code","label":"الكود","type":"text","aliases":["الكود"]}]'::jsonb,ARRAY['national_id'],NULL),
+  ('RES.','RES.',true,'[{"key":"national_id","label":"الرقم القومي","type":"text","aliases":["الرقم القومي"]},{"key":"employee_name","label":"الاسم","type":"text","aliases":["الاسم"]},{"key":"employee_code","label":"الكود","type":"text","aliases":["الكود"]}]'::jsonb,ARRAY['national_id'],NULL)`);
+const cat6 = await postSmartAcct(mkXlsxMulti({ 'RES.': [{ 'الرقم القومي': '66666666666680', 'الاسم': 'موظف تطابق دقيق', 'الكود': '6120' }] }), ['RES.'], 'EG');
+check('CAT6: import of "RES." succeeds', cat6.status === 200, String(cat6.status));
+const resDotRow = (await db.query(`SELECT account_id FROM dynamic_sheets WHERE sheet_name='RES.'`)).rows[0];
+const resPlainRow = (await db.query(`SELECT account_id FROM dynamic_sheets WHERE sheet_name='RES'`)).rows[0];
+check('CAT6: exact variant claimed, other variant untouched', resDotRow?.account_id === 1 && resPlainRow?.account_id === null, JSON.stringify([resDotRow, resPlainRow]));
+
+// CAT7: ambiguity fail-closed — two legacy rows that both flex-match the file
+// name with NO exact match ("Amb Sheet" / "Amb  Sheet" vs file "AmbSheet"):
+// import must fail visibly, claim nothing, create nothing, attach nothing.
+await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES
+  ('Amb Sheet','Amb Sheet',true,'[{"key":"national_id","label":"الرقم القومي","type":"text","aliases":["الرقم القومي"]},{"key":"employee_name","label":"الاسم","type":"text","aliases":["الاسم"]},{"key":"employee_code","label":"الكود","type":"text","aliases":["الكود"]}]'::jsonb,ARRAY['national_id'],NULL),
+  ('Amb  Sheet','Amb  Sheet',true,'[{"key":"national_id","label":"الرقم القومي","type":"text","aliases":["الرقم القومي"]},{"key":"employee_name","label":"الاسم","type":"text","aliases":["الاسم"]},{"key":"employee_code","label":"الكود","type":"text","aliases":["الكود"]}]'::jsonb,ARRAY['national_id'],NULL)`);
+const cat7 = await postSmartAcct(mkXlsxMulti({ 'AmbSheet': [{ 'الرقم القومي': '66666666666681', 'الاسم': 'موظف غامض', 'الكود': '6121' }] }), ['AmbSheet'], 'EG');
+const cat7j = await cat7.json().catch(() => ({}));
+const cat7rows = (await db.query(`SELECT account_id FROM dynamic_sheets WHERE sheet_name IN ('Amb Sheet','Amb  Sheet','AmbSheet')`)).rows;
+const cat7emp = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='66666666666681'`)).rows[0].c;
+check('CAT7: ambiguous legacy definitions -> sheet fails visibly', (cat7j.detailed_results?.AmbSheet?.errors || []).some((e) => e.includes('أكثر من تعريف')), JSON.stringify(cat7j.detailed_results?.AmbSheet?.errors || cat7j.error || null).slice(0, 200));
+check('CAT7: nothing claimed, nothing created, employee NOT imported', cat7rows.every((r) => r.account_id === null) && cat7rows.length === 2 && cat7emp === 0, JSON.stringify(cat7rows) + ' emp=' + cat7emp);
+
+// CAT8: claim failure fail-closed — if the ownership stamp is rejected (here
+// by a test-only constraint), the import must fail visibly and must NOT
+// proceed attached to the unscoped shared row. Constraint dropped after.
+await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES ('ClaimBlock','ClaimBlock',true,'[{"key":"national_id","label":"الرقم القومي","type":"text","aliases":["الرقم القومي"]},{"key":"employee_name","label":"الاسم","type":"text","aliases":["الاسم"]},{"key":"employee_code","label":"الكود","type":"text","aliases":["الكود"]}]'::jsonb,ARRAY['national_id'],NULL)`);
+await db.query(`CREATE OR REPLACE FUNCTION test_block_claim_fn() RETURNS TRIGGER AS $$ BEGIN IF OLD.account_id IS NULL AND NEW.account_id IS NOT NULL THEN RAISE EXCEPTION 'test block claim'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql`);
+await db.query(`CREATE TRIGGER test_block_claim BEFORE UPDATE ON dynamic_sheets FOR EACH ROW EXECUTE FUNCTION test_block_claim_fn()`);
+const cat8a = await postSmartAcct(mkXlsxMulti({ ClaimBlock: [{ 'الرقم القومي': '66666666666682', 'الاسم': 'موظف مطالبة محظورة', 'الكود': '6122' }] }), ['ClaimBlock'], 'EG');
+const cat8aj = await cat8a.json().catch(() => ({}));
+const cat8row = (await db.query(`SELECT account_id FROM dynamic_sheets WHERE sheet_name='ClaimBlock'`)).rows[0];
+const cat8emp = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='66666666666682'`)).rows[0].c;
+check('CAT8: rejected claim -> sheet fails visibly', (cat8aj.detailed_results?.ClaimBlock?.errors || []).some((e) => e.includes('تعذر تثبيت')), JSON.stringify(cat8aj.detailed_results?.ClaimBlock?.errors || cat8aj.error || null).slice(0, 200));
+check('CAT8: no unscoped attachment, no partial rows written', cat8row?.account_id === null && cat8emp === 0, JSON.stringify(cat8row) + ' emp=' + cat8emp);
+await db.query(`DROP TRIGGER test_block_claim ON dynamic_sheets`);
+await db.query(`DROP FUNCTION test_block_claim_fn()`);
+const cat8b = await postSmartAcct(mkXlsxMulti({ ClaimBlock: [{ 'الرقم القومي': '66666666666682', 'الاسم': 'موظف مطالبة محظورة', 'الكود': '6122' }] }), ['ClaimBlock'], 'EG');
+const cat8row2 = (await db.query(`SELECT account_id FROM dynamic_sheets WHERE sheet_name='ClaimBlock'`)).rows[0];
+check('CAT8: after constraint removed, claim succeeds (recovery path)', cat8b.status === 200 && cat8row2?.account_id === 1, String(cat8b.status) + ' ' + JSON.stringify(cat8row2));
+
 // Convergence clearing: correct the master record upstream (both fields a
 // real correction would touch) -> conflict must clear on next read, monthly
 // evidence returns scoped to the corrected account. No stored conflict state.

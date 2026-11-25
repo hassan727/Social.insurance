@@ -24,6 +24,7 @@ await ep.initialise();
 await ep.start();
 await ep.createDatabase('testdb');
 await ep.createDatabase('dupdb');
+await ep.createDatabase('dupdb2');
 console.log('embedded postgres started');
 
 const connect = (database) => new pg.Client({ host: '127.0.0.1', port: 5544, user: 'postgres', password: 'postgres', database });
@@ -258,14 +259,39 @@ await db2.query(`INSERT INTO employees_master (company_account, account_id, nati
 // remove the global unique first? No: baseline blocks duplicate NID. Instead drop the index to simulate a pre-existing dup state:
 await db2.query(`DROP INDEX IF EXISTS idx_employees_master_unique_national_global`);
 await db2.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name) VALUES ('E.G', 1, '55555555555555', 'A1', 'أ'), ('m.g', 2, '55555555555555', 'A2', 'ب')`);
-let auditAborted = false;
+let migrationErr = null;
 try {
   await db2.query(readFileSync(MIG_DIR + '20261125000001_account_period_isolation.sql', 'utf8'));
+} catch (e) { migrationErr = e.message; }
+// Cross-account duplicate NID is the ambiguity the re-scope makes VISIBLE —
+// the audit must NOT abort on it.
+check('audit DO block ALLOWS cross-account duplicate NIDs (visible ambiguity)', migrationErr === null, String(migrationErr));
+const crossDup = (await db2.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='55555555555555'`)).rows[0].c;
+check('cross-account duplicate NID rows coexist after re-scope', crossDup === 2, 'count=' + crossDup);
+await db2.end();
+
+// Same-account duplicates ARE what the audit exists to block.
+const db3 = connect('dupdb2');
+await db3.connect();
+for (const f of baseline) { try { await db3.query(readFileSync(MIG_DIR + f, 'utf8')); } catch { /* same baseline result as testdb */ } }
+await db3.query(`DROP INDEX IF EXISTS idx_employees_master_unique_national_global`);
+await db3.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name) VALUES ('E.G', 1, '55555555555555', 'A1', 'أ'), ('E.G', 1, '55555555555555', 'A2', 'ب')`);
+let auditAborted = false;
+try {
+  await db3.query(readFileSync(MIG_DIR + '20261125000001_account_period_isolation.sql', 'utf8'));
 } catch (e) {
   auditAborted = /duplicate national_id groups/.test(e.message);
 }
-check('audit DO block ABORTS migration when duplicate NIDs exist', auditAborted);
-await db2.end();
+check('audit DO block ABORTS migration on same-account duplicate NIDs', auditAborted);
+await db3.end();
+
+// Grounded-ID preservation: an employee with a grounded account_id whose
+// company text is unresolvable must KEEP the id through trigger fires.
+await db.query(`INSERT INTO company_accounts (id, account_code, account_name) VALUES (1, 'EG', 'غاز مصر') ON CONFLICT (id) DO NOTHING`).catch(() => {});
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name) VALUES ('مجهول', 1, '45454545454545', 'G1', 'موظف مثبت')`);
+await db.query(`UPDATE employees_master SET employee_name='موظف مثبت محدث' WHERE national_id='45454545454545'`);
+const grounded = (await db.query(`SELECT account_id, account_employee_uid FROM employees_master WHERE national_id='45454545454545'`)).rows[0];
+check('unresolvable text never erases grounded account_id (UPDATE keeps id)', grounded?.account_id === 1 && String(grounded?.account_employee_uid || '').startsWith('EG-'), JSON.stringify(grounded));
 
 console.log(failures === 0 ? '\nALL REAL-PG ASSERTIONS PASSED' : `\n${failures} ASSERTION(S) FAILED`);
 await db.end();
