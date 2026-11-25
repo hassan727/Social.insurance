@@ -147,6 +147,42 @@ const cd = mAfterSmart?.consolidated_data || {};
 check('smart-import merge: blank cell did NOT erase existing value', cd['الوظيفه'] === 'محاسب', JSON.stringify(cd).slice(0, 120) + ' status=' + sm.status + ' err=' + (smj.error || ''));
 check('smart-import merge: nonempty cell updated', String(cd['الراتب']) === '7000', String(cd['الراتب']));
 check('smart-import merge: meaningful zero preserved', String(cd['عدد أيام']) === '0', String(cd['عدد أيام']));
+
+// CROSS-ACCOUNT GUARD: a global identity match whose master belongs to a
+// DIFFERENT account must fail closed (conflict listed, master untouched),
+// never silently re-attribute on operator account selection alone.
+// Self-contained: cleans up every row it creates so later checks are unaffected.
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('E.G', 1, '66666666666666', '6006', 'موظف حساب آخر', 'Active')`);
+const xAccFile = mkXlsx([{ 'الرقم القومي': '66666666666666', 'الاسم': 'موظف حساب آخر', 'الكود': '6006', 'الوظيفه': 'مهندس' }]);
+const xacc = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([xAccFile]), 'tx.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+const xaccj = await xacc.json().catch(() => ({}));
+const xaccSheet = xaccj?.detailed_results?.Sheet1 || {};
+check('cross-account import: row NOT updated', xaccSheet.updated_employees === 0 && xaccSheet.new_employees === 0, JSON.stringify({ u: xaccSheet.updated_employees, n: xaccSheet.new_employees, status: xacc.status }));
+check('cross-account import: conflict listed', Array.isArray(xaccSheet.cross_account_conflicts) && xaccSheet.cross_account_conflicts.length === 1 && xaccSheet.cross_account_conflicts[0].national_id === '66666666666666', JSON.stringify(xaccSheet.cross_account_conflicts || null));
+check('cross-account import: warning surfaced', (xaccSheet.warnings || []).some((w) => String(w).includes('حساب آخر')), JSON.stringify(xaccSheet.warnings || []).slice(0, 120));
+const xaccMaster = (await db.query(`SELECT company_account, account_id, consolidated_data FROM employees_master WHERE national_id='66666666666666'`)).rows[0];
+check('cross-account import: master account UNCHANGED', xaccMaster.company_account === 'E.G' && xaccMaster.account_id === 1, JSON.stringify({ a: xaccMaster.company_account, id: xaccMaster.account_id }));
+check('cross-account import: master data NOT merged from other account file', !(xaccMaster.consolidated_data || {})['الوظيفه'] || (xaccMaster.consolidated_data || {})['الوظيفه'] !== 'مهندس', JSON.stringify(xaccMaster.consolidated_data || {}).slice(0, 120));
+const xaccSD = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_national_id='66666666666666'`)).rows[0].c;
+check('cross-account import: no cross-account sheet_data linked', xaccSD === 0, 'count=' + xaccSD);
+const sameAcc = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([xAccFile]), 'tx2.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'EG'); return fd; })() });
+const sameAccj = await sameAcc.json().catch(() => ({}));
+const sameAccSheet = sameAccj?.detailed_results?.Sheet1 || {};
+check('same-account reimport: updates normally', sameAccSheet.updated_employees === 1 && !sameAccSheet.cross_account_conflicts, JSON.stringify({ u: sameAccSheet.updated_employees, c: sameAccSheet.cross_account_conflicts || null }));
+const newEmpFile = mkXlsx([{ 'الرقم القومي': '88888888888888', 'الاسم': 'موظف جديد كليا', 'الكود': '8008' }]);
+const newEmp = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([newEmpFile]), 'tx3.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+const newEmpj = await newEmp.json().catch(() => ({}));
+const newEmpSheet = newEmpj?.detailed_results?.Sheet1 || {};
+check('new employee: inserted under selected account', newEmpSheet.new_employees === 1, JSON.stringify({ n: newEmpSheet.new_employees }));
+const newEmpRow = (await db.query(`SELECT account_id FROM employees_master WHERE national_id='88888888888888'`)).rows[0];
+check('new employee: stamped to import account', newEmpRow && newEmpRow.account_id === 2, JSON.stringify(newEmpRow || null));
+// cleanup: every row this block created
+await db.query(`DELETE FROM sheet_data WHERE employee_id IN (SELECT id FROM employees_master WHERE national_id IN ('66666666666666','88888888888888'))`);
+await db.query(`DELETE FROM sheet_data WHERE sheet_id IN (SELECT id FROM dynamic_sheets WHERE sheet_name='Sheet1' AND account_id=1)`);
+await db.query(`DELETE FROM dynamic_sheets WHERE sheet_name='Sheet1' AND account_id=1`);
+await db.query(`DELETE FROM employees_master WHERE national_id IN ('66666666666666','88888888888888')`);
+await db.query(`DELETE FROM import_logs WHERE file_name IN ('tx.xlsx','tx2.xlsx','tx3.xlsx')`);
+
 // classic route: EXPLICIT zeros are meaningful and must survive the ledger path
 const zeroPay = mkXlsx([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'عدد ايام الحضور': 0, 'الراتب': 0 }]);
 const zp = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '12', company_account: 'MG' }, zeroPay);

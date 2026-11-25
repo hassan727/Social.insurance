@@ -85,6 +85,7 @@ export async function POST(request: Request) {
       total_updated_employees: 0,
       total_skipped_rows: 0,
       total_errors: 0,
+      total_cross_account_conflicts: 0,
       sheets_success: 0,
       sheets_failed: 0,
     };
@@ -94,6 +95,7 @@ export async function POST(request: Request) {
       summary.total_updated_employees += result.updated_employees;
       summary.total_skipped_rows += result.skipped_rows;
       summary.total_errors += result.errors.length;
+      summary.total_cross_account_conflicts += result.cross_account_conflicts?.length ?? 0;
       if (result.success) {
         summary.sheets_success++;
       } else {

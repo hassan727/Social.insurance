@@ -21,6 +21,7 @@ type SheetDataInsert = Database['public']['Tables']['sheet_data']['Insert'];
 interface EmployeeLookup {
   id: string;
   company_account: string;
+  account_id?: number | null;
   employee_code: string | null;
   national_id: string | null;
   employee_name: string;
@@ -78,6 +79,17 @@ export interface ImportResult {
   errors: string[];
   warnings?: string[];
   import_id: string;
+  // Rows whose global identity match belongs to a DIFFERENT resolved account.
+  // They are never silently re-attributed by an import: the master row stays
+  // untouched and the row is listed here for review. Moving a master between
+  // accounts is only ever an explicit, approved correction action.
+  cross_account_conflicts?: Array<{
+    row_number: number;
+    national_id: string | null;
+    employee_name: string | null;
+    existing_account: string;
+    import_account: string;
+  }>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -536,6 +548,7 @@ export async function importSheet(
 ): Promise<ImportResult> {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const crossAccountConflicts: NonNullable<ImportResult['cross_account_conflicts']> = [];
   const seenInFile = new Map<string, Record<string, unknown>>(); // employee id -> first row_data in this file
   let newEmployees = 0;
   let updatedEmployees = 0;
@@ -792,7 +805,7 @@ export async function importSheet(
     // 5. Pre-load existing employees into memory for high-speed matching (1 single query instead of thousands)
     const { data: existingEmps } = await supabaseServer
       .from('employees_master')
-      .select('id, company_account, employee_code, national_id, employee_name, insurance_number, consolidated_data');
+      .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data');
 
     const byNatIdMap = new Map<string, EmployeeLookup>();
     const byInsNoMap = new Map<string, EmployeeLookup>();
@@ -1046,6 +1059,36 @@ export async function importSheet(
           const normN = normalizeText(rawName);
           const found = byNormNameMap.get(normN);
           if (found) matchedEmp = found;
+        }
+
+        // CROSS-ACCOUNT GUARD (fail closed). The match maps above are global
+        // by identity; an import for account X must never silently re-attribute
+        // a master row that already belongs to a DIFFERENT resolved account.
+        // Operator account selection is not proof of current employment — a
+        // wrong pick would otherwise flip the person and hide them from their
+        // real company. Cross-account moves happen only through an explicit,
+        // approved correction batch. Same-account matches update normally, and
+        // masters with NO resolved attribution (blank text + NULL account_id)
+        // may still be claimed by a grounded import.
+        if (matchedEmp) {
+          const empAccId =
+            typeof matchedEmp.account_id === 'number' ? matchedEmp.account_id : null;
+          const empAccText = String(matchedEmp.company_account || '').trim().toLowerCase();
+          const impAccText = companyAccount.trim().toLowerCase();
+          const sameAccount =
+            (empAccId !== null && accountId !== null && empAccId === accountId) ||
+            (empAccText !== '' && empAccText === impAccText);
+          const empAccountKnown = empAccId !== null || empAccText !== '';
+          if (empAccountKnown && !sameAccount) {
+            crossAccountConflicts.push({
+              row_number: rowNumber,
+              national_id: rawNatId || null,
+              employee_name: rawName || null,
+              existing_account: matchedEmp.company_account,
+              import_account: companyAccount,
+            });
+            continue;
+          }
         }
 
         if (matchedEmp) {
@@ -1351,6 +1394,12 @@ export async function importSheet(
           .eq('id', currentSheetId);
       }
 
+      if (crossAccountConflicts.length > 0) {
+        warnings.push(
+          `${crossAccountConflicts.length} صف/صفوف تطابق موظفين مسجلين بحساب آخر — لم يُعد إسنادهم تلقائيًا ولم تتغير بياناتهم؛ نقل الموظف بين الحسابات يتم فقط بقرار مراجعة صريح منك.`
+        );
+      }
+
       return {
         success: errors.length === 0,
         total_rows: dataRows.length,
@@ -1360,6 +1409,7 @@ export async function importSheet(
         errors: errors,
         warnings: warnings.length ? warnings : undefined,
         import_id: importLogId,
+        cross_account_conflicts: crossAccountConflicts.length ? crossAccountConflicts : undefined,
       };
     } catch (error) {
       return {
