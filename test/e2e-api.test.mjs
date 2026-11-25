@@ -361,6 +361,83 @@ check('reports query default = ALL accounts (no EG default)', qAll.success && qA
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count); // +1: first-import dup fixture 88888888888888 (EG)
 
+// ── Account-scoped source catalog (repair 000005) ───────────────────────────
+// Source identity is (account, worksheet name). Placed after the report-count
+// checks above so fixture employees here don't shift those counts.
+const postSmartAcct = (buf, sheets, acct) => api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf]), 'cat.xlsx'); fd.append('selected_sheets', JSON.stringify(sheets)); fd.append('company_account', acct); return fd; })() });
+
+// CAT1: same worksheet name, different headers, two accounts — mappings must
+// NOT mutate across accounts.
+const cat1 = await postSmartAcct(mkXlsxMulti({ CrossSheet: [{ 'الرقم القومي': '66666666666661', 'الاسم': 'موظف كتالوج أول', 'الكود': '6101', 'الوظيفه': 'محاسب' }] }), ['CrossSheet'], 'MG');
+check('CAT1: MG CrossSheet import succeeds', cat1.status === 200, String(cat1.status));
+const cat2 = await postSmartAcct(mkXlsxMulti({ CrossSheet: [{ 'الرقم القومي': '66666666666662', 'الاسم': 'موظف كتالوج ثان', 'الكود': '6102', 'المنطقه': 'الجيزة' }] }), ['CrossSheet'], 'EG');
+check('CAT1: EG CrossSheet (different headers) import succeeds', cat2.status === 200, String(cat2.status));
+const catRows = (await db.query(`SELECT id, account_id, column_definitions FROM dynamic_sheets WHERE sheet_name='CrossSheet' ORDER BY created_at`)).rows;
+check('CAT1: same-named sheet exists per account (2 scoped rows)', catRows.length === 2 && new Set(catRows.map((r) => r.account_id)).size === 2, JSON.stringify(catRows.map((r) => r.account_id)));
+const catMGrow = catRows.find((r) => r.account_id === 2);
+check('CAT1: EG import did NOT mutate MG mapping', JSON.stringify(catMGrow?.column_definitions).includes('الوظيفه') && !JSON.stringify(catMGrow?.column_definitions).includes('المنطقه'), JSON.stringify(catMGrow?.column_definitions).slice(0, 200));
+
+// CAT2: legacy shared (account_id NULL) sheet with NO data: first importing
+// account claims it (grounded — nothing to split).
+await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES ('ClaimSheet','ClaimSheet',true,'[{"key":"national_id","label":"الرقم القومي","type":"text","aliases":["الرقم القومي"]},{"key":"employee_name","label":"الاسم","type":"text","aliases":["الاسم"]},{"key":"employee_code","label":"الكود","type":"text","aliases":["الكود"]}]'::jsonb,ARRAY['national_id'],NULL)`);
+const claimSheetId = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name='ClaimSheet'`)).rows[0].id;
+const cl = await postSmartAcct(mkXlsxMulti({ ClaimSheet: [{ 'الرقم القومي': '66666666666663', 'الاسم': 'موظف مطالبة', 'الكود': '6103' }] }), ['ClaimSheet'], 'EG');
+check('CAT2: import into data-less legacy sheet succeeds', cl.status === 200, String(cl.status));
+const claimAfter = (await db.query(`SELECT account_id FROM dynamic_sheets WHERE id=$1`, [claimSheetId])).rows[0];
+const claimCount = (await db.query(`SELECT count(*)::int c FROM dynamic_sheets WHERE sheet_name='ClaimSheet'`)).rows[0].c;
+check('CAT2: data-less legacy sheet claimed by first importer (no duplicate row)', claimAfter?.account_id === 1 && claimCount === 1, JSON.stringify(claimAfter) + ' count=' + claimCount);
+
+// CAT3: legacy shared sheet WITH multi-account data: never attached, never
+// auto-split — a private account-scoped row is created + a review warning.
+const legId = (await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES ('LegacyX','LegacyX',true,'[]'::jsonb,ARRAY['national_id'],NULL) RETURNING id`)).rows[0].id;
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('E.G',1,'66666666666665','6105','قديم أول','Active'), ('M.G',2,'66666666666666','6106','قديم ثان','Active')`);
+const legLog = (await db.query(`INSERT INTO import_logs (source_type, file_name) VALUES ('smart_import','legacy-fixture.xlsx') RETURNING id`)).rows[0].id;
+for (const nid of ['66666666666665', '66666666666666']) {
+  const emp = (await db.query(`SELECT id FROM employees_master WHERE national_id=$1`, [nid])).rows[0].id;
+  await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_code, row_national_id, row_name, import_id, row_number, is_latest, created_at) VALUES ($1,$2,'{}'::jsonb,'x',$1::text,'legacy',$3,1,true,NOW())`.replace('$1::text', '$4'), [legId, emp, legLog, nid]);
+}
+const lx = await postSmartAcct(mkXlsxMulti({ LegacyX: [{ 'الرقم القومي': '66666666666667', 'الاسم': 'موظف ميراث', 'الكود': '6107', 'الوظيفه': 'سائق' }] }), ['LegacyX'], 'EG');
+const lxj = await lx.json().catch(() => ({}));
+const lxWarn = (lxj.detailed_results?.LegacyX?.warnings) || [];
+check('CAT3: import over multi-account legacy sheet succeeds', lx.status === 200, String(lx.status) + ' ' + (lxj.error || ''));
+const legRows = (await db.query(`SELECT id, account_id FROM dynamic_sheets WHERE sheet_name='LegacyX' ORDER BY created_at`)).rows;
+check('CAT3: private account-scoped row created, legacy row left for review', legRows.length === 2 && legRows.some((r) => r.account_id === null) && legRows.some((r) => r.account_id === 1), JSON.stringify(legRows));
+check('CAT3: review warning surfaced for shared legacy sheet', lxWarn.some((w) => w.includes('مشترك')), JSON.stringify(lxWarn).slice(0, 200));
+
+// CAT4: registered mapping frozen — a NEW non-empty column in a reimport is
+// warned as unmapped AND blocks the snapshot prune (partial import ≠ full sync).
+const um1 = await postSmartAcct(mkXlsxMulti({ UnMapSheet: [{ 'الرقم القومي': '66666666666668', 'الاسم': 'موظف أعمدة أول', 'الكود': '6108', 'الوظيفه': 'محاسب', 'الراتب': 4000 }] }), ['UnMapSheet'], 'MG');
+check('CAT4: first UnMapSheet import succeeds', um1.status === 200, String(um1.status));
+const um2 = await postSmartAcct(mkXlsxMulti({ UnMapSheet: [{ 'الرقم القومي': '66666666666669', 'الاسم': 'موظف أعمدة ثان', 'الكود': '6109', 'الوظيفه': 'سائق', 'الراتب': 3000, 'ملاحظات': 'قيمة جديدة غير مسجلة' }] }), ['UnMapSheet'], 'MG');
+const um2j = await um2.json().catch(() => ({}));
+const umWarn = (um2j.detailed_results?.UnMapSheet?.warnings) || [];
+check('CAT4: reimport with extra non-empty column succeeds (partial)', um2.status === 200, String(um2.status));
+check('CAT4: unmapped non-empty column raises visible warning', umWarn.some((w) => w.includes('أعمدة غير مسجلة') && w.includes('ملاحظات')), JSON.stringify(umWarn).slice(0, 220));
+const umOld = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='66666666666668'`)).rows[0];
+check('CAT4: prune BLOCKED on incomplete mapping (absent employee keeps contribution)', String(umOld?.consolidated_data?.['الراتب']) === '4000', JSON.stringify(umOld?.consolidated_data || null).slice(0, 160));
+const umNew = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='66666666666669'`)).rows[0];
+check('CAT4: new row imported but unmapped column NOT silently stored', String(umNew?.consolidated_data?.['الوظيفه']) === 'سائق' && umNew?.consolidated_data?.['ملاحظات'] === undefined, JSON.stringify(umNew?.consolidated_data || null).slice(0, 200));
+
+// CAT5: snapshot prune is scoped to (account, sheet): pruning MG's sheet must
+// never touch EG's same-named sheet.
+const ps1 = await postSmartAcct(mkXlsxMulti({ PruneSheet: [
+  { 'الرقم القومي': '66666666666670', 'الاسم': 'موظف حذف س', 'الكود': '6110', 'الراتب': 1000 },
+  { 'الرقم القومي': '66666666666671', 'الاسم': 'موظف حذف ص', 'الكود': '6111', 'الراتب': 2000 },
+] }), ['PruneSheet'], 'MG');
+check('CAT5: MG PruneSheet import succeeds', ps1.status === 200, String(ps1.status));
+const ps2 = await postSmartAcct(mkXlsxMulti({ PruneSheet: [{ 'الرقم القومي': '66666666666672', 'الاسم': 'موظف حذف ع', 'الكود': '6112', 'الراتب': 3000 }] }), ['PruneSheet'], 'EG');
+check('CAT5: EG PruneSheet import succeeds', ps2.status === 200, String(ps2.status));
+const psRows = (await db.query(`SELECT id, account_id FROM dynamic_sheets WHERE sheet_name='PruneSheet'`)).rows;
+check('CAT5: PruneSheet scoped per account', psRows.length === 2, JSON.stringify(psRows));
+const ps3 = await postSmartAcct(mkXlsxMulti({ PruneSheet: [{ 'الرقم القومي': '66666666666670', 'الاسم': 'موظف حذف س', 'الكود': '6110', 'الراتب': 1500 }] }), ['PruneSheet'], 'MG');
+check('CAT5: MG reimport (employee absent) succeeds', ps3.status === 200, String(ps3.status));
+const yGone = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id JOIN employees_master em ON em.id=sd.employee_id WHERE ds.sheet_name='PruneSheet' AND ds.account_id=2 AND em.national_id='66666666666671' AND sd.is_latest=true`)).rows[0].c;
+const zKept = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id JOIN employees_master em ON em.id=sd.employee_id WHERE ds.sheet_name='PruneSheet' AND ds.account_id=1 AND em.national_id='66666666666672' AND sd.is_latest=true`)).rows[0].c;
+check('CAT5: absent employee pruned from MG sheet only', yGone === 0, 'latest=' + yGone);
+check('CAT5: EG same-named sheet UNTOUCHED by MG prune', zKept === 1, 'latest=' + zKept);
+const yAlive = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='66666666666671'`)).rows[0].c;
+check('CAT5: pruned employee row NOT deleted', yAlive === 1);
+
 // Convergence clearing: correct the master record upstream (both fields a
 // real correction would touch) -> conflict must clear on next read, monthly
 // evidence returns scoped to the corrected account. No stored conflict state.

@@ -544,18 +544,50 @@ export async function importSheet(
   let processingFailures = 0;  // parse/write failures: block snapshot prune (fail closed)
 
   try {
-    // 1. Get sheet definition from database (flexible matching for spaces and dots)
+    // 1. Get sheet definition from database (flexible matching for spaces and dots).
+    // Source identity is (account, worksheet name): prefer a sheet registered
+    // for THIS account; legacy global (account_id NULL) sheets are a fallback
+    // and are claimed or split only with grounding, never by guessing.
     const { data: allActiveSheets } = await supabaseServer
       .from('dynamic_sheets')
       .select('*')
       .eq('is_active', true);
 
-    const sheetDef = allActiveSheets?.find(
-      (s) =>
-        s.sheet_name === sheetName ||
-        normalizeText(s.sheet_name) === normalizeText(sheetName) ||
-        normalizeText(s.sheet_name).replace(/[\s.]/g, '') === normalizeText(sheetName).replace(/[\s.]/g, '')
-    ) || null;
+    const flexMatch = (s: { sheet_name: string }) =>
+      s.sheet_name === sheetName ||
+      normalizeText(s.sheet_name) === normalizeText(sheetName) ||
+      normalizeText(s.sheet_name).replace(/[\s.]/g, '') === normalizeText(sheetName).replace(/[\s.]/g, '');
+    const matches = (allActiveSheets || []).filter(flexMatch);
+    let sheetDef = matches.find((s) => s.account_id !== null && s.account_id === accountId) || null;
+    let legacyShared = !sheetDef ? (matches.find((s) => s.account_id === null || s.account_id === undefined) || null) : null;
+    // A sheet scoped to a DIFFERENT account is never this import's source.
+    if (!sheetDef && legacyShared) {
+      // Grounding check: who actually uses this legacy sheet?
+      const { data: usageRows } = await supabaseServer
+        .from('sheet_data')
+        .select('employees_master!inner(account_id)')
+        .eq('sheet_id', legacyShared.id)
+        .limit(5000);
+      const usageAccs = new Set(
+        (usageRows || [])
+          .map((r) => (r as unknown as { employees_master: { account_id: number | null } }).employees_master?.account_id)
+          .filter((a): a is number => a !== null && a !== undefined)
+      );
+      if (usageAccs.size <= 1 && (usageAccs.size === 0 || accountId === null || usageAccs.has(accountId))) {
+        // No data, or only this account's data: grounded to claim for this account.
+        if (accountId !== null) {
+          await supabaseServer.from('dynamic_sheets').update({ account_id: accountId }).eq('id', legacyShared.id);
+        }
+        sheetDef = legacyShared;
+        legacyShared = null;
+      } else {
+        // Multi-account (or other-account) legacy sheet: do NOT attach this
+        // import to it and do NOT split it. Create a private account-scoped
+        // source and leave the shared row for review.
+        sheetDef = null; // falls through to auto-register (account-scoped)
+        warnings.push(`ورقة "${sheetName}" كانت مسجلة كمصدر مشترك قديم بين حسابات — اتعمل مصدر خاص بهذا الحساب والمصدر المشترك محتاج مراجعة يدوية.`);
+      }
+    }
 
     // 2. Read sheet from workbook
     const worksheet = workbook.Sheets[sheetName];
@@ -623,6 +655,7 @@ export async function importSheet(
     let columnDefs: ColumnDefinition[];
     let mapping: Record<string, number>;
     let currentSheetId = sheetDef?.id;
+    let incompleteMapping = false;
 
     if (sheetDef && sheetDef.column_definitions) {
       // Use registered column definitions
@@ -642,8 +675,11 @@ export async function importSheet(
         if (h) mapping[h] = idx;
       });
 
-      // Auto-register this sheet for future use
-      const { data: upsertedSheet } = await supabaseServer.from('dynamic_sheets').upsert({
+      // Auto-register this sheet for future use, SCOPED TO THIS ACCOUNT.
+      // (No global upsert: a same-named sheet of another account is a
+      // different source.) On the rare race where the scoped unique index
+      // rejects the insert, re-read the winner.
+      const { data: insertedSheet, error: insSheetErr } = await supabaseServer.from('dynamic_sheets').insert({
         sheet_name: sheetName,
         display_name: sheetName,
         description: `ورقة "${sheetName}" - تم التسجيل التلقائي`,
@@ -654,12 +690,39 @@ export async function importSheet(
         is_master_source: false,
         update_strategy: 'merge',
         total_columns: nonBlankHeaders.length,
-      }, {
-        onConflict: 'sheet_name',
+        account_id: accountId,
       }).select('id').maybeSingle();
 
-      if (upsertedSheet) {
-        currentSheetId = upsertedSheet.id;
+      if (insertedSheet) {
+        currentSheetId = insertedSheet.id;
+      } else if (insSheetErr && accountId !== null) {
+        const { data: winner } = await supabaseServer.from('dynamic_sheets')
+          .select('id').eq('account_id', accountId).eq('sheet_name', sheetName).maybeSingle();
+        if (winner) currentSheetId = winner.id;
+      }
+    }
+
+    // Unmapped-column guard: a column present in the file but absent from the
+    // registered mapping is INVISIBLE to the importer. If such a column holds
+    // any data, the import is partial: say so visibly and never run the
+    // snapshot prune as if this were a full sync. No semantic auto-guessing —
+    // extending the mapping is a deliberate user decision.
+    {
+      const mappedIdx = new Set(Object.values(mapping));
+      const unmappedHeaders: string[] = [];
+      rawHeaders.forEach((h, idx) => {
+        if (h && !mappedIdx.has(idx)) unmappedHeaders.push(h);
+      });
+      const withData = unmappedHeaders.filter((h) => {
+        const idx = rawHeaders.indexOf(h);
+        return dataRows.some((row) => {
+          const v = (row as unknown[])[idx];
+          return v !== null && v !== undefined && String(v).trim() !== '';
+        });
+      });
+      if (withData.length > 0) {
+        incompleteMapping = true;
+        warnings.push(`أعمدة غير مسجلة بها بيانات ولم تُستورد: ${withData.join('، ')} — الاستيراد جزئي لهذه الورقة، ولم تُعتبر لقطة كاملة (لم تُحذف أي صفوف قديمة). تحديث تسجيل الأعمدة يحتاج مراجعتك.`);
       }
     }
 
@@ -1180,7 +1243,7 @@ export async function importSheet(
       // unresolved (accountId null) the flip is skipped rather than guessed.
       // FAIL CLOSED: never prune on a partial/failed/empty sync. A prune is
       // only a verified full snapshot of this (worksheet, account).
-      if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0) {
+      if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping) {
         const importedEmpIds = new Set(sheetDataToInsert.map((r) => r.employee_id).filter(Boolean));
         const { data: accEmps, error: accErr } = await supabaseServer
           .from('employees_master')
@@ -1205,6 +1268,9 @@ export async function importSheet(
         }
       } else if (currentSheetId && accountId === null) {
         warnings.push('تعذر تحديد الحساب بدقة — تم الاحتفاظ بلقطة الورقة السابقة دون حذف أي صفوف قديمة.');
+      } else if (currentSheetId && processingFailures === 0 && nonEmptyRows > 0 && incompleteMapping) {
+        // (warning already pushed above — keep this branch so no generic
+        // message contradicts it)
       } else if (currentSheetId && processingFailures > 0) {
         warnings.push(`المزامنة لم تكتمل: ${processingFailures} صف/عملية فشلت — تم الاحتفاظ بلقطة الورقة السابقة دون حذف أي صفوف قديمة، وراجع الأخطاء أعلاه.`);
       } else if (currentSheetId && nonEmptyRows === 0) {

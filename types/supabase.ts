@@ -234,6 +234,7 @@ export type Database = {
       dynamic_sheets: {
         Row: {
           id: string
+          account_id: number | null
           sheet_name: string
           display_name: string
           description: string | null
@@ -251,6 +252,7 @@ export type Database = {
         }
         Insert: {
           id?: string
+          account_id?: number | null
           sheet_name: string
           display_name: string
           description?: string | null
@@ -268,6 +270,7 @@ export type Database = {
         }
         Update: {
           id?: string
+          account_id?: number | null
           sheet_name?: string
           display_name?: string
           description?: string | null
@@ -283,7 +286,15 @@ export type Database = {
           created_at?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "dynamic_sheets_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "company_accounts"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       sheet_data: {
         Row: {

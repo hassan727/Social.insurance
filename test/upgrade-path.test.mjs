@@ -7,7 +7,7 @@ import { readFileSync, readdirSync } from 'fs';
 
 const MIG_DIR = new URL('../supabase/migrations/', import.meta.url).pathname;
 const all = readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort();
-const NEW = ['20261125000001_account_period_isolation.sql', '20261125000002_blank_cell_no_erase_consolidation.sql', '20261125000003_fix_sheet_data_update_trigger.sql', '20261125000004_source_removal_recompute.sql'];
+const NEW = ['20261125000001_account_period_isolation.sql', '20261125000002_blank_cell_no_erase_consolidation.sql', '20261125000003_fix_sheet_data_update_trigger.sql', '20261125000004_source_removal_recompute.sql', '20261125000005_account_scoped_sheet_catalog.sql'];
 const baseline = all.filter((f) => !NEW.includes(f));
 const forward = all.filter((f) => NEW.includes(f));
 
