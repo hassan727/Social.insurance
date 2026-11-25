@@ -4,7 +4,7 @@ import { supabaseServer } from '@/lib/supabaseServer';
 // or alias). Returns null when unknown — callers reject, never default.
 // Shared by every import route so preview and execute validate against the
 // SAME source of truth (no hardcoded account allowlists).
-export async function resolveAccountId(raw: string): Promise<number | null> {
+export async function resolveAccountRecord(raw: string): Promise<{ id: number; account_code: string } | null> {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const { data, error } = await supabaseServer
@@ -19,5 +19,10 @@ export async function resolveAccountId(raw: string): Promise<number | null> {
     a.account_code.toLowerCase() === lowered ||
     (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === lowered))
   );
-  return match ? match.id : null;
+  return match ? { id: match.id, account_code: match.account_code } : null;
+}
+
+export async function resolveAccountId(raw: string): Promise<number | null> {
+  const rec = await resolveAccountRecord(raw);
+  return rec ? rec.id : null;
 }

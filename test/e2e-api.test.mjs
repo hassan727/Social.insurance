@@ -78,6 +78,11 @@ const monthsWith = (d) => (d.details?.allMonthsHistory || []).filter((m) => m.pa
 const d1 = await (await api('/api/lookup/details?national_id=11111111111111')).json();
 check('conflict NID: monthly payroll WITHHELD', monthsWith(d1).length === 0, 'months=' + monthsWith(d1).length + ' err=' + (d1.error || ''));
 check('conflict NID: withhold conflict surfaced', (d1.details?.conflicts || []).some((c) => c.includes('حُجبت')), (d1.details?.conflicts || []).find((c) => c.includes('حساب'))?.slice(0, 70) || 'NONE');
+check('conflict NID: details accountDisplay = conflict with labeled sources', d1.details?.accountDisplay?.status === 'conflict' && d1.details.accountDisplay.masterCode === 'EG' && d1.details.accountDisplay.waradCode === 'MG', JSON.stringify(d1.details?.accountDisplay || null));
+check('conflict NID: S6 not affirmative (insufficient_data, no مستمر)', d1.details?.s6_calculation?.status === 'insufficient_data' && !(d1.details?.s6_calculation?.message || '').includes('مستمر بالخدمة'), (d1.details?.s6_calculation?.message || 'NONE').slice(0, 60));
+const s1 = await (await api('/api/lookup/search?q=11111111111111')).json();
+check('search row: conflict badge labeled, not definitive', s1.success && s1.results?.[0]?.account_display?.status === 'conflict' && s1.results[0].company_account === '—' && s1.results[0].account_display.masterCode === 'EG' && s1.results[0].account_display.waradCode === 'MG', JSON.stringify({ca: s1.results?.[0]?.company_account, ad: s1.results?.[0]?.account_display}));
+check('search row: monthly claims withheld on conflict', s1.results?.[0]?.first_both_month === 'محجوب — حساب غير محسوم' && (s1.results?.[0]?.joint_periods || []).length === 0, s1.results?.[0]?.first_both_month || 'NONE');
 
 const d2 = await (await api('/api/lookup/details?national_id=22222222222222')).json();
 check('agreeing NID: scoped payroll returned', monthsWith(d2).length === 1 && monthsWith(d2)[0].payrollRecord.account_id === 2, 'months=' + monthsWith(d2).length + ' err=' + (d2.error || ''));
@@ -119,6 +124,11 @@ const siBad = await api('/api/smart-import/execute', { method: 'POST', body: (()
 check('smart-import execute unknown account → 400', siBad.status === 400, String(siBad.status));
 const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('company_account', 'EG'); return fd; })() });
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
+
+const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 3 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count);
+const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
+check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 1 && qEg.data[0].national_id === '11111111111111', 'count=' + qEg.total_count);
 
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();

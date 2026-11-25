@@ -402,7 +402,9 @@ export default function LookupPage() {
         'الرقم التأميني': c.insurance_number || '—',
         'الوظيفة الحالية': c.job_title || '—',
         'الوظيفة في التأمينات': c.insurance_job_title || '—',
-        'الشركة (Account)': c.company_account || 'E.G',
+        'الشركة (Account)': c.account_display?.status === 'conflict'
+          ? `غير محسوم (دليل: ${c.account_display.masterCode || '—'} / وارد: ${c.account_display.waradCode || '—'})`
+          : (c.company_account && c.company_account !== '—' ? c.company_account : '—'),
         'أول ظهور مشترك': c.first_both_month || 'غير متوفر',
         'أيام الحضور': c.attendance_days || '—',
         'تاريخ بداية الاشتراك (س1)': s1Date,
@@ -1089,11 +1091,15 @@ export default function LookupPage() {
                                       <span style={{ fontSize: 14, fontWeight: 800, color: '#ffffff' }}>
                                         {c.employee_name || 'بدون اسم'}
                                       </span>
-                                      {c.company_account && c.company_account !== '—' && (
+{c.account_display?.status === 'conflict' ? (
+                                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, fontWeight: 700, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                                          غير محسوم: {c.account_display.masterCode || '—'} / {c.account_display.waradCode || '—'}
+                                        </span>
+                                      ) : c.company_account && c.company_account !== '—' ? (
                                         <span className="badge-emerald font-mono-pro" style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>
                                           {c.company_account}
                                         </span>
-                                      )}
+                                      ) : null}
                                     </div>
                                     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginTop: 4, fontSize: 11, color: '#ffffff' }}>
                                       <span className="font-mono-pro">كود: <CopyableCellNumber value={c.employee_code} label="كود الموظف" /></span>
@@ -1328,7 +1334,11 @@ export default function LookupPage() {
                                 )}
                               </td>
                               <td>
-                                {c.company_account && c.company_account !== '—' ? (
+                                {c.account_display?.status === 'conflict' ? (
+                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 800, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                                    غير محسوم: {c.account_display.masterCode || '—'} / {c.account_display.waradCode || '—'}
+                                  </span>
+                                ) : c.company_account && c.company_account !== '—' ? (
                                   <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 8, fontWeight: 800, color: '#ffffff' }}>
                                     {c.company_account}
                                   </span>
@@ -1538,11 +1548,15 @@ export default function LookupPage() {
                                 {c.employee_name || 'بدون اسم'}
                               </span>
                             </div>
-                            {c.company_account && c.company_account !== '—' && (
+                            {c.account_display?.status === 'conflict' ? (
+                              <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, fontWeight: 800, whiteSpace: 'nowrap', background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                                غير محسوم: {c.account_display.masterCode || '—'} / {c.account_display.waradCode || '—'}
+                              </span>
+                            ) : c.company_account && c.company_account !== '—' ? (
                               <span className="badge-emerald font-mono-pro" style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 800, whiteSpace: 'nowrap' }}>
                                 {c.company_account}
                               </span>
-                            )}
+                            ) : null}
                           </div>
 
                           {/* Identifiers: Code, National ID & Insurance Number */}
@@ -1840,11 +1854,19 @@ export default function LookupPage() {
                               <span className="badge-slate font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
                                 ق.ق: {details.identifiers.national_id || '—'}
                               </span>
-                              {details.incomingInsurance.company_account && (
-                                <span className="badge-emerald font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
-                                  Account: {details.incomingInsurance.company_account}
+                              {details.accountDisplay?.status === 'conflict' ? (
+                                <span style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                                  الحساب: غير محسوم — دليل: {details.accountDisplay.masterCode || '—'} / وارد: {details.accountDisplay.waradCode || '—'}
                                 </span>
-                              )}
+                              ) : details.accountDisplay?.status === 'resolved' && details.accountDisplay.code ? (
+                                <span className="badge-emerald font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
+                                  Account: {details.accountDisplay.code}
+                                </span>
+                              ) : details.incomingInsurance.company_account ? (
+                                <span className="badge-slate font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
+                                  الحساب: غير مؤكد ({details.incomingInsurance.company_account})
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         </div>

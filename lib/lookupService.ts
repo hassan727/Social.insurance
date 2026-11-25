@@ -1,4 +1,5 @@
 import { supabaseServer } from '@/lib/supabaseServer';
+import { resolveAccountRecord } from '@/lib/accountResolver';
 
 export interface S1CalculationInfo {
   calculatedDate: string | null;
@@ -213,6 +214,12 @@ export interface SearchCandidate {
   source: string;
   source_label: string;
   company_account?: string | null;
+  account_display?: {
+    status: 'resolved' | 'conflict' | 'single' | 'unknown';
+    code: string | null;
+    masterCode: string | null;
+    waradCode: string | null;
+  };
   first_both_month?: string | null;
   first_both_year?: number | null;
   first_both_m?: number | null;
@@ -258,6 +265,8 @@ type PersonDraft = {
   subscription_end_date?: string | null;
   hire_date?: string | null;
   phone_number?: string | null;
+  masterAccountRaw?: string | null;
+  waradAccountRaw?: string | null;
   sources: Set<string>;
 };
 
@@ -320,6 +329,8 @@ function mergeIntoPersonMap(
         employee_code: r.employee_code,
         employee_name: r.employee_name,
         company_account: r.company_account,
+        masterAccountRaw: source === 'سجل الموظفين Master' ? r.company_account : null,
+        waradAccountRaw: source === 'وارد التأمين' ? r.company_account : null,
         status: r.status,
         insurance_status: r.insurance_status,
         insurance_number: r.insurance_number,
@@ -339,6 +350,8 @@ function mergeIntoPersonMap(
         existing.employee_name = r.employee_name;
       }
       if (!existing.company_account && r.company_account) existing.company_account = r.company_account;
+      if (source === 'سجل الموظفين Master' && !existing.masterAccountRaw && r.company_account) existing.masterAccountRaw = r.company_account;
+      if (source === 'وارد التأمين' && !existing.waradAccountRaw && r.company_account) existing.waradAccountRaw = r.company_account;
       if (!existing.status && r.status) existing.status = r.status;
       if (!existing.insurance_status && r.insurance_status) existing.insurance_status = r.insurance_status;
       if (!existing.insurance_number && r.insurance_number) existing.insurance_number = r.insurance_number;
@@ -392,6 +405,7 @@ async function enrichPersonDrafts(
         attendance_days: string | null;
         statusLabel: string;
       } | null = null;
+      let accountDisplay: SearchCandidate['account_display'] = undefined;
 
       if (orConds.length > 0) {
         const orClause = orConds.join(',');
@@ -474,6 +488,29 @@ async function enrichPersonDrafts(
           if (!p.subscription_start_date && masterData.data.insurance_start_date) p.subscription_start_date = masterData.data.insurance_start_date;
           if (!p.hire_date && masterData.data.hire_date) p.hire_date = masterData.data.hire_date;
           if (!p.phone_number && masterData.data.phone_number) p.phone_number = masterData.data.phone_number;
+        }
+
+        // ── Account display (fail-closed): resolve BOTH sources against
+        // company_accounts. A master-vs-warad contradiction must never render
+        // as one definitive company, and monthly claims built from unscoped
+        // rows are withheld while the account is unresolved.
+        const masterRaw = p.masterAccountRaw || (masterData.data?.company_account as string) || null;
+        const waradRaw = p.waradAccountRaw || (incomingData.data?.company_account as string) || null;
+        const [masterAcc, waradAcc] = await Promise.all([
+          masterRaw ? resolveAccountRecord(masterRaw) : Promise.resolve(null),
+          waradRaw ? resolveAccountRecord(waradRaw) : Promise.resolve(null),
+        ]);
+        const isConflict = Boolean(masterAcc && waradAcc && masterAcc.id !== waradAcc.id);
+        const resolvedAcc = masterAcc && waradAcc && masterAcc.id === waradAcc.id ? masterAcc : (masterAcc || waradAcc);
+        accountDisplay = isConflict
+          ? { status: 'conflict' as const, code: null, masterCode: masterAcc?.account_code ?? null, waradCode: waradAcc?.account_code ?? null }
+          : resolvedAcc
+            ? { status: (masterAcc && waradAcc ? 'resolved' : 'single') as 'resolved' | 'single', code: resolvedAcc.account_code, masterCode: masterAcc?.account_code ?? null, waradCode: waradAcc?.account_code ?? null }
+            : { status: 'unknown' as const, code: null, masterCode: null, waradCode: null };
+        if (isConflict) {
+          companyAccount = null;
+        } else if (resolvedAcc) {
+          companyAccount = resolvedAcc.account_code;
         }
 
         const payrolls = payData.data || [];
@@ -571,16 +608,29 @@ async function enrichPersonDrafts(
         const resType = (resRec?.resignation_type as string) || (incomingData?.data?.termination_reason as string) || null;
         const s6_info = computeS6Date(s6Year, s6Month, s6Att, isEmpActive, hasResignation, recordedEndDate, resType);
 
+        // Fail-closed on unresolved account conflict: withhold every
+        // monthly-derived claim (they are computed from rows that are NOT
+        // account-scoped at this level) and never present absence of monthly
+        // evidence as affirmative employment/termination.
+        const withhold = accountDisplay?.status === 'conflict';
+        const withheldS6: S6CalculationInfo = {
+          calculatedDate: null, formula: '—', sourceMonth: null, sourceYear: null,
+          daysInMonth: null, workDays: null, recordedDate: recordedEndDate, resignationType: resType,
+          status: 'insufficient_data',
+          message: 'لا يمكن احتساب س6 — حساب الموظف غير محسوم (تعارض بين الدليل ووارد التأمين) — يحتاج مراجعة',
+        };
+
         return {
           id: p.id,
           national_id: p.national_id,
           employee_code: p.employee_code,
           employee_name: p.employee_name || 'بدون اسم',
-          company_account: companyAccount || '—',
-          first_both_month: firstBothMonth || 'غير متوفر',
-          first_both_year: firstBothYear,
-          first_both_m: firstBothM,
-          attendance_days: attendanceDays || '—',
+          company_account: withhold ? '—' : (companyAccount || '—'),
+          account_display: accountDisplay,
+          first_both_month: withhold ? 'محجوب — حساب غير محسوم' : (firstBothMonth || 'غير متوفر'),
+          first_both_year: withhold ? null : firstBothYear,
+          first_both_m: withhold ? null : firstBothM,
+          attendance_days: withhold ? '—' : (attendanceDays || '—'),
           insurance_status: insuranceStatus || 'غير مسجل',
           insurance_number: p.insurance_number || (incomingData?.data?.insurance_number as string) || null,
           job_title: p.job_title || (incomingData?.data?.job_title as string) || null,
@@ -595,10 +645,10 @@ async function enrichPersonDrafts(
           source: 'consolidated',
           source_label: Array.from(p.sources).join(' • '),
           sources: Array.from(p.sources),
-          joint_periods: jointPeriods,
-          target_month_status: targetMonthStatus,
-          s1_info,
-          s6_info,
+          joint_periods: withhold ? [] : jointPeriods,
+          target_month_status: withhold ? null : targetMonthStatus,
+          s1_info: withhold ? undefined : s1_info,
+          s6_info: withhold ? withheldS6 : s6_info,
         };
       }
 
@@ -608,6 +658,7 @@ async function enrichPersonDrafts(
         employee_code: p.employee_code,
         employee_name: p.employee_name || 'بدون اسم',
         company_account: companyAccount || '—',
+        account_display: accountDisplay,
         first_both_month: firstBothMonth || 'غير متوفر',
         first_both_year: firstBothYear,
         first_both_m: firstBothM,
@@ -889,6 +940,12 @@ export interface EmployeeDetailsResult {
     employee_name: string | null;
   };
   conflicts: string[];
+  accountDisplay?: {
+    status: 'resolved' | 'conflict' | 'unknown';
+    code: string | null;
+    masterCode: string | null;
+    waradCode: string | null;
+  };
   incomingInsurance: {
     found: boolean;
     record: Record<string, unknown> | null;
@@ -1584,6 +1641,14 @@ export async function getEmployeeFullDetails(params: {
 
   // Company account: only evidence-supported sources. No fallback.
   const companyAccount = (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null);
+  // Explicit account display: an unresolved contradiction must NEVER render
+  // as one definitive company. Surface both labeled sources + unresolved.
+  const codeOfId = (id: number | null) => id === null ? null : ((allAccounts || []).find((a) => a.id === id)?.account_code ?? String(id));
+  const accountDisplay = accountContradiction
+    ? { status: 'conflict' as const, code: null as string | null, masterCode: codeOfId(masterAccountId), waradCode: codeOfId(waradAccountId) }
+    : resolvedAccountId !== null
+      ? { status: 'resolved' as const, code: codeOfId(resolvedAccountId), masterCode: codeOfId(masterAccountId), waradCode: codeOfId(waradAccountId) }
+      : { status: 'unknown' as const, code: null as string | null, masterCode: codeOfId(masterAccountId), waradCode: codeOfId(waradAccountId) };
 
   // Source-separated status conflicts: facts from different sources are
   // surfaced side by side, never reconciled by an inferred precedence, and
@@ -1624,7 +1689,23 @@ export async function getEmployeeFullDetails(params: {
   const isActive = !hasResignation && !/استق|منته|resign/i.test(empStatusStr);
   const recordedEndDate = (resignationRecords[0]?.last_working_day as string) || (resignationRecords[0]?.resignation_date as string) || (incomingRecord?.subscription_end_date as string) || null;
   const resignationType = (resignationRecords[0]?.resignation_type as string) || (incomingRecord?.termination_reason as string) || null;
-  const s6_calculation = computeS6Date(s6Year, s6Month, s6WorkDays, isActive, hasResignation, recordedEndDate, resignationType);
+  // When monthly inputs are withheld (unresolved account conflict) there is
+  // NO basis for an affirmative employment/termination claim: absence of
+  // evidence is not evidence. Report uncomputable, never "مستمر بالخدمة".
+  const s6_calculation = (withholdMonthly || accountContradiction)
+    ? {
+        calculatedDate: null,
+        formula: '—',
+        sourceMonth: null,
+        sourceYear: null,
+        daysInMonth: null,
+        workDays: null,
+        recordedDate: recordedEndDate,
+        resignationType,
+        status: 'insufficient_data' as const,
+        message: 'لا يمكن احتساب س6 — السجلات الشهرية محجوبة لحين حسم حساب الموظف. عدم توفر السجل لا يعني استمرار العمل أو انتهاءه — يحتاج مراجعة',
+      }
+    : computeS6Date(s6Year, s6Month, s6WorkDays, isActive, hasResignation, recordedEndDate, resignationType);
 
   return {
     identifiers: {
@@ -1633,6 +1714,7 @@ export async function getEmployeeFullDetails(params: {
       employee_name: employee_name || (incomingRecord?.employee_name as string) || cleanDbName || null,
     },
     conflicts,
+    accountDisplay,
     incomingInsurance: {
       found: Boolean(incomingRecord || masterEmp || socialInsData),
       record: {
