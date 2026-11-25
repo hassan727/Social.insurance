@@ -473,14 +473,16 @@ export async function POST(request: Request) {
             ins_wages_by_month: {},
           };
 
+          // Blank cell = no data (skipped); an EXPLICIT 0 is meaningful and recorded.
+          const cellNum = (v: unknown): number | null => { if (v === undefined || v === null || String(v).trim() === '') return null; const n = parseFloat(String(v).replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n; };
           if (sourceType === 'monthly_payroll' && periodMonth) {
-            const salary = parseFloat(String(raw['الراتب'] || raw['اجمالي المستحق'] || raw['صافى التحويل'] || raw['الاجر الشامل'] || 0).replace(/[^0-9.-]/g, '')) || 0;
-            const att = parseFloat(String(rec.attendance_days || raw['عدد ايام الحضور'] || 0).replace(/[^0-9.-]/g, '')) || 0;
-            if (salary > 0) financialLedger.salaries_by_month[String(periodMonth)] = salary;
-            if (att > 0) financialLedger.attendance_by_month[String(periodMonth)] = att;
+            const salary = cellNum(raw['الراتب'] ?? raw['اجمالي المستحق'] ?? raw['صافى التحويل'] ?? raw['الاجر الشامل']);
+            const att = cellNum(rec.attendance_days ?? raw['عدد ايام الحضور']);
+            if (salary !== null) financialLedger.salaries_by_month[String(periodMonth)] = salary;
+            if (att !== null) financialLedger.attendance_by_month[String(periodMonth)] = att;
           } else if (sourceType === 'monthly_insurance' && periodMonth) {
-            const insWage = parseFloat(String(raw['الاجر التاميني'] || raw['الاجر التامينى'] || 0).replace(/[^0-9.-]/g, '')) || 0;
-            if (insWage > 0) financialLedger.ins_wages_by_month[String(periodMonth)] = insWage;
+            const insWage = cellNum(raw['الاجر التاميني'] ?? raw['الاجر التامينى']);
+            if (insWage !== null) financialLedger.ins_wages_by_month[String(periodMonth)] = insWage;
           }
 
           const newConsolidated = {
@@ -492,7 +494,7 @@ export async function POST(request: Request) {
           matched.consolidated_data = newConsolidated as Json;
 
           if ((sourceType as string) === 'official_insurance_print') {
-            const insSalaryVal = parseFloat(String(raw['قيمة الاجر'] || raw['الاجر التأمينى'] || '0').replace(/[^0-9.-]/g, '')) || null;
+            const insSalaryRaw = (raw['قيمة الاجر'] ?? raw['الاجر التأمينى']); const insSalaryParsed = insSalaryRaw === undefined || insSalaryRaw === null || String(insSalaryRaw).trim() === '' ? NaN : parseFloat(String(insSalaryRaw).replace(/[^0-9.-]/g, '')); const insSalaryVal = isNaN(insSalaryParsed) ? null : insSalaryParsed; // explicit 0 preserved; only blank/unparseable -> null
             const insJobVal = rec.insurance_job_title || raw['المهنة'] || null;
             const insNumVal = rec.insurance_number || raw['الرقم التأميني للمؤمن علية'] || null;
             const subDateVal = rec.subscription_start_date || raw['تاريخ بداية المده'] || null;
@@ -550,7 +552,7 @@ export async function POST(request: Request) {
           const newId = crypto.randomUUID();
 
           if ((sourceType as string) === 'official_insurance_print') {
-            const insSalaryVal = parseFloat(String(raw['قيمة الاجر'] || raw['الاجر التأمينى'] || '0').replace(/[^0-9.-]/g, '')) || null;
+            const insSalaryRaw = (raw['قيمة الاجر'] ?? raw['الاجر التأمينى']); const insSalaryParsed = insSalaryRaw === undefined || insSalaryRaw === null || String(insSalaryRaw).trim() === '' ? NaN : parseFloat(String(insSalaryRaw).replace(/[^0-9.-]/g, '')); const insSalaryVal = isNaN(insSalaryParsed) ? null : insSalaryParsed; // explicit 0 preserved; only blank/unparseable -> null
             const insJobVal = rec.insurance_job_title || raw['المهنة'] || null;
             const insNumVal = rec.insurance_number || raw['الرقم التأميني للمؤمن علية'] || null;
             const subDateVal = rec.subscription_start_date || raw['تاريخ بداية المده'] || null;
@@ -587,14 +589,16 @@ export async function POST(request: Request) {
             ins_wages_by_month: {} as Record<string, number>,
           };
 
+          // Blank cell = no data (skipped); an EXPLICIT 0 is meaningful and recorded.
+          const cellNum = (v: unknown): number | null => { if (v === undefined || v === null || String(v).trim() === '') return null; const n = parseFloat(String(v).replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n; };
           if (sourceType === 'monthly_payroll' && periodMonth) {
-            const salary = parseFloat(String(raw['الراتب'] || raw['اجمالي المستحق'] || raw['صافى التحويل'] || raw['الاجر الشامل'] || 0).replace(/[^0-9.-]/g, '')) || 0;
-            const att = parseFloat(String(rec.attendance_days || raw['عدد ايام الحضور'] || 0).replace(/[^0-9.-]/g, '')) || 0;
-            if (salary > 0) financialLedger.salaries_by_month[String(periodMonth)] = salary;
-            if (att > 0) financialLedger.attendance_by_month[String(periodMonth)] = att;
+            const salary = cellNum(raw['الراتب'] ?? raw['اجمالي المستحق'] ?? raw['صافى التحويل'] ?? raw['الاجر الشامل']);
+            const att = cellNum(rec.attendance_days ?? raw['عدد ايام الحضور']);
+            if (salary !== null) financialLedger.salaries_by_month[String(periodMonth)] = salary;
+            if (att !== null) financialLedger.attendance_by_month[String(periodMonth)] = att;
           } else if (sourceType === 'monthly_insurance' && periodMonth) {
-            const insWage = parseFloat(String(raw['الاجر التاميني'] || raw['الاجر التامينى'] || 0).replace(/[^0-9.-]/g, '')) || 0;
-            if (insWage > 0) financialLedger.ins_wages_by_month[String(periodMonth)] = insWage;
+            const insWage = cellNum(raw['الاجر التاميني'] ?? raw['الاجر التامينى']);
+            if (insWage !== null) financialLedger.ins_wages_by_month[String(periodMonth)] = insWage;
           }
 
           const newRecord = {

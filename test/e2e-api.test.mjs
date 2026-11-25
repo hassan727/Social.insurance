@@ -147,6 +147,14 @@ const cd = mAfterSmart?.consolidated_data || {};
 check('smart-import merge: blank cell did NOT erase existing value', cd['الوظيفه'] === 'محاسب', JSON.stringify(cd).slice(0, 120) + ' status=' + sm.status + ' err=' + (smj.error || ''));
 check('smart-import merge: nonempty cell updated', String(cd['الراتب']) === '7000', String(cd['الراتب']));
 check('smart-import merge: meaningful zero preserved', String(cd['عدد أيام']) === '0', String(cd['عدد أيام']));
+// classic route: EXPLICIT zeros are meaningful and must survive the ledger path
+const zeroPay = mkXlsx([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'عدد ايام الحضور': 0, 'الراتب': 0 }]);
+const zp = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '12', company_account: 'MG' }, zeroPay);
+check('classic import zero-row succeeds', zp.status === 200, String(zp.status));
+const mAfterZero = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+const led = (mAfterZero?.consolidated_data || {}).financial_ledger || {};
+check('classic route: explicit 0 attendance recorded (not dropped)', String((led.attendance_by_month || {})['12']) === '0', JSON.stringify(led.attendance_by_month || null));
+check('classic route: explicit 0 salary recorded (not dropped)', String((led.salaries_by_month || {})['12']) === '0', JSON.stringify(led.salaries_by_month || null));
 
 const si = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); return fd; })() });
 check('smart-import execute w/o account → 400 (no bypass)', si.status === 400, String(si.status));

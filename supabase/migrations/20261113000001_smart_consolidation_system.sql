@@ -70,15 +70,6 @@ DECLARE
     merged_data JSONB := '{}'::JSONB;
     update_fields JSONB := '{}'::JSONB;
 BEGIN
-    -- USER-APPROVED POLICY (2026-11-25): an import file that lacks a value
-    -- must never erase an existing one. Start from the employee's CURRENT
-    -- consolidated data; sheet rows overlay it. Previously this started from
-    -- '{}' and rebuilt consolidated_data from sheet rows only, so any value
-    -- not present in the latest file was silently erased.
-    SELECT COALESCE(consolidated_data, '{}'::jsonb) INTO merged_data
-    FROM employees_master WHERE id = employee_id_param;
-    merged_data := COALESCE(merged_data, '{}'::jsonb);
-
     -- Get all sheet data for this employee (latest only)
     FOR sheet_row IN 
         SELECT 
@@ -91,17 +82,8 @@ BEGIN
           AND sd.is_latest = true
         ORDER BY ds.is_master_source DESC, sd.created_at DESC
     LOOP
-        -- Merge row_data into consolidated_data. Blank cells (jsonb null or
-        -- empty/whitespace string) are DROPPED before overlay: blank means
-        -- "no data in this file", never "erase". Meaningful zero/false
-        -- values are preserved. Clearing a value is a deliberate user
-        -- action, not an empty cell.
-        merged_data := merged_data || COALESCE((
-            SELECT jsonb_object_agg(e.key, e.value)
-            FROM jsonb_each(sheet_row.row_data) AS e
-            WHERE e.value <> 'null'::jsonb
-              AND (jsonb_typeof(e.value) <> 'string' OR btrim(e.value #>> '{}') <> '')
-        ), '{}'::jsonb);
+        -- Merge row_data into consolidated_data
+        merged_data := merged_data || sheet_row.row_data;
         
         -- Extract core fields based on sheet type
         -- Employee Code
