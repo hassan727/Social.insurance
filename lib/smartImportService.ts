@@ -118,7 +118,14 @@ export function cleanNationalId(val: unknown): string | null {
       } catch { /* noop */ }
     }
   }
-  const digits = str.replace(/\D/g, '').trim();
+  // Trailing ".0" float artifact from Excel numeric cells (e.g. "301...055.0").
+  if (/^\d+\.0+$/.test(str)) str = str.slice(0, str.indexOf('.'));
+  // Conservative: permit only digits with spaces/hyphens as documented Excel
+  // grouping separators. Anything else (letters, punctuation) is INVALID —
+  // the row goes to review; we never blind-strip characters into a fake ID.
+  if (!/^\d[\d\s-]*$/.test(str)) return null;
+  const digits = str.replace(/[\s-]/g, '');
+  // Never invent digits: wrong length stays wrong; callers require exactly 14.
   return digits.length >= 7 ? digits : null;
 }
 

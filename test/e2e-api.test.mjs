@@ -551,6 +551,67 @@ check('after upstream correction: monthly returned scoped to MG only', monthsWit
 check('after upstream correction: latest_evidence shown', d1b.details?.latest_evidence?.payroll?.month === 11 && d1b.details?.latest_evidence?.payroll?.year === 2026 && d1b.details?.latest_evidence?.payroll?.accountCode === 'MG', JSON.stringify(d1b.details?.latest_evidence || null));
 check('after upstream correction: S6 computable again (not insufficient)', d1b.details?.s6_calculation?.status !== 'insufficient_data', d1b.details?.s6_calculation?.status || 'NONE');
 
+
+// ── NID-only identity matching (user rule 2026-11-25): classic import path ──
+// Person identity is the 14-digit national ID ONLY: no employee-code,
+// insurance-number, or name fallback; invalid/missing NID -> review, never
+// merge, never fabricate; malformed tokens are never blind-stripped.
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, consolidated_data) VALUES
+  ('m.g', 2, '77770000000001', '8001', 'موظف مطابقة أ', 'Active', '{"marker":"A"}'),
+  ('E.G', 1, '77770000000002', '8002e', 'موظف حدودي', 'Active', '{"marker":"B"}'),
+  ('m.g', 2, '77770000000003', '8003', 'موظف عربي الأرقام', 'Active', '{"marker":"C"}'),
+  ('m.g', 2, '77770000000004', '8004', 'موظف مسافات', 'Active', '{"marker":"D"}'),
+  ('m.g', 2, '77770000000005', '8005', 'موظف عشري', 'Active', '{"marker":"E"}')`);
+const nidFile = mkXlsx([
+  { 'الرقم القومي': '77770000000009', 'الاسم': 'موظف مختلف', 'الكود': '8001' },   // same code as master A, DIFFERENT NID
+  { 'الرقم القومي': 'ABC12345', 'الاسم': 'موظف تالف', 'الكود': '8002' },          // alphabetic -> invalid, review
+  { 'الرقم القومي': '77770000000002', 'الاسم': 'موظف حدودي', 'الكود': '8006' },   // NID lives in EG, import is MG
+  { 'الرقم القومي': '٧٧٧٧٠٠٠٠٠٠٠٠٠٣', 'الاسم': 'موظف عربي الأرقام', 'الكود': '8003' }, // Arabic-Indic digits
+  { 'الرقم القومي': '7777 0000 0000 04', 'الاسم': 'موظف مسافات', 'الكود': '8004' },   // spaced grouping
+  { 'الرقم القومي': '77770000000005.0', 'الاسم': 'موظف عشري', 'الكود': '8005' },      // Excel float artifact
+  { 'الرقم القومي': '777700000000', 'الاسم': 'موظف ناقص', 'الكود': '8007' },          // 12 digits -> invalid, no invention
+  { 'الرقم القومي': '77770000000010', 'الاسم': 'موظف سليم', 'الكود': '8008' },        // valid new person
+]);
+const nidImp = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '7', company_account: 'MG' }, nidFile);
+check('NID-only classic: import accepted', nidImp.status === 200, String(nidImp.status));
+
+const mA = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='77770000000001'`)).rows[0];
+check('same code + different NID: master A NOT merged', mA?.consolidated_data?.marker === 'A' && !mA?.consolidated_data?.last_source_update, JSON.stringify(mA?.consolidated_data || null).slice(0, 100));
+const codes8001 = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE employee_code='8001'`)).rows[0].c;
+check('same code + different NID: no merge and no duplicate master (schema uid is unique per account code)', codes8001 === 1, 'masters with code 8001=' + codes8001);
+const noNine = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='77770000000009'`)).rows[0].c;
+check('same code + different NID: contradicting row NOT created as master', noNine === 0, 'count=' + noNine);
+const cnConf = (await db.query(`SELECT count(*)::int c FROM matching_conflicts WHERE conflict_type='code_nid_conflict' AND conflict_data->>'incoming_national_id'='77770000000009'`)).rows[0].c;
+check('same code + different NID: review conflict recorded', cnConf === 1, 'count=' + cnConf);
+
+const noTalf = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE employee_name='موظف تالف'`)).rows[0].c;
+check('alphabetic NID: NO master created', noTalf === 0, 'count=' + noTalf);
+const invConf = (await db.query(`SELECT count(*)::int c FROM matching_conflicts WHERE conflict_type='invalid_national_id' AND conflict_data->>'employee_code'='8002'`)).rows[0].c;
+check('alphabetic NID: review conflict recorded', invConf === 1, 'count=' + invConf);
+const talfRow = (await db.query(`SELECT national_id FROM monthly_payroll_records WHERE period_year=2026 AND period_month=7 AND employee_code='8002'`)).rows[0];
+check('alphabetic NID: monthly row kept with NULL national_id (no blind strip)', talfRow && talfRow.national_id === null, JSON.stringify(talfRow));
+
+const mB = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='77770000000002'`)).rows[0];
+check('cross-account NID: EG master NOT merged by MG import', mB?.consolidated_data?.marker === 'B' && !mB?.consolidated_data?.last_source_update, JSON.stringify(mB?.consolidated_data || null).slice(0, 100));
+const dupB = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='77770000000002'`)).rows[0].c;
+check('cross-account NID: no duplicate master created', dupB === 1, 'count=' + dupB);
+const xConf = (await db.query(`SELECT count(*)::int c FROM matching_conflicts WHERE conflict_type='cross_account_national_id' AND conflict_data->>'national_id'='77770000000002'`)).rows[0].c;
+check('cross-account NID: review conflict recorded', xConf === 1, 'count=' + xConf);
+
+const mC = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='77770000000003'`)).rows[0];
+check('Arabic-Indic digits: matched master C (conservative translation)', mC?.consolidated_data?.last_source_update === 'monthly_payroll' && mC?.consolidated_data?.marker === 'C', JSON.stringify(mC?.consolidated_data || null).slice(0, 100));
+const mD = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='77770000000004'`)).rows[0];
+check('spaced digits: matched master D (documented grouping form)', mD?.consolidated_data?.last_source_update === 'monthly_payroll', JSON.stringify(mD?.consolidated_data || null).slice(0, 100));
+const mE = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='77770000000005'`)).rows[0];
+check('trailing .0 Excel artifact: matched master E', mE?.consolidated_data?.last_source_update === 'monthly_payroll', JSON.stringify(mE?.consolidated_data || null).slice(0, 100));
+
+const noShort = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE employee_name='موظف ناقص'`)).rows[0].c;
+check('12-digit NID: NO master created (no invented digits)', noShort === 0, 'count=' + noShort);
+const shortConf = (await db.query(`SELECT count(*)::int c FROM matching_conflicts WHERE conflict_type='invalid_national_id' AND conflict_data->>'employee_code'='8007'`)).rows[0].c;
+check('12-digit NID: review conflict recorded', shortConf === 1, 'count=' + shortConf);
+const mNew = (await db.query(`SELECT account_id, national_id FROM employees_master WHERE national_id='77770000000010'`)).rows[0];
+check('valid new NID: master created under import account', mNew?.account_id === 2, JSON.stringify(mNew));
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);

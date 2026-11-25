@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import { SourceType } from '@/lib/excelParser';
 import { supabaseServer } from '@/lib/supabaseServer';
+import { cleanNationalId } from '@/lib/smartImportService';
 import { invalidateReportsCache } from '@/lib/reportsEngine';
 import type { Json } from '@/types/supabase';
 
@@ -273,7 +274,10 @@ export async function POST(request: Request) {
 
       const empCode = getVal(row, 'employee_code');
       const empName = getVal(row, 'employee_name');
-      const natId = getVal(row, 'national_id');
+      // Identity is the 14-digit national ID ONLY (user rule). Conservative
+      // cleaning: Arabic-Indic digits translated, documented Excel forms
+      // permitted; malformed tokens become null (review), never blind-stripped.
+      const natId = cleanNationalId(getVal(row, 'national_id')) || '';
 
       // Rule: Do not invent missing IDs, but row must have at least one valid identifier (code, national_id, or name)
       if (!empCode && !empName && !natId) {
@@ -294,7 +298,7 @@ export async function POST(request: Request) {
           import_id: importId,
           employee_code: empCode || getVal(row, 'employee_code') || rawRowObj['رقم الاداء'] || null,
           employee_name: empName || getVal(row, 'employee_name') || rawRowObj['اسم المؤمن عليه '] || rawRowObj['اسم المؤمن عليه'] || null,
-          national_id: natId || getVal(row, 'national_id') || rawRowObj['الرقم القومى 2'] || rawRowObj['الرقم القومي'] || null,
+          national_id: natId || cleanNationalId(rawRowObj['الرقم القومى 2'] || rawRowObj['الرقم القومي']) || null,
           job_title: getVal(row, 'job_title') || null,
           status: getVal(row, 'status') || rawRowObj['الحاله '] || rawRowObj['الحالة'] || null,
           // No default account: missing company text stays null and surfaces for review
@@ -390,11 +394,12 @@ export async function POST(request: Request) {
     try {
       const { data: existingEmps } = await supabaseServer
         .from('employees_master')
-        .select('id, company_account, employee_code, national_id, employee_name, current_job_title, consolidated_data');
+        .select('id, company_account, account_id, employee_code, national_id, employee_name, current_job_title, consolidated_data');
 
       interface EmpMasterLookup {
         id: string;
         company_account: string;
+        account_id: number | null;
         employee_code: string | null;
         national_id: string | null;
         employee_name: string;
@@ -402,31 +407,29 @@ export async function POST(request: Request) {
         consolidated_data: Json;
       }
 
-      const byCodeAccount = new Map<string, EmpMasterLookup>();
-      const byCodeGlobal = new Map<string, EmpMasterLookup>();
+      // Identity matching is by 14-digit national ID ONLY (user rule): no
+      // insurance-number / employee-code / name fallback maps.
       const byNatId = new Map<string, EmpMasterLookup>();
-      const byInsNo = new Map<string, EmpMasterLookup>();
-      const byNormName = new Map<string, EmpMasterLookup>();
+      const byNatIdAccount = new Map<string, EmpMasterLookup>();
+      // Code map for CONTRADICTION DETECTION ONLY (never matching): the same
+      // account+code under a different NID is a conflict, not a merge target.
+      const byCodeAccountDetect = new Map<string, EmpMasterLookup>();
 
       (existingEmps || []).forEach((emp) => {
-        if (emp.employee_code) {
-          const c = String(emp.employee_code).trim();
-          if (!byCodeGlobal.has(c)) byCodeGlobal.set(c, emp);
-          if (emp.company_account) {
-            byCodeAccount.set(`${emp.company_account.trim().toLowerCase()}:${c}`, emp);
+        if (emp.national_id && String(emp.national_id).trim().length === 14) {
+          const n = String(emp.national_id).trim();
+          byNatId.set(n, emp);
+          if (emp.account_id !== null && emp.account_id !== undefined) {
+            byNatIdAccount.set(`${emp.account_id}:${n}`, emp);
           }
         }
-        if (emp.national_id && String(emp.national_id).trim().length === 14) {
-          byNatId.set(String(emp.national_id).trim(), emp);
-        }
-        if ((emp as any).insurance_number && String((emp as any).insurance_number).trim()) {
-          byInsNo.set(String((emp as any).insurance_number).trim(), emp);
-        }
-        if (emp.employee_name) {
-          const normN = normalizeArabicText(emp.employee_name);
-          if (!byNormName.has(normN)) byNormName.set(normN, emp);
+        if (emp.employee_code && String(emp.employee_code).trim()) {
+          const c = String(emp.employee_code).trim();
+          if (emp.account_id !== null && emp.account_id !== undefined) {
+            byCodeAccountDetect.set(`${emp.account_id}:${c}`, emp);
+          }
           if (emp.company_account) {
-            byNormName.set(`${emp.company_account.trim().toLowerCase()}:${normN}`, emp);
+            byCodeAccountDetect.set(`txt:${emp.company_account.trim().toLowerCase()}:${c}`, emp);
           }
         }
       });
@@ -442,25 +445,39 @@ export async function POST(request: Request) {
         const nid = (rec.national_id ? String(rec.national_id).trim() : '') || raw['الرقم القومي'] || raw['القومي'] || '';
         const name = (rec.employee_name ? String(rec.employee_name).trim() : '') || raw['الاسم'] || '';
         const acc = (rec.company_account ? String(rec.company_account).trim() : '') || raw['الشركة'] || raw['الشركه'] || '';
-        const insNum = (rec.insurance_number ? String(rec.insurance_number).trim() : '') || raw['الرقم التأميني'] || raw['الرقم التاميني'] || raw['الرقم التأميني للمؤمن علية'] || '';
 
+        const validNid = !!nid && nid.length === 14;
         let matched: EmpMasterLookup | null = null;
-        // Priority 1: National ID (14 digits)
-        if (nid && nid.length === 14) {
-          matched = byNatId.get(nid) || null;
-        }
-        // Priority 2: Insurance Number
-        if (!matched && insNum && insNum.length >= 7) {
-          matched = byInsNo.get(insNum) || null;
-        }
-        // Priority 3: Employee Code (Account specific then Global)
-        if (!matched && code) {
-          matched = byCodeAccount.get(`${acc.toLowerCase()}:${code}`) || byCodeGlobal.get(code) || null;
-        }
-        // Priority 4: Name
-        if (!matched && name && name.length >= 6) {
-          const normN = normalizeArabicText(name);
-          matched = byNormName.get(`${acc.toLowerCase()}:${normN}`) || byNormName.get(normN) || null;
+        // NATIONAL ID ONLY (user rule): no insurance-number, employee-code, or
+        // name fallback. Same code with a different NID must NEVER merge.
+        if (validNid) {
+          matched = byNatIdAccount.get(`${accountId}:${nid}`) || null;
+          if (!matched) {
+            const anyAcc = byNatId.get(nid) || null;
+            if (anyAcc) {
+              if (anyAcc.account_id === null || anyAcc.account_id === undefined) {
+                // Legacy master with no account stamp: claimable by this account.
+                matched = anyAcc;
+              } else {
+                // Same NID in a DIFFERENT account: never merge across accounts —
+                // review, per the same fail-closed guard as the smart import.
+                await supabaseServer.from('matching_conflicts').insert({
+                  conflict_type: 'cross_account_national_id',
+                  conflict_data: {
+                    source_type: sourceType,
+                    employee_id: anyAcc.id,
+                    national_id: nid,
+                    employee_name: name,
+                    master_company_account: anyAcc.company_account,
+                    import_company_account: acc,
+                    action_required: 'نفس الرقم القومي موجود في حساب آخر — لم تُدمج البيانات؛ يحتاج مراجعة',
+                  },
+                  resolved: false,
+                });
+                continue;
+              }
+            }
+          }
         }
 
         const now = new Date().toISOString();
@@ -549,6 +566,51 @@ export async function POST(request: Request) {
             });
           }
         } else if (name || code || nid) {
+          if (!validNid) {
+            // NID-only identity (user rule): without a valid 14-digit national
+            // ID a row can neither match nor create a master record (a master
+            // without an NID could never be matched later and would duplicate
+            // the person when the NID arrives). Route to review instead.
+            await supabaseServer.from('matching_conflicts').insert({
+              conflict_type: 'invalid_national_id',
+              conflict_data: {
+                source_type: sourceType,
+                employee_name: name || null,
+                employee_code: code || null,
+                national_id_raw: nid || null,
+                company_account: acc,
+                action_required: 'لا يمكن إنشاء أو مطابقة سجل بدون رقم قومي صحيح من 14 رقمًا — يحتاج مراجعة',
+              },
+              resolved: false,
+            });
+            continue;
+          }
+          if (code) {
+            const codeHolder =
+              byCodeAccountDetect.get(`${accountId}:${code}`) ||
+              byCodeAccountDetect.get(`txt:${acc.toLowerCase()}:${code}`) ||
+              null;
+            if (codeHolder && codeHolder.national_id && String(codeHolder.national_id).trim() !== nid) {
+              // Same account+code but a DIFFERENT national ID: identity
+              // contradiction (schema also forbids two masters on the same
+              // account code). Never merge, never overwrite — review.
+              await supabaseServer.from('matching_conflicts').insert({
+                conflict_type: 'code_nid_conflict',
+                conflict_data: {
+                  source_type: sourceType,
+                  employee_id: codeHolder.id,
+                  employee_code: code,
+                  existing_national_id: codeHolder.national_id,
+                  incoming_national_id: nid,
+                  employee_name: name,
+                  company_account: acc,
+                  action_required: 'نفس كود الموظف في نفس الحساب مسجل برقم قومي مختلف — لم يُدمج ولم يُنشأ سجل؛ يحتاج مراجعة',
+                },
+                resolved: false,
+              });
+              continue;
+            }
+          }
           const newId = crypto.randomUUID();
 
           if ((sourceType as string) === 'official_insurance_print') {
@@ -560,6 +622,7 @@ export async function POST(request: Request) {
             const newRecord = {
               id: newId,
               company_account: acc,
+              account_id: accountId,
               employee_code: code || null,
               national_id: nid || null,
               employee_name: name || 'بدون اسم',
@@ -578,9 +641,11 @@ export async function POST(request: Request) {
 
             employeesToInsert.push(newRecord);
             const lookupItem = newRecord as unknown as EmpMasterLookup;
-            if (code) byCodeAccount.set(`${acc}:${code}`, lookupItem);
-            if (nid) byNatId.set(nid, lookupItem);
-            if (name) byNormName.set(`${acc}:${normalizeArabicText(name)}`, lookupItem);
+            if (nid) {
+              byNatId.set(nid, lookupItem);
+              if (accountId !== null) byNatIdAccount.set(`${accountId}:${nid}`, lookupItem);
+            }
+            if (code && accountId !== null) byCodeAccountDetect.set(`${accountId}:${code}`, lookupItem);
             continue;
           }
           const financialLedger = {
@@ -604,6 +669,7 @@ export async function POST(request: Request) {
           const newRecord = {
             id: newId,
             company_account: acc,
+            account_id: accountId,
             employee_code: code || null,
             national_id: nid || null,
             employee_name: name || 'بدون اسم',
@@ -620,17 +686,11 @@ export async function POST(request: Request) {
 
           employeesToInsert.push(newRecord);
           const lookupItem = newRecord as unknown as EmpMasterLookup;
-          if (code) {
-            byCodeGlobal.set(code, lookupItem);
-            byCodeAccount.set(`${acc.toLowerCase()}:${code}`, lookupItem);
+          if (nid) {
+            byNatId.set(nid, lookupItem);
+            if (accountId !== null) byNatIdAccount.set(`${accountId}:${nid}`, lookupItem);
           }
-          if (nid) byNatId.set(nid, lookupItem);
-          if (insNum) byInsNo.set(insNum, lookupItem);
-          if (name) {
-            const normN = normalizeArabicText(name);
-            byNormName.set(normN, lookupItem);
-            byNormName.set(`${acc.toLowerCase()}:${normN}`, lookupItem);
-          }
+          if (code && accountId !== null) byCodeAccountDetect.set(`${accountId}:${code}`, lookupItem);
         }
       }
 
