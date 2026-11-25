@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient } from '@/lib/supabaseServer';
-import { isAuthenticated, getSessionRole } from '@/lib/auth';
+import { getSessionRole } from '@/lib/auth';
 
 /**
  * POST /api/employee/[id]/transfer
@@ -16,10 +16,6 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    if (!(await isAuthenticated())) {
-      return NextResponse.json({ error: 'يجب تسجيل الدخول لتأكيد نقل أو تصحيح إسناد' }, { status: 401 });
-    }
-
     const { id } = await params;
     if (!id) {
       return NextResponse.json({ error: 'Employee ID is required' }, { status: 400 });
