@@ -377,7 +377,7 @@ const snap7b = mkXlsxMulti({ SheetJ: [
 const s7b = await postSmart(snap7b, ['SheetJ']);
 const s7bj = await s7b.json().catch(() => ({}));
 const s7Latest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='SheetJ' AND sd.employee_id=$1 AND sd.is_latest=true`, [snap7Id])).rows[0].c;
-check('identity-less DATA row: import reports the failure', s7b.status === 200 && (s7bj.detailed_results?.SheetJ?.errors || []).some((e) => e.includes('بدون كود')), JSON.stringify(s7bj.detailed_results?.SheetJ?.errors || s7bj.error || null).slice(0, 140));
+check('identity-less DATA row: import reports the failure', s7b.status === 200 && (s7bj.detailed_results?.SheetJ?.errors || []).some((e) => e.includes('بدون رقم قومي')), JSON.stringify(s7bj.detailed_results?.SheetJ?.errors || s7bj.error || null).slice(0, 140));
 check('identity-less DATA row: NO prune of the absent employee (fail closed)', s7Latest === 1, 'latest=' + s7Latest);
 const partialApplied = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='99999999999986' AND account_id=2`)).rows[0].c;
 check('partial application is visible: valid row WAS written (no rollback), failure listed', partialApplied === 1 && (s7bj.detailed_results?.SheetJ?.errors || []).length >= 1);

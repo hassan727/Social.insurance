@@ -106,6 +106,9 @@ export function cleanNationalId(val: unknown): string | null {
     str = BigInt(Math.round(val)).toString();
   } else {
     str = String(val).trim();
+    // Conservative normalization only: Arabic-Indic digits map 1:1 to ASCII.
+    // No padding, no digit invention.
+    str = str.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
     if (/^[+-]?\d+(\.\d+)?[eE][+-]?\d+$/.test(str)) {
       try {
         const num = Number(str);
@@ -818,34 +821,13 @@ export async function importSheet(
       .from('employees_master')
       .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data');
 
+    // Identity matching is by 14-digit national ID ONLY (user rule): no
+    // insurance-number / employee-code / name fallback maps.
     const byNatIdMap = new Map<string, EmployeeLookup>();
-    const byInsNoMap = new Map<string, EmployeeLookup>();
-    const byCodeMap = new Map<string, EmployeeLookup>();
-    const byCodeAccountMap = new Map<string, EmployeeLookup>();
-    const byNormNameMap = new Map<string, EmployeeLookup>();
 
     for (const emp of (existingEmps || []) as EmployeeLookup[]) {
       if (emp.national_id && String(emp.national_id).trim().length === 14) {
         byNatIdMap.set(String(emp.national_id).trim(), emp);
-      }
-      if (emp.insurance_number && String(emp.insurance_number).trim()) {
-        byInsNoMap.set(String(emp.insurance_number).trim(), emp);
-      }
-      if (emp.employee_code && String(emp.employee_code).trim()) {
-        const c = String(emp.employee_code).trim();
-        // Global code map (first one wins for universal lookup)
-        if (!byCodeMap.has(c)) {
-          byCodeMap.set(c, emp);
-        }
-        if (emp.company_account) {
-          byCodeAccountMap.set(`${emp.company_account.toLowerCase()}:${c}`, emp);
-        }
-      }
-      if (emp.employee_name) {
-        const normN = normalizeText(emp.employee_name);
-        if (!byNormNameMap.has(normN)) {
-          byNormNameMap.set(normN, emp);
-        }
       }
     }
 
@@ -931,11 +913,13 @@ export async function importSheet(
           rowData['اسم']
         ).trim() : null;
 
-        // Skip completely empty rows (benign trailing blanks). A row WITH
-        // content but NO identity (no code, no national id, no name) is an
-        // identity failure: it must block the snapshot prune (fail closed),
-        // because we cannot tell which employee that row belongs to.
-        if (!rawCode && !rawNatId && !rawName) {
+        // Skip rows without a valid 14-digit national ID. User-steered rule
+        // (2026-11-25 14:43): identity matching is by NATIONAL ID ONLY — no
+        // employee-code, insurance-number, or name fallback. A content row
+        // without a valid NID is an identity failure: fail closed to review
+        // and block the snapshot prune (never guess a person).
+        const hasValidNid = !!rawNatId && rawNatId.length === 14;
+        if (!hasValidNid) {
           // Inspect the RAW row, not rowData: columns not present in the
           // registered mapping never reach rowData, but their content still
           // makes this a data row whose owner we cannot identify.
@@ -943,7 +927,7 @@ export async function importSheet(
             (v) => v !== null && v !== undefined && String(v).trim() !== ''
           );
           if (hasAnyContent) {
-            errors.push(`صف ${rowNumber}: يحتوي بيانات بدون كود أو رقم قومي أو اسم — لم يُستورد، وتعذّر اعتبار الملف لقطة كاملة`);
+            errors.push(`صف ${rowNumber}: بيانات بدون رقم قومي صحيح من 14 رقمًا — لم يُستورد؛ المطابقة بالرقم القومي فقط ويحتاج مراجعة، وتعذّر اعتبار الملف لقطة كاملة`);
             processingFailures++;
           }
           skippedRows++;
@@ -1030,45 +1014,15 @@ export async function importSheet(
           }
         }
 
-        // Extract insurance number early for matching Priority 2
-        const rawInsNumber = cleanCode(
-          rowData.insurance_number ||
-          rowData['الرقم التاميني'] ||
-          rowData['الرقم التأميني'] ||
-          rowData['الرقم التامينى'] ||
-          rowData['الرقم التأمينى']
-        );
-
-        // Fast in-memory hierarchical matching
+        // Fast in-memory matching — NATIONAL ID ONLY (user-steered rule
+        // 2026-11-25 14:43: identity matching is by national ID, not the
+        // employee/performance code). No insurance-number, employee-code, or
+        // name fallback: those collide across companies and time; only a
+        // 14-digit NID identifies a person. (Account scope enforced by the
+        // cross-account guard below.)
         let matchedEmp: EmployeeLookup | null = null;
-
-        // Priority 1: Match by national_id (Sovereign Global Unique ID - 14 digits)
         if (rawNatId && rawNatId.length === 14) {
           const found = byNatIdMap.get(rawNatId);
-          if (found) matchedEmp = found;
-        }
-
-        // Priority 2: Match by insurance_number (Unique State Insurance ID)
-        if (!matchedEmp && rawInsNumber && rawInsNumber.length >= 7) {
-          const found = byInsNoMap.get(rawInsNumber);
-          if (found) matchedEmp = found;
-        }
-
-        // Priority 3: Match by employee_code (Universal Employee Code across accounts)
-        if (!matchedEmp && rawCode) {
-          const foundByAccount = byCodeAccountMap.get(`${companyAccount.toLowerCase()}:${rawCode}`);
-          if (foundByAccount) {
-            matchedEmp = foundByAccount;
-          } else {
-            const foundGlobal = byCodeMap.get(rawCode);
-            if (foundGlobal) matchedEmp = foundGlobal;
-          }
-        }
-
-        // Priority 4: Match by normalized name
-        if (!matchedEmp && rawName) {
-          const normN = normalizeText(rawName);
-          const found = byNormNameMap.get(normN);
           if (found) matchedEmp = found;
         }
 
@@ -1221,13 +1175,6 @@ export async function importSheet(
             // a duplicate row only warns from the second import onward.
             seenInFile.set(newId, rowData as Record<string, unknown>);
             if (rawNatId && rawNatId.length === 14) byNatIdMap.set(rawNatId, lookupRecord);
-            if (newEmpRecord.insurance_number) byInsNoMap.set(String(newEmpRecord.insurance_number).trim(), lookupRecord);
-            if (rawCode) {
-              const c = String(rawCode).trim();
-              if (!byCodeMap.has(c)) byCodeMap.set(c, lookupRecord);
-              byCodeAccountMap.set(`${companyAccount.toLowerCase()}:${c}`, lookupRecord);
-            }
-            if (rawName) byNormNameMap.set(normalizeText(rawName), lookupRecord);
 
             historyToInsert.push({
               employee_id: newId,
