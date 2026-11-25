@@ -507,10 +507,20 @@ div.font-mono-pro {
   }
   .input-dark {
     font-size: 13px !important;
-    padding: 14px 44px 14px 44px !important;
+  }
+  .quick-id-banner {
+    /* Banner wraps tall on narrow screens; keep it in flow so it can't cover the tabs/content */
+    position: static !important;
   }
   .orb {
     display: none !important; /* Save GPU/battery on mobile */
+  }
+}
+
+/* Short landscape: a sticky banner covers over half the viewport height */
+@media (max-height: 500px) {
+  .quick-id-banner {
+    position: static !important;
   }
 }
 
@@ -634,3 +644,6 @@ div.font-mono-pro {
 .spin {
   animation: spin 1s linear infinite;
 }
+
+
+
