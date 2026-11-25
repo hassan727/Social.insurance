@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseServer } from '@/lib/supabaseServer';
-import { isAuthenticated } from '@/lib/auth';
+import { isAuthenticated, getSessionRole } from '@/lib/auth';
 
 /**
  * POST /api/employee/[id]/transfer
@@ -53,6 +53,14 @@ export async function POST(
     if (effective_date && !/^\d{4}-\d{2}-\d{2}$/.test(String(effective_date))) {
       return NextResponse.json({ error: 'effective_date must be YYYY-MM-DD' }, { status: 400 });
     }
+    if (effective_date && String(effective_date) > new Date().toISOString().slice(0, 10)) {
+      return NextResponse.json({ error: 'future_effective_date', message: 'النقل يُسجَّل بتاريخه الفعلي بعد حدوثه — لا تُقبل تواريخ مستقبلية' }, { status: 400 });
+    }
+
+    // Authorization = the verified session. The typed reviewer name is only a
+    // display label; the record carries what the session actually proves.
+    const sessionRole = await getSessionRole();
+    const recordedBy = sessionRole ? `${String(confirmed_by).trim()} (${sessionRole})` : String(confirmed_by).trim();
 
     const { data, error } = await supabaseServer.rpc('confirm_account_transfer', {
       p_employee_id: id,
@@ -61,7 +69,7 @@ export async function POST(
       p_change_type: type,
       p_change_reason: change_reason || null,
       p_notes: notes || null,
-      p_confirmed_by: String(confirmed_by).trim(),
+      p_confirmed_by: recordedBy,
       p_expected_current_company: expected_current_company ?? null,
       p_import_id: import_id || null,
     });
@@ -75,9 +83,16 @@ export async function POST(
         code === 'concurrent_update' ? 409 :
         code === 'uid_collision' ? 409 :
         400;
+      const messages: Record<string, string> = {
+        future_effective_date: 'النقل يُسجَّل بتاريخه الفعلي بعد حدوثه — لا تُقبل تواريخ مستقبلية',
+        self_transfer: 'الموظف مسجّل بالفعل في هذه الشركة',
+        concurrent_update: 'الشركة الحالية تغيّرت منذ العرض — حدّث الصفحة وأعد المحاولة',
+        uid_collision: 'تعارض معرّف في الشركة المستهدفة — يحتاج مراجعة يدوية',
+      };
       return NextResponse.json({
         success: false,
         error: code,
+        message: messages[code] ?? null,
         actual_current_company: result?.actual_current_company ?? null,
         candidate_uid: result?.candidate_uid ?? null,
       }, { status });

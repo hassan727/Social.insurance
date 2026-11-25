@@ -71,6 +71,100 @@ const CHANGE_TYPE_LABELS: Record<string, string> = {
   stamp_correction: 'تصحيح إسناد',
 };
 
+// Stamp correction: the current company was recorded WRONG (not a real-world
+// move). Kept deliberately separate from the transfer action on the import
+// review card so an erroneous stamp is never "resolved" by mislabeling it as
+// a real transfer. Requires a reason; recorded as stamp_correction.
+function StampCorrectionCard({ employeeId, currentCompany, onDone }: { employeeId: string; currentCompany: string; onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [accounts, setAccounts] = useState<{ account_code: string; account_name: string; aliases: string[] }[]>([]);
+  const [target, setTarget] = useState('');
+  const [reason, setReason] = useState('');
+  const [reviewer, setReviewer] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/company-accounts').then((r) => r.json()).then((j) => setAccounts(j.accounts || [])).catch(() => {});
+  }, []);
+
+  const canonicalOf = (a: { account_code: string; aliases: string[] }) =>
+    (a.aliases || []).find((x) => x.includes('.')) || a.account_code;
+
+  const submit = async () => {
+    if (!target) { setErr('اختر الشركة الصحيحة'); return; }
+    if (!reason.trim()) { setErr('سبب التصحيح مطلوب — التصحيح بدون سبب غير مقبول'); return; }
+    if (!reviewer.trim()) { setErr('اكتب اسم المُراجع الذي يؤكد التصحيح'); return; }
+    setBusy(true); setErr(null);
+    try {
+      const res = await fetch(`/api/employee/${employeeId}/transfer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to_company_account: target,
+          change_type: 'stamp_correction',
+          change_reason: reason.trim(),
+          confirmed_by: reviewer.trim(),
+          effective_date: date || undefined,
+          expected_current_company: currentCompany,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setMsg(`تم تصحيح الإسناد — الشركة الحالية الآن: ${data.current_company}`);
+        onDone();
+      } else if (res.status === 401) {
+        setErr('يجب تسجيل الدخول أولًا لتأكيد التصحيح');
+      } else {
+        setErr(data.message || data.error || 'فشل تأكيد التصحيح');
+      }
+    } catch {
+      setErr('فشل الاتصال بالخادم');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (msg) return <div style={{ fontSize: 12, color: '#34d399', padding: '10px 14px', borderRadius: 10, background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.3)' }}>{msg}</div>;
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={{ fontSize: 11, padding: '6px 14px', borderRadius: 8, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', color: '#fbbf24', cursor: 'pointer', fontWeight: 700 }}>
+        تصحيح إسناد الشركة (الشركة الحالية مسجّلة غلط)
+      </button>
+    );
+  }
+  return (
+    <div style={{ padding: '12px 14px', borderRadius: 12, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontSize: 12, color: '#fde68a', fontWeight: 700 }}>تصحيح إسناد — الشركة الحالية ({currentCompany}) مسجّلة بالخطأ</div>
+      <div style={{ fontSize: 11, color: '#94a3b8' }}>هذا ليس نقلًا حقيقيًا: يُستخدم فقط عندما يكون التسجيل الحالي خطأً أصلًا. لو الموظف انتقل فعلًا بين الشركتين، سجّل «نقل فعلي» من نتيجة الاستيراد.</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <label style={{ fontSize: 11, color: '#cbd5e1' }}>الشركة الصحيحة
+          <select value={target} onChange={(e) => setTarget(e.target.value)} style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0' }}>
+            <option value="">—</option>
+            {accounts.map((a) => <option key={a.account_code} value={canonicalOf(a)}>{a.account_name}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: '#cbd5e1' }}>يسري من
+          <input type="date" value={date} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)} style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0' }} />
+        </label>
+        <label style={{ fontSize: 11, color: '#cbd5e1' }}>اسم المُراجع
+          <input type="text" value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="من يؤكد التصحيح" style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0', width: 120 }} />
+        </label>
+      </div>
+      <label style={{ fontSize: 11, color: '#cbd5e1' }}>سبب التصحيح (مطلوب)
+        <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="مثال: أُسند لمودرن خطأً في دفعة الاستيراد الأولى" style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0', width: '100%', marginTop: 4 }} />
+      </label>
+      {err && <div style={{ fontSize: 11, color: '#fb7185' }}>{err}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button disabled={busy} onClick={submit} style={{ fontSize: 11, padding: '4px 12px', borderRadius: 6, background: 'rgba(251,191,36,0.2)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24', cursor: 'pointer', fontWeight: 800 }}>{busy ? 'جارٍ التأكيد...' : 'تأكيد التصحيح'}</button>
+        <button disabled={busy} onClick={() => setOpen(false)} style={{ fontSize: 11, padding: '4px 12px', borderRadius: 6, background: 'transparent', border: '1px solid rgba(148,163,184,0.3)', color: '#94a3b8', cursor: 'pointer' }}>إلغاء</button>
+      </div>
+    </div>
+  );
+}
+
 interface Discrepancy {
   id: string;
   discrepancy_type: string;
@@ -526,6 +620,11 @@ export default function EmployeeProfilePage({
                 </div>
               </SectionCard>
             )}
+
+            {/* Stamp correction — distinct from a real transfer */}
+            <div style={{ gridColumn: '1 / -1' }}>
+              <StampCorrectionCard employeeId={id} currentCompany={emp.company_account} onDone={load} />
+            </div>
 
             {/* Identity */}
             <SectionCard title="بيانات الهوية" icon={<User style={{ width: 14, height: 14 }} />} color="#6366f1">

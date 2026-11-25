@@ -82,7 +82,7 @@ try {
   await page.waitForSelector('text=/تم النقل|يسري في/', { timeout: 20000 });
   await page.screenshot({ path: '/downloads/ui-transfer-3-confirmed.png', fullPage: true });
   const mAfter = (await db.query(`SELECT company_account, account_employee_uid FROM employees_master WHERE id=$1`, [empId])).rows[0];
-  check('UI confirmation moved the master', mAfter.company_account === 'M.G' || mAfter.company_account === 'm.g', JSON.stringify(mAfter));
+  check('UI confirmation moved the master (canonical text)', mAfter.company_account === 'M.G', JSON.stringify(mAfter));
 
   // 3) Profile: history tab shows the transfer with effective date + provenance
   await page.goto(`http://localhost:3100/employee/${empId}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -92,6 +92,37 @@ try {
   const histText = await page.locator('main').innerText();
   check('history shows transfer label + effective date + confirmer', histText.includes('نقل فعلي') && histText.includes('فعّال من') && histText.includes('أكّده: حسن (اختبار)'), '');
   await page.screenshot({ path: '/downloads/ui-transfer-4-history.png', fullPage: true });
+
+  // 4) Profile overview offers the DISTINCT correction action (not a fake transfer)
+  await page.locator('button:has-text("نظرة عامة")').first().click({ timeout: 15000 }).catch(() => {});
+  await sleep(1200);
+  await page.locator('button:has-text("تصحيح إسناد الشركة")').first().click({ timeout: 15000 });
+  await page.waitForSelector('button:has-text("تأكيد التصحيح")', { timeout: 15000 });
+  await page.locator('select').first().selectOption({ label: /إيجيبشن|ايجيبشن|E\.G/i }).catch(async () => {
+    await page.locator('select').first().selectOption({ index: 1 });
+  });
+  await page.locator('input[placeholder="من يؤكد التصحيح"]').fill('حسن (اختبار)');
+  await page.locator('input[placeholder^="مثال:"]').fill('أُسند لمودرن خطأً في دفعة الاختبار');
+  await page.screenshot({ path: '/downloads/ui-transfer-5-correction-form.png', fullPage: true });
+  await page.locator('button:has-text("تأكيد التصحيح")').first().click();
+  // Success reloads the profile (the card remounts), so assert on state, not
+  // the transient success toast.
+  let mCorr = null;
+  for (let i = 0; i < 20; i++) {
+    mCorr = (await db.query(`SELECT company_account FROM employees_master WHERE id=$1`, [empId])).rows[0];
+    if (mCorr.company_account === 'E.G') break;
+    await sleep(500);
+  }
+  check('UI stamp correction returned master to E.G (canonical)', mCorr.company_account === 'E.G', JSON.stringify(mCorr));
+  await sleep(2000);
+  await page.screenshot({ path: '/downloads/ui-transfer-6-corrected.png', fullPage: true });
+
+  // 5) History now shows BOTH event kinds, distinctly labeled
+  await page.locator('button:has-text("سجل التغييرات")').first().click({ timeout: 15000 });
+  await sleep(1500);
+  const hist2 = await page.locator('main').innerText();
+  check('history distinguishes transfer from stamp correction', hist2.includes('نقل فعلي') && hist2.includes('تصحيح إسناد'), '');
+  await page.screenshot({ path: '/downloads/ui-transfer-7-history-both.png', fullPage: true });
 } catch (e) {
   failures++;
   await page.screenshot({ path: '/downloads/ui-transfer-FAIL.png', fullPage: true }).catch(() => {});

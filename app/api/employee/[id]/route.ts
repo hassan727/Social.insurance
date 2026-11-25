@@ -18,18 +18,10 @@ export async function GET(
       return NextResponse.json({ error: 'Employee ID is required' }, { status: 400 });
     }
 
-    // Recompute-on-read: apply any future-dated transfer/correction whose
-    // effective date has arrived, so the stored current-company snapshot
-    // matures without a scheduler. Failure never blocks the profile read;
-    // it is surfaced in meta so a stale snapshot is visible, not silent.
-    let transferRefresh: Record<string, unknown> | null = null;
-    try {
-      const { data, error } = await supabaseServer.rpc('apply_due_company_transfers', { p_employee_id: id });
-      if (error) throw new Error(error.message);
-      transferRefresh = (data as unknown as Record<string, unknown>) || null;
-    } catch (e) {
-      transferRefresh = { error: e instanceof Error ? e.message : 'refresh failed' };
-    }
+    // Note: reads never write here. The current-company snapshot moves only
+    // through POST /api/employee/[id]/transfer (explicit reviewed action);
+    // future-dated confirmations are rejected, so nothing needs to "mature"
+    // on read. apply_due_company_transfers remains an ops-only SQL helper.
 
     // Fetch in parallel for speed
     const [masterResult, historyResult, sheetDataResult, discrepanciesResult] = await Promise.all([
@@ -127,7 +119,6 @@ export async function GET(
         total_sheets_with_data: sourcesFound.length,
         total_history_entries: (historyResult.data || []).length,
         total_open_discrepancies: discrepanciesResult.length,
-        transfer_refresh: transferRefresh,
       },
     };
 

@@ -31,6 +31,22 @@ export async function isAuthenticated(): Promise<boolean> {
   return await verifySessionToken(token);
 }
 
+// Authenticated identity available from the session (the token currently
+// carries only a role claim — there is no per-user identity in this app's
+// login). Used to stamp reviewed actions with what the session proves,
+// instead of trusting a typed name as authorization.
+export async function getSessionRole(): Promise<string | null> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(COOKIE_NAME)?.value;
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, SECRET_KEY);
+    return typeof payload.role === 'string' ? payload.role : null;
+  } catch {
+    return null;
+  }
+}
+
 export function validateLoginCredentials(user: string, pass: string): boolean {
   const expectedUser = process.env.APP_ADMIN_USER || 'admin';
   const expectedPass = process.env.APP_ADMIN_PASSWORD || 'admin@insurance2026';

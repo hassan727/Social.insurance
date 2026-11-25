@@ -91,9 +91,7 @@ function CrossAccountConflictItem({ sheet, c }: { sheet: string; c: { national_i
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        setDone(data.scheduled
-          ? `سُجّل النقل — يسري في ${data.effective_date} ولن تتغير الشركة الحالية قبلها`
-          : `تم النقل — الشركة الحالية الآن: ${data.current_company}`);
+        setDone(`تم النقل — الشركة الحالية الآن: ${data.current_company} (يسري من ${data.effective_date})`);
         toast.success('تم تسجيل النقل');
       } else if (res.status === 401) {
         toast.error('يجب تسجيل الدخول أولًا لتأكيد النقل');
@@ -103,6 +101,8 @@ function CrossAccountConflictItem({ sheet, c }: { sheet: string; c: { national_i
         toast.error(`تعارض معرّف في الشركة المستهدفة (${data.candidate_uid || ''}) — يحتاج مراجعة يدوية`);
       } else if (data.error === 'self_transfer') {
         toast.error('الموظف مسجّل بالفعل في هذه الشركة');
+      } else if (data.error === 'future_effective_date') {
+        toast.error('النقل يُسجَّل بتاريخه الفعلي بعد حدوثه — لا تُقبل تواريخ مستقبلية');
       } else {
         toast.error(data.error || 'فشل تأكيد النقل');
       }
@@ -131,10 +131,10 @@ function CrossAccountConflictItem({ sheet, c }: { sheet: string; c: { national_i
         ) : null
       ) : (
         <div style={{ marginTop: 6, padding: '10px 12px', borderRadius: 10, background: 'rgba(52,211,153,0.06)', border: '1px solid rgba(52,211,153,0.25)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>نقل فعلي (الموظف انتقل فعلًا) — يُسجَّل بتاريخ سريانه ويحتفظ بتاريخه في الشركة السابقة</div>
+          <div style={{ fontSize: 11, color: '#94a3b8' }}>نقل فعلي (الموظف انتقل فعلًا) — يُسجَّل بتاريخه الفعلي ويحتفظ بتاريخه في الشركة السابقة. لو الشركة الحالية مسجّلة غلط أصلًا (مش نقل حقيقي)، استخدم «تصحيح إسناد الشركة» من صفحة الموظف.</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <label style={{ fontSize: 11, color: '#cbd5e1' }}>تاريخ السريان
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0' }} />
+            <label style={{ fontSize: 11, color: '#cbd5e1' }}>تاريخ النقل الفعلي
+              <input type="date" value={date} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setDate(e.target.value)} style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0' }} />
             </label>
             <label style={{ fontSize: 11, color: '#cbd5e1' }}>اسم المُراجع
               <input type="text" value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="من يؤكد النقل" style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0', width: 130 }} />

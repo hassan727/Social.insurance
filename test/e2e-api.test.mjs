@@ -1002,18 +1002,21 @@ const setCookie = (login.headers.getSetCookie ? login.headers.getSetCookie()[0] 
 const cookie = setCookie.split(';')[0];
 check('CAT10: admin login issues session cookie', login.status === 200 && cookie.startsWith('emp_auth_session='), 'status=' + login.status);
 
-const t1 = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, change_type: 'account_transfer', change_reason: 'نقل حقيقي', confirmed_by: 'e2e-tester', expected_current_company: 'm.g' }, cookie);
+const t1 = await transferCall(id71, { to_company_account: 'eg', effective_date: yday, change_type: 'account_transfer', change_reason: 'نقل حقيقي', confirmed_by: 'e2e-tester', expected_current_company: 'm.g' }, cookie);
 const t1j = await t1.json().catch(() => ({}));
 check('CAT10: confirmed transfer succeeds', t1.status === 200 && t1j.success === true && t1j.applied_now === true && t1j.current_company === 'E.G', JSON.stringify(t1j).slice(0, 200));
 const m71 = (await db.query(`SELECT company_account, account_id, account_employee_uid FROM employees_master WHERE id=$1`, [id71])).rows[0];
-check('CAT10: master switched with regenerated account/UID', m71.company_account === 'E.G' && m71.account_id === 1 && m71.account_employee_uid === 'EG-7101', JSON.stringify(m71));
+check('CAT10: master stores CANONICAL text (eg -> E.G) with regenerated account/UID', m71.company_account === 'E.G' && m71.account_id === 1 && m71.account_employee_uid === 'EG-7101', JSON.stringify(m71));
 const h71 = (await db.query(`SELECT change_type, effective_date::text AS eff_text, confirmed_by FROM employee_history WHERE employee_id=$1`, [id71])).rows;
-check('CAT10: history row with effective_date + provenance', h71.length === 1 && h71[0].change_type === 'account_transfer' && h71[0].eff_text === yday && h71[0].confirmed_by === 'e2e-tester', JSON.stringify(h71).slice(0, 200));
+check('CAT10: history row with effective_date + provenance (session role stamped)', h71.length === 1 && h71[0].change_type === 'account_transfer' && h71[0].eff_text === yday && String(h71[0].confirmed_by || '').startsWith('e2e-tester') && String(h71[0].confirmed_by || '').includes('admin'), JSON.stringify(h71).slice(0, 200));
+
+const tFuture = await transferCall(id71, { to_company_account: 'm.g', effective_date: '2099-01-01', confirmed_by: 'e2e-tester' }, cookie);
+check('CAT10: future effective date -> 400 future_effective_date', tFuture.status === 400 && (await tFuture.json()).error === 'future_effective_date', 'status=' + tFuture.status);
 
 const prof = await api(`/api/employee/${id71}`);
 const profj = await prof.json().catch(() => ({}));
-check('CAT10: profile reflects new current company + refresh metadata', profj.employee?.company_account === 'E.G' && profj.meta && 'transfer_refresh' in profj.meta, JSON.stringify({ c: profj.employee?.company_account, tr: profj.meta?.transfer_refresh }).slice(0, 200));
-check('CAT10: profile history exposes effective_date + confirmed_by', Array.isArray(profj.history) && profj.history.length === 1 && !!profj.history[0].effective_date && profj.history[0].confirmed_by === 'e2e-tester', JSON.stringify(profj.history || []).slice(0, 200));
+check('CAT10: profile reflects new current company (read-only GET, no refresh write)', profj.employee?.company_account === 'E.G', JSON.stringify({ c: profj.employee?.company_account }));
+check('CAT10: profile history exposes effective_date + confirmed_by', Array.isArray(profj.history) && profj.history.length === 1 && !!profj.history[0].effective_date && String(profj.history[0].confirmed_by || '').startsWith('e2e-tester'), JSON.stringify(profj.history || []).slice(0, 200));
 
 const tSelf = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, confirmed_by: 'e2e-tester' }, cookie);
 check('CAT10: self-transfer -> 400 self_transfer', tSelf.status === 400 && (await tSelf.json()).error === 'self_transfer', 'status=' + tSelf.status);
@@ -1029,8 +1032,20 @@ check('CAT10: collision left master untouched', m61after.company_account === 'E.
 const tCorr = await transferCall(id71, { to_company_account: 'm.g', change_type: 'stamp_correction', change_reason: 'تصحيح إسناد', notes: 'batch:test', confirmed_by: 'e2e-tester' }, cookie);
 const tCorrJ = await tCorr.json().catch(() => ({}));
 check('CAT10: stamp_correction succeeds without explicit date', tCorr.status === 200 && tCorrJ.success === true && tCorrJ.change_type === 'stamp_correction', 'status=' + tCorr.status + ' ' + JSON.stringify(tCorrJ).slice(0, 160));
+const m71b = (await db.query(`SELECT company_account FROM employees_master WHERE id=$1`, [id71])).rows[0];
+check('CAT10: correction stores canonical M.G (not client m.g)', m71b.company_account === 'M.G', JSON.stringify(m71b));
 const h71b = (await db.query(`SELECT DISTINCT change_type FROM employee_history WHERE employee_id=$1 ORDER BY 1`, [id71])).rows.map((r) => r.change_type);
 check('CAT10: transfer and correction are visibly distinct event types', h71b.includes('account_transfer') && h71b.includes('stamp_correction'), JSON.stringify(h71b));
+
+// Exact-text list inclusion (the load-bearing read): the transferred employee
+// is listed under the CANONICAL account text — never a variant.
+const listRes = await api('/api/employee?account=' + encodeURIComponent('M.G') + '&limit=500');
+const listJ = await listRes.json().catch(() => ({}));
+const listIds = (listJ.employees || listJ.data || []).map((e) => e.id);
+const listResLow = await api('/api/employee?account=' + encodeURIComponent('m.g') + '&limit=500');
+const listJLow = await listResLow.json().catch(() => ({}));
+const listIdsLow = (listJLow.employees || listJLow.data || []).map((e) => e.id);
+check('CAT10: exact-text employee list includes employee under canonical M.G, not variant m.g', listIds.includes(id71) && !listIdsLow.includes(id71), `M.G=${listIds.includes(id71)} m.g=${listIdsLow.includes(id71)}`);
 
 const cat10File = mkXlsx([{ 'الرقم القومي': '88880000000061', 'الاسم': 'موظف غاز كود مشترك', 'الكود': '8861' }]);
 const cat10imp = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([cat10File]), 'tc.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
