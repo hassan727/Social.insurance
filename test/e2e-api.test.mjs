@@ -86,6 +86,9 @@ check('search row: monthly claims withheld on conflict', s1.results?.[0]?.first_
 
 const d2 = await (await api('/api/lookup/details?national_id=22222222222222')).json();
 check('agreeing NID: scoped payroll returned', monthsWith(d2).length === 1 && monthsWith(d2)[0].payrollRecord.account_id === 2, 'months=' + monthsWith(d2).length + ' err=' + (d2.error || ''));
+check('conflict NID: latest_evidence withheld', d1.details?.latest_evidence?.withheld === true && d1.details.latest_evidence.payroll === null, JSON.stringify(d1.details?.latest_evidence || null));
+check('agreeing NID: latest_evidence = real period + account label', d2.details?.latest_evidence?.withheld === false && d2.details?.latest_evidence?.payroll?.year === 2026 && d2.details?.latest_evidence?.payroll?.month === 10 && d2.details?.latest_evidence?.payroll?.accountCode === 'MG', JSON.stringify(d2.details?.latest_evidence || null));
+
 
 const d3 = await (await api('/api/lookup/details?national_id=33333333333333')).json();
 check('payroll-only NID: single-account rows scoped+returned', monthsWith(d3).length === 1 && monthsWith(d3)[0].payrollRecord.account_id === 2, 'months=' + monthsWith(d3).length + ' err=' + (d3.error || ''));
@@ -129,6 +132,21 @@ const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', he
 check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 3 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count);
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 1 && qEg.data[0].national_id === '11111111111111', 'count=' + qEg.total_count);
+
+// Convergence clearing: correct the master record upstream (both fields a
+// real correction would touch) -> conflict must clear on next read, monthly
+// evidence returns scoped to the corrected account. No stored conflict state.
+await db.query(`UPDATE employees_master SET company_account='M.G', account_id=2 WHERE national_id='11111111111111'`);
+// ...and a corrected reimport lands: fresh November payroll stamped MG
+// (October MG rows were replaced by the overwrite test above, so November
+// is clean ground for this assertion).
+const mgNov = (await db.query(`INSERT INTO import_logs (source_type, file_name, period_year, period_month, account_id) VALUES ('monthly_payroll', 'MODERN NOV corrected.xlsx', 2026, 11, 2) RETURNING id`)).rows[0].id;
+await db.query(`INSERT INTO monthly_payroll_records (import_id, period_year, period_month, national_id, employee_code, employee_name, account_id) VALUES ($1, 2026, 11, '11111111111111', '1001', 'موظف تعارض', 2)`, [mgNov]);
+const d1b = await (await api('/api/lookup/details?national_id=11111111111111')).json();
+check('after upstream correction: conflict cleared, account resolved MG', d1b.details?.accountDisplay?.status === 'resolved' && d1b.details?.accountDisplay?.code === 'MG', JSON.stringify(d1b.details?.accountDisplay || null));
+check('after upstream correction: monthly returned scoped to MG only', monthsWith(d1b).length === 1 && monthsWith(d1b)[0].payrollRecord.account_id === 2, 'months=' + monthsWith(d1b).length);
+check('after upstream correction: latest_evidence shown', d1b.details?.latest_evidence?.payroll?.month === 11 && d1b.details?.latest_evidence?.payroll?.year === 2026 && d1b.details?.latest_evidence?.payroll?.accountCode === 'MG', JSON.stringify(d1b.details?.latest_evidence || null));
+check('after upstream correction: S6 computable again (not insufficient)', d1b.details?.s6_calculation?.status !== 'insufficient_data', d1b.details?.s6_calculation?.status || 'NONE');
 
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();

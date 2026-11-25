@@ -1926,6 +1926,30 @@ export default function LookupPage() {
                             tooltip: details.s6_calculation?.formula || details.s6_calculation?.message,
                             copy: !!details.s6_calculation?.calculatedDate
                           },
+                          {
+                            icon: '🧾',
+                            label: 'آخر دليل مرتبات (شهر فعلي)',
+                            value: details.latest_evidence?.withheld
+                              ? 'محجوب — حساب غير محسوم'
+                              : details.latest_evidence?.payroll
+                                ? `${details.latest_evidence.payroll.month}/${details.latest_evidence.payroll.year} (${details.latest_evidence.payroll.accountCode || '—'})`
+                                : null,
+                            mono: true,
+                            colorFn: () => details.latest_evidence?.withheld ? '#fbbf24' : '#e2e8f0',
+                            tooltip: 'الشهر الفعلي للدليل، وليس تاريخ رفع الملف'
+                          },
+                          {
+                            icon: '🧾',
+                            label: 'آخر دليل تأمينات (شهر فعلي)',
+                            value: details.latest_evidence?.withheld
+                              ? 'محجوب — حساب غير محسوم'
+                              : details.latest_evidence?.insurance
+                                ? `${details.latest_evidence.insurance.month}/${details.latest_evidence.insurance.year} (${details.latest_evidence.insurance.accountCode || '—'})`
+                                : null,
+                            mono: true,
+                            colorFn: () => details.latest_evidence?.withheld ? '#fbbf24' : '#e2e8f0',
+                            tooltip: 'الشهر الفعلي للدليل، وليس تاريخ رفع الملف'
+                          },
                         ].filter(f => f.value).map((f, i) => (
                           <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }} title={f.tooltip}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>

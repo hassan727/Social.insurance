@@ -946,6 +946,11 @@ export interface EmployeeDetailsResult {
     masterCode: string | null;
     waradCode: string | null;
   };
+  latest_evidence?: {
+    withheld: boolean;
+    payroll: { year: number; month: number; accountCode: string | null } | null;
+    insurance: { year: number; month: number; accountCode: string | null } | null;
+  };
   incomingInsurance: {
     found: boolean;
     record: Record<string, unknown> | null;
@@ -1650,6 +1655,25 @@ export async function getEmployeeFullDetails(params: {
       ? { status: 'resolved' as const, code: codeOfId(resolvedAccountId), masterCode: codeOfId(masterAccountId), waradCode: codeOfId(waradAccountId) }
       : { status: 'unknown' as const, code: null as string | null, masterCode: codeOfId(masterAccountId), waradCode: codeOfId(waradAccountId) };
 
+  // Latest EVIDENCED monthly facts. The payroll/insurance period is a real
+  // effective date (the month the money/coverage was for) — shown with its
+  // account label. Import/upload dates are never presented as freshness.
+  // Withheld entirely while the account is unresolved: an un-attributable
+  // month is not evidence about THIS employee's company.
+  const lastPayEv = payrollRecords.length > 0 ? payrollRecords[payrollRecords.length - 1] : null;
+  const lastInsEv = monthlyInsRecords.length > 0 ? monthlyInsRecords[monthlyInsRecords.length - 1] : null;
+  const latest_evidence = (withholdMonthly || accountContradiction)
+    ? { withheld: true as const, payroll: null, insurance: null }
+    : {
+        withheld: false as const,
+        payroll: lastPayEv
+          ? { year: lastPayEv.period_year as number, month: lastPayEv.period_month as number, accountCode: codeOfId(resolvedAccountId) }
+          : null,
+        insurance: lastInsEv
+          ? { year: lastInsEv.period_year as number, month: lastInsEv.period_month as number, accountCode: codeOfId(resolvedAccountId) }
+          : null,
+      };
+
   // Source-separated status conflicts: facts from different sources are
   // surfaced side by side, never reconciled by an inferred precedence, and
   // missing payroll is never treated as proof of termination.
@@ -1715,6 +1739,7 @@ export async function getEmployeeFullDetails(params: {
     },
     conflicts,
     accountDisplay,
+    latest_evidence,
     incomingInsurance: {
       found: Boolean(incomingRecord || masterEmp || socialInsData),
       record: {
