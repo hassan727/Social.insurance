@@ -54,8 +54,103 @@ interface ImportResult {
     skipped_rows: number;
     errors: string[];
     warnings?: string[];
-    cross_account_conflicts?: Array<{ national_id?: string; employee_name?: string; master_account?: string; row_account?: string }>;
+    cross_account_conflicts?: Array<{ row_number?: number; national_id?: string | null; employee_name?: string | null; existing_account?: string; import_account?: string; employee_id?: string | null }>;
   }>;
+}
+
+// Explicit reviewed transfer: an import-detected cross-account match never
+// moves anyone; this inline form is the one-confirmation path that records an
+// actual transfer (with its real effective date) through the reviewed
+// transfer endpoint. Correction of a wrong stamp is a separate action on the
+// employee profile, never implied here.
+function CrossAccountConflictItem({ sheet, c }: { sheet: string; c: { national_id?: string | null; employee_name?: string | null; existing_account?: string; import_account?: string; employee_id?: string | null } }) {
+  const [open, setOpen] = useState(false);
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reviewer, setReviewer] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
+
+  const confirm = async () => {
+    if (!c.employee_id || !c.import_account) return;
+    if (!reviewer.trim()) { toast.error('اكتب اسم المُراجع الذي يؤكد النقل'); return; }
+    if (!date) { toast.error('حدد تاريخ سريان النقل الفعلي'); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/employee/${c.employee_id}/transfer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to_company_account: c.import_account,
+          effective_date: date,
+          change_type: 'account_transfer',
+          change_reason: reason.trim() || `تأكيد نقل بعد تعارض حسابات في استيراد ورقة ${sheet}`,
+          confirmed_by: reviewer.trim(),
+          expected_current_company: c.existing_account ?? null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setDone(data.scheduled
+          ? `سُجّل النقل — يسري في ${data.effective_date} ولن تتغير الشركة الحالية قبلها`
+          : `تم النقل — الشركة الحالية الآن: ${data.current_company}`);
+        toast.success('تم تسجيل النقل');
+      } else if (res.status === 401) {
+        toast.error('يجب تسجيل الدخول أولًا لتأكيد النقل');
+      } else if (data.error === 'concurrent_update') {
+        toast.error(`الشركة الحالية تغيّرت منذ العرض (الآن: ${data.actual_current_company || 'غير معروف'}) — حدّث الصفحة وأعد المحاولة`);
+      } else if (data.error === 'uid_collision') {
+        toast.error(`تعارض معرّف في الشركة المستهدفة (${data.candidate_uid || ''}) — يحتاج مراجعة يدوية`);
+      } else if (data.error === 'self_transfer') {
+        toast.error('الموظف مسجّل بالفعل في هذه الشركة');
+      } else {
+        toast.error(data.error || 'فشل تأكيد النقل');
+      }
+    } catch {
+      toast.error('فشل الاتصال بالخادم');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ margin: '0 0 4px' }}>
+      <p style={{ fontSize: 12, color: '#fecdd3', margin: 0, lineHeight: 1.6 }}>
+        • [{sheet}] تعارض حسابات: {c.employee_name || c.national_id || 'صف'} — السجل الحالي {c.existing_account || ''} والصف {c.import_account || ''}؛ لم يُنقل تلقائيًا
+      </p>
+      {done ? (
+        <p style={{ fontSize: 12, color: '#34d399', margin: '4px 0 0', lineHeight: 1.6 }}>{done}</p>
+      ) : !open ? (
+        c.employee_id && c.import_account ? (
+          <button
+            onClick={() => setOpen(true)}
+            style={{ marginTop: 4, fontSize: 11, padding: '3px 10px', borderRadius: 6, background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.4)', color: '#34d399', cursor: 'pointer', fontWeight: 700 }}
+          >
+            تسجيل نقل فعلي إلى {c.import_account}
+          </button>
+        ) : null
+      ) : (
+        <div style={{ marginTop: 6, padding: '10px 12px', borderRadius: 10, background: 'rgba(52,211,153,0.06)', border: '1px solid rgba(52,211,153,0.25)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 11, color: '#94a3b8' }}>نقل فعلي (الموظف انتقل فعلًا) — يُسجَّل بتاريخ سريانه ويحتفظ بتاريخه في الشركة السابقة</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={{ fontSize: 11, color: '#cbd5e1' }}>تاريخ السريان
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0' }} />
+            </label>
+            <label style={{ fontSize: 11, color: '#cbd5e1' }}>اسم المُراجع
+              <input type="text" value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="من يؤكد النقل" style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0', width: 130 }} />
+            </label>
+            <label style={{ fontSize: 11, color: '#cbd5e1' }}>السبب (اختياري)
+              <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} style={{ marginRight: 6, fontSize: 12, padding: '3px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', color: '#e2e8f0', width: 170 }} />
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button disabled={busy} onClick={confirm} style={{ fontSize: 11, padding: '4px 12px', borderRadius: 6, background: 'rgba(52,211,153,0.2)', border: '1px solid rgba(52,211,153,0.5)', color: '#34d399', cursor: 'pointer', fontWeight: 800 }}>{busy ? 'جارٍ التأكيد...' : 'تأكيد النقل'}</button>
+            <button disabled={busy} onClick={() => setOpen(false)} style={{ fontSize: 11, padding: '4px 12px', borderRadius: 6, background: 'transparent', border: '1px solid rgba(148,163,184,0.3)', color: '#94a3b8', cursor: 'pointer' }}>إلغاء</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function SmartImportPage() {
@@ -682,7 +777,7 @@ export default function SmartImportPage() {
                     <p key={`e${i}`} style={{ fontSize: 12, color: '#fecdd3', margin: '0 0 4px', lineHeight: 1.6 }}>• [{x.sheet}] {x.e}</p>
                   ))}
                   {xconf.map((x, i) => (
-                    <p key={`c${i}`} style={{ fontSize: 12, color: '#fecdd3', margin: '0 0 4px', lineHeight: 1.6 }}>• [{x.sheet}] تعارض حسابات: {x.c.employee_name || x.c.national_id || 'صف'} — السجل الحالي {x.c.master_account || ''} والصف {x.c.row_account || ''}؛ لم يُنقل تلقائيًا</p>
+                    <CrossAccountConflictItem key={`c${i}`} sheet={x.sheet} c={x.c} />
                   ))}
                 </div>
               );

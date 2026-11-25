@@ -7,7 +7,7 @@ import { readFileSync, readdirSync } from 'fs';
 
 const MIG_DIR = new URL('../supabase/migrations/', import.meta.url).pathname;
 const all = readdirSync(MIG_DIR).filter((f) => f.endsWith('.sql')).sort();
-const NEW = ['20261125000001_account_period_isolation.sql', '20261125000002_blank_cell_no_erase_consolidation.sql', '20261125000003_fix_sheet_data_update_trigger.sql', '20261125000004_source_removal_recompute.sql', '20261125000005_account_scoped_sheet_catalog.sql'];
+const NEW = ['20261125000001_account_period_isolation.sql', '20261125000002_blank_cell_no_erase_consolidation.sql', '20261125000003_fix_sheet_data_update_trigger.sql', '20261125000004_source_removal_recompute.sql', '20261125000005_account_scoped_sheet_catalog.sql', '20261125000006_transfer_effective_dating.sql'];
 const baseline = all.filter((f) => !NEW.includes(f));
 const forward = all.filter((f) => NEW.includes(f));
 
@@ -95,8 +95,20 @@ cd = after.consolidated_data || {};
 check('correction: agreement restores scalar value', cd['الوظيفه'] === 'محاسب' && after.current_job_title === 'محاسب', JSON.stringify(cd['الوظيفه']));
 check('correction: conflict cleared once sources agree', !(cd.field_conflicts && cd.field_conflicts['الوظيفه']), JSON.stringify(cd.field_conflicts || null).slice(0, 200));
 
+// Phase 8: transfer effective-dating on the UPGRADED (populated) baseline —
+// the new columns/functions must work on pre-existing rows, not only on a
+// fresh install.
+const tr = (await db.query(`SELECT public.confirm_account_transfer($1, 'E.G', CURRENT_DATE - 1, 'account_transfer', 'ترقية', NULL, 'tester', 'm.g', NULL) r`, [empId])).rows[0].r;
+check('upgrade: transfer function works on pre-existing master row', tr.success === true && tr.applied_now === true && tr.current_company === 'E.G', JSON.stringify(tr));
+const upgMaster = (await db.query(`SELECT company_account FROM employees_master WHERE id=$1`, [empId])).rows[0];
+check('upgrade: populated master switched with effective date', upgMaster.company_account === 'E.G', JSON.stringify(upgMaster));
+const upgHist = (await db.query(`SELECT change_type, effective_date, confirmed_by FROM employee_history WHERE employee_id=$1`, [empId])).rows;
+check('upgrade: history row carries effective_date + provenance on upgraded schema', upgHist.length === 1 && upgHist[0].change_type === 'account_transfer' && !!upgHist[0].effective_date && upgHist[0].confirmed_by === 'tester', JSON.stringify(upgHist).slice(0, 200));
+
 // Rollback plan: restoring the baseline function body is the inverse
 // CREATE OR REPLACE (documented in the migration header; not executed here).
+// NOTE: dropping effective_date/confirmed_by AFTER events exist is a
+// data-LOSING rollback (migration header states this honestly).
 console.log(`${pass} passed, ${fail} failed`);
 await db.end(); await ep.stop();
 process.exit(fail ? 1 : 0);

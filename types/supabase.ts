@@ -180,6 +180,8 @@ export type Database = {
           import_id: string | null
           change_reason: string | null
           notes: string | null
+          effective_date: string | null
+          confirmed_by: string | null
           created_at: string
         }
         Insert: {
@@ -196,6 +198,8 @@ export type Database = {
           import_id?: string | null
           change_reason?: string | null
           notes?: string | null
+          effective_date?: string | null
+          confirmed_by?: string | null
           created_at?: string
         }
         Update: {
@@ -212,6 +216,8 @@ export type Database = {
           import_id?: string | null
           change_reason?: string | null
           notes?: string | null
+          effective_date?: string | null
+          confirmed_by?: string | null
           created_at?: string
         }
         Relationships: [
@@ -1141,6 +1147,42 @@ export type Database = {
           reviewed_by_param?: string
         }
         Returns: boolean
+      }
+      confirm_account_transfer: {
+        Args: {
+          p_employee_id: string
+          p_to_company_account: string
+          p_effective_date?: string | null
+          p_change_type?: string
+          p_change_reason?: string | null
+          p_notes?: string | null
+          p_confirmed_by?: string | null
+          p_expected_current_company?: string | null
+          p_import_id?: string | null
+        }
+        Returns: Json
+      }
+      apply_due_company_transfers: {
+        Args: {
+          p_employee_id: string
+        }
+        Returns: Json
+      }
+      resolve_current_company: {
+        Args: {
+          p_employee_id: string
+          p_as_of?: string
+        }
+        Returns: string
+      }
+      compute_account_employee_uid: {
+        Args: {
+          p_company_account: string
+          p_employee_code: string | null
+          p_national_id: string | null
+          p_id: string
+        }
+        Returns: string
       }
     }
     Enums: {

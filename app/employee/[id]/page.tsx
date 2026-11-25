@@ -51,13 +51,25 @@ interface SheetEntry {
 interface HistoryEntry {
   id: string;
   change_type: string;
+  from_company_account: string | null;
+  to_company_account: string | null;
   changed_fields: string[] | null;
   old_values: Record<string, unknown> | null;
   new_values: Record<string, unknown> | null;
   change_reason: string | null;
   notes: string | null;
+  effective_date: string | null;
+  confirmed_by: string | null;
   created_at: string;
 }
+
+// A real transfer and a stamp correction share the history table but must
+// never READ as the same event: one is a real-world move, the other fixes an
+// earlier wrong recording.
+const CHANGE_TYPE_LABELS: Record<string, string> = {
+  account_transfer: 'نقل فعلي',
+  stamp_correction: 'تصحيح إسناد',
+};
 
 interface Discrepancy {
   id: string;
@@ -600,12 +612,23 @@ export default function EmployeeProfilePage({
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#818cf8' }}>{entry.change_type}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: entry.change_type === 'stamp_correction' ? '#fbbf24' : '#818cf8' }}>
+                      {CHANGE_TYPE_LABELS[entry.change_type] || entry.change_type}
+                    </span>
+                    {(entry.from_company_account || entry.to_company_account) && (
+                      <span style={{ fontSize: 11, color: '#cbd5e1' }}>{entry.from_company_account || '؟'} ← {entry.to_company_account || '؟'}</span>
+                    )}
+                    {entry.effective_date && (
+                      <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: entry.effective_date > new Date().toISOString().slice(0, 10) ? 'rgba(251,191,36,0.15)' : 'rgba(52,211,153,0.12)', color: entry.effective_date > new Date().toISOString().slice(0, 10) ? '#fbbf24' : '#34d399' }}>
+                        {entry.effective_date > new Date().toISOString().slice(0, 10) ? 'يسري في' : 'فعّال من'} {entry.effective_date}
+                      </span>
+                    )}
                     {(entry.changed_fields || []).map((f) => (
                       <span key={f} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(99,102,241,0.15)', color: '#818cf8' }}>{f}</span>
                     ))}
                     <span style={{ marginRight: 'auto', fontSize: 10, color: '#334155' }}>{new Date(entry.created_at).toLocaleString('ar-EG')}</span>
                   </div>
+                  {entry.confirmed_by && <div style={{ fontSize: 11, color: '#94a3b8' }}>أكّده: {entry.confirmed_by}</div>}
                   {entry.notes && <div style={{ fontSize: 12, color: '#64748b' }}>{entry.notes}</div>}
                   {entry.change_reason && <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>{entry.change_reason}</div>}
                 </div>

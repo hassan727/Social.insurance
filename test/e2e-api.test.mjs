@@ -985,6 +985,59 @@ const c9cj = await c9c.json().catch(() => ({}));
 const s99 = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_national_id='12345'`)).rows[0].c;
 check('CAT9: invalid NID -> review warning, no write anywhere', JSON.stringify(c9cj.sideEffects || []).includes('مراجعة يدوية') && s99 === 0, JSON.stringify(c9cj.sideEffects || []).slice(0, 200) + ' rows=' + s99);
 
+// CAT10: explicit reviewed transfer / stamp-correction over HTTP.
+// Authorization guard (login cookie), atomic master+history, UID collision,
+// concurrency guard, self-transfer, provenance, profile refresh metadata.
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('m.g', 2, '99990000000071', '7101', 'موظف نقل اختباري', 'Active')`);
+const id71 = (await db.query(`SELECT id FROM employees_master WHERE national_id='99990000000071'`)).rows[0].id;
+const id61 = (await db.query(`SELECT id FROM employees_master WHERE national_id='88880000000061'`)).rows[0].id;
+const yday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+const transferCall = (empId, body, cookie) => api(`/api/employee/${empId}/transfer`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+
+const tNo = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, confirmed_by: 'e2e-tester' });
+check('CAT10: transfer without login -> 401', tNo.status === 401, 'status=' + tNo.status);
+
+const login = await api('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin@insurance2026' }) });
+const setCookie = (login.headers.getSetCookie ? login.headers.getSetCookie()[0] : login.headers.get('set-cookie')) || '';
+const cookie = setCookie.split(';')[0];
+check('CAT10: admin login issues session cookie', login.status === 200 && cookie.startsWith('emp_auth_session='), 'status=' + login.status);
+
+const t1 = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, change_type: 'account_transfer', change_reason: 'نقل حقيقي', confirmed_by: 'e2e-tester', expected_current_company: 'm.g' }, cookie);
+const t1j = await t1.json().catch(() => ({}));
+check('CAT10: confirmed transfer succeeds', t1.status === 200 && t1j.success === true && t1j.applied_now === true && t1j.current_company === 'E.G', JSON.stringify(t1j).slice(0, 200));
+const m71 = (await db.query(`SELECT company_account, account_id, account_employee_uid FROM employees_master WHERE id=$1`, [id71])).rows[0];
+check('CAT10: master switched with regenerated account/UID', m71.company_account === 'E.G' && m71.account_id === 1 && m71.account_employee_uid === 'EG-7101', JSON.stringify(m71));
+const h71 = (await db.query(`SELECT change_type, effective_date::text AS eff_text, confirmed_by FROM employee_history WHERE employee_id=$1`, [id71])).rows;
+check('CAT10: history row with effective_date + provenance', h71.length === 1 && h71[0].change_type === 'account_transfer' && h71[0].eff_text === yday && h71[0].confirmed_by === 'e2e-tester', JSON.stringify(h71).slice(0, 200));
+
+const prof = await api(`/api/employee/${id71}`);
+const profj = await prof.json().catch(() => ({}));
+check('CAT10: profile reflects new current company + refresh metadata', profj.employee?.company_account === 'E.G' && profj.meta && 'transfer_refresh' in profj.meta, JSON.stringify({ c: profj.employee?.company_account, tr: profj.meta?.transfer_refresh }).slice(0, 200));
+check('CAT10: profile history exposes effective_date + confirmed_by', Array.isArray(profj.history) && profj.history.length === 1 && !!profj.history[0].effective_date && profj.history[0].confirmed_by === 'e2e-tester', JSON.stringify(profj.history || []).slice(0, 200));
+
+const tSelf = await transferCall(id71, { to_company_account: 'E.G', effective_date: yday, confirmed_by: 'e2e-tester' }, cookie);
+check('CAT10: self-transfer -> 400 self_transfer', tSelf.status === 400 && (await tSelf.json()).error === 'self_transfer', 'status=' + tSelf.status);
+const tStale = await transferCall(id71, { to_company_account: 'm.g', effective_date: yday, confirmed_by: 'e2e-tester', expected_current_company: 'm.g' }, cookie);
+const tStaleJ = await tStale.json().catch(() => ({}));
+check('CAT10: stale-view confirmation -> 409 concurrent_update', tStale.status === 409 && tStaleJ.error === 'concurrent_update' && tStaleJ.actual_current_company === 'E.G', JSON.stringify(tStaleJ));
+const tColl = await transferCall(id61, { to_company_account: 'm.g', effective_date: yday, confirmed_by: 'e2e-tester' }, cookie);
+const tCollJ = await tColl.json().catch(() => ({}));
+check('CAT10: UID collision -> 409 with candidate named', tColl.status === 409 && tCollJ.error === 'uid_collision' && tCollJ.candidate_uid === 'MG-8861', JSON.stringify(tCollJ));
+const m61after = (await db.query(`SELECT company_account FROM employees_master WHERE id=$1`, [id61])).rows[0];
+check('CAT10: collision left master untouched', m61after.company_account === 'E.G', JSON.stringify(m61after));
+
+const tCorr = await transferCall(id71, { to_company_account: 'm.g', change_type: 'stamp_correction', change_reason: 'تصحيح إسناد', notes: 'batch:test', confirmed_by: 'e2e-tester' }, cookie);
+const tCorrJ = await tCorr.json().catch(() => ({}));
+check('CAT10: stamp_correction succeeds without explicit date', tCorr.status === 200 && tCorrJ.success === true && tCorrJ.change_type === 'stamp_correction', 'status=' + tCorr.status + ' ' + JSON.stringify(tCorrJ).slice(0, 160));
+const h71b = (await db.query(`SELECT DISTINCT change_type FROM employee_history WHERE employee_id=$1 ORDER BY 1`, [id71])).rows.map((r) => r.change_type);
+check('CAT10: transfer and correction are visibly distinct event types', h71b.includes('account_transfer') && h71b.includes('stamp_correction'), JSON.stringify(h71b));
+
+const cat10File = mkXlsx([{ 'الرقم القومي': '88880000000061', 'الاسم': 'موظف غاز كود مشترك', 'الكود': '8861' }]);
+const cat10imp = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([cat10File]), 'tc.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+const cat10sheet = (await cat10imp.json().catch(() => ({})))?.detailed_results?.Sheet1 || {};
+const cat10item = (cat10sheet.cross_account_conflicts || [])[0] || {};
+check('CAT10: import conflict carries employee_id for one-click reviewed transfer', cat10item.employee_id === id61 && cat10item.existing_account === 'E.G' && (cat10item.import_account || '').toLowerCase() === 'm.g', JSON.stringify(cat10item));
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);

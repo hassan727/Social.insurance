@@ -89,6 +89,9 @@ export interface ImportResult {
     employee_name: string | null;
     existing_account: string;
     import_account: string;
+    // Master row id of the matched employee — lets the review surface offer a
+    // one-click explicit transfer confirmation without re-resolving identity.
+    employee_id?: string | null;
   }>;
 }
 
@@ -1166,6 +1169,7 @@ export async function importSheet(
               // Resolved ROW account (explicit cell wins over the operator
               // selection), not the workbook/operator account.
               import_account: effectiveAccText,
+              employee_id: matchedEmp.id,
             });
             continue;
           }
