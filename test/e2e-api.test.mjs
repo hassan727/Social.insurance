@@ -176,12 +176,31 @@ const newEmpSheet = newEmpj?.detailed_results?.Sheet1 || {};
 check('new employee: inserted under selected account', newEmpSheet.new_employees === 1, JSON.stringify({ n: newEmpSheet.new_employees }));
 const newEmpRow = (await db.query(`SELECT account_id FROM employees_master WHERE national_id='88888888888888'`)).rows[0];
 check('new employee: stamped to import account', newEmpRow && newEmpRow.account_id === 2, JSON.stringify(newEmpRow || null));
+// Attribution edge cases: blank TEXT with a resolved account_id is KNOWN
+// (blocked cross-account); only a truly unresolved master (NULL account_id +
+// blank text) may be claimed by a grounded import.
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('', 1, '99999999999991', '9101', 'موظف نص فاضي', 'Active')`);
+const blankTxtFile = mkXlsx([{ 'الرقم القومي': '99999999999991', 'الاسم': 'موظف نص فاضي', 'الكود': '9101' }]);
+const blankTxt = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([blankTxtFile]), 'tx4.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+const blankTxtj = await blankTxt.json().catch(() => ({}));
+const blankTxtSheet = blankTxtj?.detailed_results?.Sheet1 || {};
+check('blank-text but account_id=1: blocked as KNOWN EG', Array.isArray(blankTxtSheet.cross_account_conflicts) && blankTxtSheet.cross_account_conflicts.length === 1 && blankTxtSheet.updated_employees === 0, JSON.stringify({ c: (blankTxtSheet.cross_account_conflicts || []).length, u: blankTxtSheet.updated_employees }));
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('', NULL, '99999999999992', '9102', 'موظف بلا حساب', 'Active')`);
+const nullAccFile = mkXlsx([{ 'الرقم القومي': '99999999999992', 'الاسم': 'موظف بلا حساب', 'الكود': '9102' }]);
+const nullAcc = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([nullAccFile]), 'tx5.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+const nullAccj = await nullAcc.json().catch(() => ({}));
+const nullAccSheet = nullAccj?.detailed_results?.Sheet1 || {};
+const nullAccRow = (await db.query(`SELECT account_id FROM employees_master WHERE national_id='99999999999992'`)).rows[0];
+check('truly unresolved master (NULL account): claimable by grounded import', nullAccSheet.updated_employees === 1 && !nullAccSheet.cross_account_conflicts && nullAccRow && nullAccRow.account_id === 2, JSON.stringify({ u: nullAccSheet.updated_employees, acc: nullAccRow || null }));
+// snapshot-prune safety: a sheet whose import has blocked cross-account rows
+// must NOT be treated as a verified full snapshot (no prune of old rows).
+check('blocked import warning marks partial sync (no full-snapshot claim)', (xaccSheet.warnings || []).some((w) => String(w).includes('لم تُعتبر لقطة كاملة')), JSON.stringify(xaccSheet.warnings || []).slice(0, 200));
 // cleanup: every row this block created
-await db.query(`DELETE FROM sheet_data WHERE employee_id IN (SELECT id FROM employees_master WHERE national_id IN ('66666666666666','88888888888888'))`);
+await db.query(`DELETE FROM sheet_data WHERE employee_id IN (SELECT id FROM employees_master WHERE national_id IN ('66666666666666','88888888888888','99999999999991','99999999999992'))`);
 await db.query(`DELETE FROM sheet_data WHERE sheet_id IN (SELECT id FROM dynamic_sheets WHERE sheet_name='Sheet1' AND account_id=1)`);
 await db.query(`DELETE FROM dynamic_sheets WHERE sheet_name='Sheet1' AND account_id=1`);
-await db.query(`DELETE FROM employees_master WHERE national_id IN ('66666666666666','88888888888888')`);
-await db.query(`DELETE FROM import_logs WHERE file_name IN ('tx.xlsx','tx2.xlsx','tx3.xlsx')`);
+await db.query(`DELETE FROM employees_master WHERE national_id IN ('66666666666666','88888888888888','99999999999991','99999999999992')`);
+await db.query(`DELETE FROM import_logs WHERE file_name IN ('tx.xlsx','tx2.xlsx','tx3.xlsx','tx4.xlsx','tx5.xlsx')`);
 
 // classic route: EXPLICIT zeros are meaningful and must survive the ledger path
 const zeroPay = mkXlsx([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'عدد ايام الحضور': 0, 'الراتب': 0 }]);

@@ -283,6 +283,12 @@ function formatCellValue(value: unknown, type: string, key?: string): unknown {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * FROZEN — NO LIVE CALLERS (call-graph proven 2026-11-25: not imported by any
+ * route, page, component, or lib module; the live batch path matches inline).
+ * This matcher is GLOBAL by identity and predates the cross-account guard;
+ * if it is ever wired to a route it must first enforce the same fail-closed
+ * cross-account rule as importSheet. Do not reuse as-is.
+ *
  * Find matching employee in employees_master table
  */
 export async function findMatchingEmployee(
@@ -400,6 +406,11 @@ export async function findMatchingEmployee(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * FROZEN — NO LIVE CALLERS (call-graph proven 2026-11-25). Contains an
+ * UNGUARDED cross-account transfer (rewrites company_account on any global
+ * match) predating the fail-closed guard in importSheet. Do not wire to any
+ * route without adding the same cross-account guard. Kept for reference only.
+ *
  * Create or update employee in employees_master
  */
 export async function upsertEmployee(
@@ -1349,7 +1360,7 @@ export async function importSheet(
       // unresolved (accountId null) the flip is skipped rather than guessed.
       // FAIL CLOSED: never prune on a partial/failed/empty sync. A prune is
       // only a verified full snapshot of this (worksheet, account).
-      if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping) {
+      if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping && crossAccountConflicts.length === 0) {
         const importedEmpIds = new Set(sheetDataToInsert.map((r) => r.employee_id).filter(Boolean));
         const { data: accEmps, error: accErr } = await supabaseServer
           .from('employees_master')
@@ -1377,6 +1388,10 @@ export async function importSheet(
       } else if (currentSheetId && processingFailures === 0 && nonEmptyRows > 0 && incompleteMapping) {
         // (warning already pushed above — keep this branch so no generic
         // message contradicts it)
+      } else if (currentSheetId && crossAccountConflicts.length > 0) {
+        // Blocked cross-account rows mean this import is NOT a verified full
+        // snapshot of the sheet: never prune old rows on a partial sync.
+        warnings.push(`${crossAccountConflicts.length} صف/صفوف محجوبة لتعارض الحساب — الاستيراد جزئي لهذه الورقة، ولم تُعتبر لقطة كاملة (لم تُحذف أي صفوف قديمة).`);
       } else if (currentSheetId && processingFailures > 0) {
         warnings.push(`المزامنة لم تكتمل: ${processingFailures} صف/عملية فشلت — تم الاحتفاظ بلقطة الورقة السابقة دون حذف أي صفوف قديمة، وراجع الأخطاء أعلاه.`);
       } else if (currentSheetId && nonEmptyRows === 0) {
