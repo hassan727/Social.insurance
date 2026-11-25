@@ -789,6 +789,38 @@ check('prune: entirely-absent company contribution flipped on clean re-upload', 
 const dStill = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [mgCatId, dEmp])).rows[0];
 check('prune: other-workbook stream contribution still retained', dStill?.is_latest === true, JSON.stringify(dStill));
 
+// CAT6: uid-collision handling — a new row whose (account, employee_code)
+// uid belongs to a DIFFERENT national ID is an explicit review conflict
+// (never NID-fallback, never reassignment), valid rows in the same file are
+// NOT lost, and counters reflect committed writes only (disjoint accounting).
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('E.G', 1, '77770000000031', '7731', 'موظف أصلي', 'Active')`);
+const col1 = await postSmartAcct(mkXlsxMulti({ CollideSheet: [
+  { 'الرقم القومي': '77770000000032', 'الاسم': 'موظف متعارض كود', 'الكود': '7731' },
+  { 'الرقم القومي': '77770000000033', 'الاسم': 'موظف سليم جديد', 'الكود': '7732' },
+  { 'الرقم القومي': '77770000000034', 'الاسم': 'موظف مكرر دفعة', 'الكود': '7732' },
+  { 'الرقم القومي': '77770000000031', 'الاسم': 'موظف أصلي محدث', 'الكود': '7731' },
+] }), ['CollideSheet'], 'EG');
+check('CAT6: mixed valid/colliding import returns 200', col1.status === 200, String(col1.status));
+const col1j = await col1.json().catch(() => ({}));
+const colRes = col1j.detailed_results?.CollideSheet || {};
+check('CAT6: committed new = 1 (only the clean row)', colRes.new_employees === 1, 'new=' + colRes.new_employees);
+check('CAT6: committed updated = 1 (the original employee)', colRes.updated_employees === 1, 'upd=' + colRes.updated_employees);
+check('CAT6: skipped = 2 (both colliding rows)', colRes.skipped_rows === 2, 'skip=' + colRes.skipped_rows);
+check('CAT6: disjoint accounting (new+upd+skip+xconf = 4 rows)', (colRes.new_employees + colRes.updated_employees + colRes.skipped_rows + (colRes.cross_account_conflicts?.length || 0)) === 4, JSON.stringify({ n: colRes.new_employees, u: colRes.updated_employees, s: colRes.skipped_rows }));
+check('CAT6: collision messages routed to review (no silent merge)', (colRes.errors || []).filter((e) => e.includes('تعارض هوية')).length === 2, JSON.stringify((colRes.errors || []).slice(0, 3)).slice(0, 240));
+const collMaster = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id IN ('77770000000032','77770000000034')`)).rows[0].c;
+check('CAT6: colliding NIDs NOT persisted as masters', collMaster === 0, 'masters=' + collMaster);
+const okMaster = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='77770000000033' AND account_id=1`)).rows[0].c;
+check('CAT6: valid new row committed despite colliding neighbors', okMaster === 1, 'masters=' + okMaster);
+const origName = (await db.query(`SELECT employee_name FROM employees_master WHERE national_id='77770000000031'`)).rows[0]?.employee_name;
+check('CAT6: existing master updated (not reassigned/duplicated)', origName === 'موظف أصلي محدث', String(origName));
+const collSD = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id IN ('77770000000032','77770000000034')`)).rows[0].c;
+check('CAT6: colliding rows leave NO sheet_data (FK-safe)', collSD === 0, 'sd=' + collSD);
+const okSD = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id IN ('77770000000031','77770000000033') AND sd.is_latest`)).rows[0].c;
+check('CAT6: valid rows DO have latest sheet_data (no collateral loss)', okSD === 2, 'sd=' + okSD);
+const orphanHist = (await db.query(`SELECT count(*)::int c FROM employee_history h LEFT JOIN employees_master em ON em.id=h.employee_id WHERE em.id IS NULL`)).rows[0].c;
+check('CAT6: no orphan history rows (FK-safe flush)', orphanHist === 0, 'orphans=' + orphanHist);
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);

@@ -871,7 +871,7 @@ export async function importSheet(
     // 5. Pre-load existing employees into memory for high-speed matching (1 single query instead of thousands)
     const { data: existingEmps } = await supabaseServer
       .from('employees_master')
-      .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data');
+      .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data, account_employee_uid');
 
     // Row-account resolution (shared with the bridge phase below).
     const { data: rowAccounts } = await supabaseServer
@@ -904,6 +904,21 @@ export async function importSheet(
         byNatIdMap.set(String(emp.national_id).trim(), emp);
       }
     }
+
+    // UID collision tracking (mirror of the resolve_employee_account_uid
+    // trigger): a new row whose account-code+employee-code uid already
+    // belongs to a DIFFERENT national ID is an identity conflict for review —
+    // never an NID-fallback merge, never a silent master reassignment, and it
+    // must not take its whole insert chunk down with it.
+    const accountRealCodeById = new Map<number, string>();
+    (rowAccounts || []).forEach((a) => accountRealCodeById.set(a.id as number, String(a.account_code).trim()));
+    const existingUids = new Set<string>(
+      (existingEmps || []).map((e) => String((e as { account_employee_uid?: string }).account_employee_uid || '')).filter(Boolean)
+    );
+    const queuedUids = new Set<string>();
+    // Committed-write accounting: counters move only on successful flush.
+    const empKindById = new Map<string, 'new' | 'update'>();
+    const empRowNumberById = new Map<string, number>();
 
     const normSheet = normalizeText(sheetName).replace(/[\s.]/g, '');
     const isIncomingSheet = normSheet.includes('وارد') || normSheet.includes('ارقاموارد') || normSheet === 'socialinsurance';
@@ -1157,8 +1172,8 @@ export async function importSheet(
         }
 
         if (matchedEmp) {
-          // Existing employee
-          updatedEmployees++;
+          // Existing employee — counted only when its update COMMITS (flush
+          // phase below), so reported counts equal persisted writes.
           const oldConsolidated = (matchedEmp.consolidated_data as Record<string, unknown>) || {};
           // USER-APPROVED POLICY (11:04): blank/null/'' cells never erase
           // existing values; meaningful zero/false survive. Missing column =
@@ -1216,6 +1231,8 @@ export async function importSheet(
               last_import_id: importLogId,
             },
           });
+          empKindById.set(matchedEmp.id, 'update');
+          empRowNumberById.set(matchedEmp.id, rowNumber);
 
           {
             const prev = seenInFile.get(matchedEmp.id);
@@ -1248,9 +1265,29 @@ export async function importSheet(
             });
           }
         } else {
-          // New employee
-          newEmployees++;
+          // New employee — counted only when its insert COMMITS (flush below).
           const newId = crypto.randomUUID();
+          // Identity-collision gate (fail closed to review): if this row's
+          // account-code+code uid already exists for a different national ID
+          // (in the DB or earlier in this same batch), do NOT insert and do
+          // NOT fall back to any other identifier — route to explicit review.
+          {
+            const accCodeForUid = (effectiveAccountId !== null && accountRealCodeById.get(effectiveAccountId)) || 'UNASSIGNED';
+            const cleanCodeForUid = String(rawCode || '').replace(/[^0-9a-zA-Z]/g, '');
+            const cleanNidForUid = String(rawNatId || '').replace(/[^0-9]/g, '');
+            const rowUid = cleanCodeForUid
+              ? `${accCodeForUid}-${cleanCodeForUid}`
+              : `${accCodeForUid}-NID${cleanNidForUid}`;
+            if (existingUids.has(rowUid) || queuedUids.has(rowUid)) {
+              errors.push(`صف ${rowNumber}: الكود ${rawCode || '—'} مستخدم بالفعل لموظف آخر برقم قومي مختلف في نفس الحساب — لم يُستورد؛ تعارض هوية يحتاج مراجعة صريحة (لا مطابقة بالكود ولا نقل تلقائي)`);
+              processingFailures++;
+              skippedRows++;
+              continue;
+            }
+            queuedUids.add(rowUid);
+          }
+          empKindById.set(newId, 'new');
+          empRowNumberById.set(newId, rowNumber);
             const newEmpRecord: EmployeeMasterInsert = {
               id: newId,
               company_account: effectiveAccText,
@@ -1317,27 +1354,51 @@ export async function importSheet(
 
     // 6. Execute high-speed batch operations in parallel chunks
     // A) Batch Insert New Employees (chunks of 150)
+    // Counters reflect COMMITTED writes only. A failed chunk falls back to
+    // per-row inserts so one bad row never takes down valid unrelated rows;
+    // rows that still fail become review errors, never phantom "new" counts,
+    // and their dependent sheet_data/history rows are dropped below.
+    const failedEmpIds = new Set<string>();
     for (let i = 0; i < employeesToInsert.length; i += 150) {
         const chunk = employeesToInsert.slice(i, i + 150);
         const { error } = await supabaseServer.from('employees_master').insert(chunk);
-        if (error) { errors.push(`Bulk insert error: ${error.message}`); processingFailures++; }
+        if (!error) { newEmployees += chunk.length; continue; }
+        for (const row of chunk) {
+          const { error: rowErr } = await supabaseServer.from('employees_master').insert(row);
+          if (!rowErr) { newEmployees++; continue; }
+          const rn = empRowNumberById.get(row.id as string);
+          errors.push(`صف ${rn ?? '?'}: تعذّر إدراج الموظف الجديد (${rowErr.message}) — لم يُستورد؛ يحتاج مراجعة`);
+          processingFailures++;
+          skippedRows++;
+          failedEmpIds.add(row.id as string);
+        }
       }
 
       // B) Batch Update Existing Employees (parallel chunks of 20)
       for (let i = 0; i < employeesToUpdate.length; i += 20) {
         const chunk = employeesToUpdate.slice(i, i + 20);
         await Promise.all(
-          chunk.map((item) =>
-            supabaseServer.from('employees_master').update(item.data).eq('id', item.id)
-          )
+          chunk.map(async (item) => {
+            const { error: upErr } = await supabaseServer.from('employees_master').update(item.data).eq('id', item.id);
+            if (!upErr) { updatedEmployees++; return; }
+            const rn = empRowNumberById.get(item.id);
+            errors.push(`صف ${rn ?? '?'}: تعذّر تحديث الموظف (${upErr.message}) — لم يُحدَّث؛ يحتاج مراجعة`);
+            processingFailures++;
+            skippedRows++;
+            failedEmpIds.add(item.id);
+          })
         );
       }
 
       // C) Batch Insert Sheet Data (chunks of 250)
       // One-latest-per-(sheet, employee): re-filed rows supersede the same
       // employee's previous latest row in the same catalog sheet.
+      // Rows whose employee never committed must not reach sheet_data: their
+      // FK failure would otherwise kill a whole chunk of valid rows. Their old
+      // latest rows must NOT be superseded either (nothing replaces them).
+      const sheetDataFiltered = sheetDataToInsert.filter((r) => !failedEmpIds.has(r.employee_id as string));
       const empIdsBySheet = new Map<string, Set<string>>();
-      sheetDataToInsert.forEach((r) => {
+      sheetDataFiltered.forEach((r) => {
         const sid = r.sheet_id;
         const eid = r.employee_id;
         if (!sid || !eid) return;
@@ -1354,19 +1415,42 @@ export async function importSheet(
             .eq('sheet_id', sid)
             .eq('is_latest', true)
             .in('employee_id', ids.slice(i, i + 200));
-          if (supErr) errors.push(`Snapshot supersede error: ${supErr.message}`);
+          if (supErr) { errors.push(`Snapshot supersede error: ${supErr.message}`); processingFailures++; }
         }
       }
-      for (let i = 0; i < sheetDataToInsert.length; i += 250) {
-        const chunk = sheetDataToInsert.slice(i, i + 250);
+      const counterAdjusted = new Set<string>();
+      const noteSheetDataFailure = (r: SheetDataInsert, msg: string) => {
+        const rn = empRowNumberById.get(r.employee_id as string);
+        errors.push(`صف ${rn ?? '?'}: تعذّر حفظ صف الورقة (${msg}) — فُقد؛ يحتاج مراجعة`);
+        processingFailures++;
+        // The employee write already committed and was counted; a lost
+        // sheet_data row means the import for that row did NOT fully persist,
+        // so move the row's count to skipped — counters stay committed-only.
+        const eid = r.employee_id as string;
+        if (!counterAdjusted.has(eid)) {
+          counterAdjusted.add(eid);
+          const kind = empKindById.get(eid);
+          if (kind === 'new') newEmployees--;
+          else if (kind === 'update') updatedEmployees--;
+          skippedRows++;
+        }
+      };
+      for (let i = 0; i < sheetDataFiltered.length; i += 250) {
+        const chunk = sheetDataFiltered.slice(i, i + 250);
         const { error } = await supabaseServer.from('sheet_data').insert(chunk);
-        if (error) { errors.push(`Bulk sheet_data error: ${error.message}`); processingFailures++; }
+        if (!error) continue;
+        for (const row of chunk) {
+          const { error: rowErr } = await supabaseServer.from('sheet_data').insert(row);
+          if (rowErr) noteSheetDataFailure(row, rowErr.message);
+        }
       }
 
       // D) Batch Insert History (chunks of 250)
-      for (let i = 0; i < historyToInsert.length; i += 250) {
-        const chunk = historyToInsert.slice(i, i + 250);
-        await supabaseServer.from('employee_history').insert(chunk);
+      const historyFiltered = historyToInsert.filter((h) => !failedEmpIds.has(h.employee_id as string));
+      for (let i = 0; i < historyFiltered.length; i += 250) {
+        const chunk = historyFiltered.slice(i, i + 250);
+        const { error: histErr } = await supabaseServer.from('employee_history').insert(chunk);
+        if (histErr) { errors.push(`خطأ في حفظ سجل التاريخ: ${histErr.message}`); processingFailures++; }
       }
 
       // E) Phase 1 Bridge Batches (Bridging the Two Worlds):
