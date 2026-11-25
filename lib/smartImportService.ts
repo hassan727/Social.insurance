@@ -781,8 +781,21 @@ export async function importSheet(
           rowData['اسم']
         ).trim() : null;
 
-        // Skip completely empty rows
+        // Skip completely empty rows (benign trailing blanks). A row WITH
+        // content but NO identity (no code, no national id, no name) is an
+        // identity failure: it must block the snapshot prune (fail closed),
+        // because we cannot tell which employee that row belongs to.
         if (!rawCode && !rawNatId && !rawName) {
+          // Inspect the RAW row, not rowData: columns not present in the
+          // registered mapping never reach rowData, but their content still
+          // makes this a data row whose owner we cannot identify.
+          const hasAnyContent = (row as unknown[]).some(
+            (v) => v !== null && v !== undefined && String(v).trim() !== ''
+          );
+          if (hasAnyContent) {
+            errors.push(`صف ${rowNumber}: يحتوي بيانات بدون كود أو رقم قومي أو اسم — لم يُستورد، وتعذّر اعتبار الملف لقطة كاملة`);
+            processingFailures++;
+          }
           skippedRows++;
           continue;
         }

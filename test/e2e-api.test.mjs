@@ -310,6 +310,41 @@ const s5b = await postSmart(snap5b, ['SheetI']);
 const snap6row = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id JOIN employees_master em ON em.id=sd.employee_id WHERE ds.sheet_name='SheetI' AND em.national_id='99999999999999' AND sd.is_latest=true`)).rows[0].c;
 check('valid rows + benign empty rows: prune still works', s5b.status === 200 && snap6row === 0, 'status=' + String(s5b.status) + ' latest=' + snap6row);
 
+// ── Partial-failure prune protection (real route-level failures) ────────────
+// A) valid row + identity-less DATA row: identity failure blocks the prune.
+const snap7a = mkXlsxMulti({ SheetJ: [{ 'الرقم القومي': '99999999999987', 'الاسم': 'موظف لقطة سابع', 'الكود': '9010', 'الوظيفه': 'محاسب' }] });
+await postSmart(snap7a, ['SheetJ']);
+const snap7Id = (await db.query(`SELECT id FROM employees_master WHERE national_id='99999999999987' AND account_id=2`)).rows[0].id;
+const snap7b = mkXlsxMulti({ SheetJ: [
+  { 'الرقم القومي': '99999999999986', 'الاسم': 'موظف لقطة ثامن', 'الكود': '9011', 'الوظيفه': 'سائق', 'الراتب': 3000 },
+  { 'الراتب': 4000 },
+] });
+const s7b = await postSmart(snap7b, ['SheetJ']);
+const s7bj = await s7b.json().catch(() => ({}));
+const s7Latest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='SheetJ' AND sd.employee_id=$1 AND sd.is_latest=true`, [snap7Id])).rows[0].c;
+check('identity-less DATA row: import reports the failure', s7b.status === 200 && (s7bj.detailed_results?.SheetJ?.errors || []).some((e) => e.includes('بدون كود')), JSON.stringify(s7bj.detailed_results?.SheetJ?.errors || s7bj.error || null).slice(0, 140));
+check('identity-less DATA row: NO prune of the absent employee (fail closed)', s7Latest === 1, 'latest=' + s7Latest);
+const partialApplied = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='99999999999986' AND account_id=2`)).rows[0].c;
+check('partial application is visible: valid row WAS written (no rollback), failure listed', partialApplied === 1 && (s7bj.detailed_results?.SheetJ?.errors || []).length >= 1);
+
+// B) Simulated bridge failure (test-only CHECK constraint): prune blocked,
+// old latest rows retained, partial writes remain visible.
+const snap8a = mkXlsxMulti({ 'مرتبات تجريبية': [{ 'الرقم القومي': '99999999999988', 'الاسم': 'موظف مرتبات قديم', 'الكود': '9012', 'الوظيفه': 'عامل', 'شهر 10': 30 }] });
+await postSmart(snap8a, ['مرتبات تجريبية']);
+const snap8Id = (await db.query(`SELECT id FROM employees_master WHERE national_id='99999999999988' AND account_id=2`)).rows[0].id;
+await db.query(`ALTER TABLE monthly_payroll_records ADD CONSTRAINT test_block_nid CHECK (national_id <> '99999999999990')`);
+const snap8b = mkXlsxMulti({ 'مرتبات تجريبية': [
+  { 'الرقم القومي': '99999999999989', 'الاسم': 'موظف مرتبات جديد', 'الكود': '9013', 'الوظيفه': 'فني', 'شهر 10': 30 },
+  { 'الرقم القومي': '99999999999990', 'الاسم': 'موظف مرتبات فاشل', 'الكود': '9014', 'الوظيفه': 'حارس', 'شهر 10': 30 },
+] });
+const s8b = await postSmart(snap8b, ['مرتبات تجريبية']);
+const s8bj = await s8b.json().catch(() => ({}));
+await db.query(`ALTER TABLE monthly_payroll_records DROP CONSTRAINT test_block_nid`);
+const s8Latest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='مرتبات تجريبية' AND sd.employee_id=$1 AND sd.is_latest=true`, [snap8Id])).rows[0].c;
+check('bridge failure: import reports failure (not silent success)', (s8bj.detailed_results?.['مرتبات تجريبية']?.errors || []).length >= 1 || s8bj.success === false, JSON.stringify(s8bj.detailed_results?.['مرتبات تجريبية']?.errors || s8bj.error || null).slice(0, 160));
+check('bridge failure: NO prune of the absent employee (fail closed)', s8Latest === 1, 'latest=' + s8Latest);
+check('bridge failure: failure visible as error text mentioning bridge/payroll', JSON.stringify(s8bj).includes('مرتبات') || JSON.stringify(s8bj).includes('payroll') || JSON.stringify(s8bj).includes('Bridge'), JSON.stringify(s8bj).slice(0, 140));
+
 // Unseen worksheet untouched: SNAP1's SheetD rows still latest after all SheetC/E/G reimports
 const sheetDlatest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='SheetD' AND sd.employee_id=$1 AND sd.is_latest=true`, [snapId])).rows[0].c;
 check("unseen worksheet untouched by other worksheets reimports", sheetDlatest === 1);
@@ -322,7 +357,7 @@ const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() =>
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
 
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 15 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 12 prior + snap4 99999999999997 + snap5/6 99999999999998/99 (99999999999996 was created in SheetE reimport; counted)
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 20 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 12 prior + snap4 99999999999997 + snap5/6 99999999999998/99 (99999999999996 was created in SheetE reimport; counted)
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count); // +1: first-import dup fixture 88888888888888 (EG)
 
