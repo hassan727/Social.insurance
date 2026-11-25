@@ -20,7 +20,7 @@ function normalizeArabicText(text: string): string {
 
 // Resolve an operator-selected account against company_accounts (id, code, or alias).
 // Returns null when unknown/ambiguous — callers must reject, never default.
-async function resolveAccountId(raw: string): Promise<number | null> {
+async function resolveAccount(raw: string): Promise<{ id: number; code: string } | null> {
   const trimmed = raw.trim();
   if (!trimmed) return null;
   const { data, error } = await supabaseServer
@@ -35,7 +35,12 @@ async function resolveAccountId(raw: string): Promise<number | null> {
     a.account_code.toLowerCase() === lowered ||
     (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === lowered))
   );
-  return match ? match.id : null;
+  return match ? { id: match.id, code: match.account_code } : null;
+}
+
+async function resolveAccountId(raw: string): Promise<number | null> {
+  const resolved = await resolveAccount(raw);
+  return resolved ? resolved.id : null;
 }
 
 export async function POST(request: Request) {
@@ -75,6 +80,14 @@ export async function POST(request: Request) {
       if (!accountRaw || !accountRaw.trim()) {
         return NextResponse.json({ error: 'يجب اختيار الحساب (الشركة) صراحةً قبل استيراد ملف شهري' }, { status: 400 });
       }
+      accountId = await resolveAccountId(accountRaw);
+      if (accountId === null) {
+        return NextResponse.json({ error: 'الحساب المحدد غير معروف. أضفه أولاً في الحسابات أو راجع الإدخال — لا يوجد افتراض تلقائي.' }, { status: 400 });
+      }
+    } else if (accountRaw && accountRaw.trim()) {
+      // Non-monthly sources (incoming insurance / official print): the
+      // operator-selected account is only the DEFAULT. An explicit row Account
+      // cell always wins for those rows (confirmed mixed-source model).
       accountId = await resolveAccountId(accountRaw);
       if (accountId === null) {
         return NextResponse.json({ error: 'الحساب المحدد غير معروف. أضفه أولاً في الحسابات أو راجع الإدخال — لا يوجد افتراض تلقائي.' }, { status: 400 });
@@ -164,6 +177,34 @@ export async function POST(request: Request) {
     const dataRows = rawData.slice(headerRowIndex + 1);
     const totalRowsRead = dataRows.length;
 
+    // ── Destructive-overwrite guard (user NID-only rule): never replace stored
+    // rows with partial invalid input. Validate BEFORE any delete runs.
+    const scanCell = (row: unknown[], field: string): string => {
+      const h = columnMapping[field];
+      if (!h) return '';
+      const idx = headerIndexMap[h];
+      if (idx === undefined || idx < 0 || idx >= row.length) return '';
+      const v = row[idx];
+      return v !== null && v !== undefined ? String(v).trim() : '';
+    };
+    let preScanRejected = 0;
+    let preScanInvalidNid = 0;
+    for (const row of dataRows) {
+      if (!row || row.length === 0 || row.every((c) => c === '' || c === null || c === undefined)) continue;
+      const nidVal = cleanNationalId(scanCell(row, 'national_id')) || '';
+      const hasIdentifier = !!(scanCell(row, 'employee_code') || scanCell(row, 'employee_name') || nidVal);
+      if (!hasIdentifier) preScanRejected++;
+      else if (nidVal.length !== 14) preScanInvalidNid++;
+    }
+    if (confirmOverwrite && hasExisting && (preScanRejected > 0 || preScanInvalidNid > 0)) {
+      return NextResponse.json({
+        error: `الملف يحتوي على ${preScanInvalidNid} صف بدون رقم قومي صحيح من 14 رقمًا و ${preScanRejected} صف بدون أي معرّف. لا يمكن استبدال البيانات الحالية بملف غير مكتمل — صحّح الملف أولاً (المطابقة بالرقم القومي فقط)؛ لم تُحذف أي بيانات.`,
+        blockedOverwrite: true,
+        invalidNidRows: preScanInvalidNid,
+        rejectedRows: preScanRejected,
+      }, { status: 422 });
+    }
+
     // Handle overwrite cleanup if confirmed
     if (confirmOverwrite && hasExisting) {
       if (sourceType === 'monthly_payroll') {
@@ -245,7 +286,16 @@ export async function POST(request: Request) {
     const importId = logEntry.id;
     let rowsAccepted = 0;
     let rowsRejected = 0;
+    let rowsNeedingReview = 0;
     const rejectedReasons: string[] = [];
+    // Row-account resolution (confirmed mixed-source model): an explicit
+    // الشركه/الشركة cell on incoming-insurance / official-print rows wins over
+    // the operator-selected account; a blank or unknown cell on a sheet that
+    // HAS a company column is fail-closed review, never the operator default.
+    const recRowAccount = new Map<object, number | null>();
+    const unresolvedCompanyRecs = new Set<object>();
+    const hasCompanyColumn = (sourceType === 'incoming_insurance' || (sourceType as string) === 'official_insurance_print')
+      && (headers.includes('الشركة') || headers.includes('الشركه'));
 
     // Helper to get mapped value
     const getVal = (row: unknown[], key: string): string => {
@@ -277,7 +327,7 @@ export async function POST(request: Request) {
       // Identity is the 14-digit national ID ONLY (user rule). Conservative
       // cleaning: Arabic-Indic digits translated, documented Excel forms
       // permitted; malformed tokens become null (review), never blind-stripped.
-      const natId = cleanNationalId(getVal(row, 'national_id')) || '';
+      const natId = cleanNationalId(getVal(row, 'national_id') || rawRowObj['الرقم القومى 2'] || rawRowObj['الرقم القومي']) || '';
 
       // Rule: Do not invent missing IDs, but row must have at least one valid identifier (code, national_id, or name)
       if (!empCode && !empName && !natId) {
@@ -287,6 +337,7 @@ export async function POST(request: Request) {
         }
         continue;
       }
+      if (natId.length !== 14) rowsNeedingReview++;
 
       if (sourceType === 'incoming_insurance' || (sourceType as string) === 'official_insurance_print') {
         const isOfficialPrint = (sourceType as string) === 'official_insurance_print';
@@ -294,15 +345,50 @@ export async function POST(request: Request) {
         const insJob = getVal(row, 'insurance_job_title') || rawRowObj['المهنة'] || rawRowObj['المهنه'] || null;
         const formT = isOfficialPrint ? 'برنت تأمينات رسمي (22/09/2026)' : (getVal(row, 'form_type') || null);
 
-        recordsToInsert.push({
+        // Row company: explicit cell wins; blank/unknown on a company-column
+        // sheet -> review (never the operator default, never NULL-stamped).
+        let rowAccountId: number | null = accountId;
+        let rowAccountCode: string | null = null;
+        let rowCompanyUnresolved = false;
+        const rawAccCell = (rawRowObj['الشركة'] || rawRowObj['الشركه'] || '').trim();
+        if (rawAccCell) {
+          const ra = await resolveAccount(rawAccCell);
+          if (ra) {
+            rowAccountId = ra.id;
+            rowAccountCode = ra.code;
+          } else {
+            rowCompanyUnresolved = true;
+          }
+        } else if (hasCompanyColumn) {
+          rowCompanyUnresolved = true;
+        }
+        if (rowCompanyUnresolved) {
+          rowAccountId = null;
+          rowsNeedingReview++;
+          await supabaseServer.from('matching_conflicts').insert({
+            conflict_type: 'unknown_row_company',
+            conflict_data: {
+              source_type: sourceType,
+              employee_name: empName || null,
+              employee_code: empCode || null,
+              national_id: natId || null,
+              row_company_raw: rawAccCell || null,
+              action_required: 'شركة الصف غير محددة أو غير معروفة في مصدر مختلط — لم تُنسب لأي حساب؛ تحتاج مراجعة',
+            },
+            resolved: false,
+          });
+        }
+
+        const incomingRec = {
           import_id: importId,
           employee_code: empCode || getVal(row, 'employee_code') || rawRowObj['رقم الاداء'] || null,
           employee_name: empName || getVal(row, 'employee_name') || rawRowObj['اسم المؤمن عليه '] || rawRowObj['اسم المؤمن عليه'] || null,
           national_id: natId || cleanNationalId(rawRowObj['الرقم القومى 2'] || rawRowObj['الرقم القومي']) || null,
           job_title: getVal(row, 'job_title') || null,
           status: getVal(row, 'status') || rawRowObj['الحاله '] || rawRowObj['الحالة'] || null,
-          // No default account: missing company text stays null and surfaces for review
-          company_account: getVal(row, 'company_account') || rawRowObj['الشركه '] || rawRowObj['الشركه'] || rawRowObj['الشركة'] || null,
+          // Resolved canonical row account (explicit cell wins); null when
+          // unresolved (review) or when the sheet has no company column.
+          company_account: rowAccountCode,
           insurance_number: getVal(row, 'insurance_number') || rawRowObj['الرقم التأميني للمؤمن علية'] || rawRowObj['الرقم التاميني للمؤمن علية'] || null,
           insurance_status: getVal(row, 'insurance_status') || 'مؤمن عليه',
           termination_reason: getVal(row, 'termination_reason') || null,
@@ -315,7 +401,10 @@ export async function POST(request: Request) {
           record_date: getVal(row, 'record_date') || (isOfficialPrint ? '2026-09-22' : null),
           note: insWage ? `الأجر التأميني: ${insWage}` : (getVal(row, 'note') || null),
           raw_data: rawRowObj,
-        });
+        };
+        recordsToInsert.push(incomingRec);
+        recRowAccount.set(incomingRec, rowAccountId);
+        if (rowCompanyUnresolved) unresolvedCompanyRecs.add(incomingRec);
       } else if (sourceType === 'res') {
         recordsToInsert.push({
           import_id: importId,
@@ -440,6 +529,11 @@ export async function POST(request: Request) {
       const employeesToUpdate: Array<{ id: string; data: Record<string, any> }> = [];
 
       for (const rec of recordsToInsert) {
+        // Rows whose company could not be resolved on a mixed source already
+        // carry a review conflict; they never touch employees_master.
+        if (unresolvedCompanyRecs.has(rec)) continue;
+        // Row Account (explicit cell) wins; otherwise the operator default.
+        const rowAccountId: number | null = recRowAccount.has(rec) ? (recRowAccount.get(rec) ?? null) : accountId;
         const raw = (rec.raw_data as Record<string, string>) || {};
         const code = (rec.employee_code ? String(rec.employee_code).trim() : '') || raw['الكود'] || '';
         const nid = (rec.national_id ? String(rec.national_id).trim() : '') || raw['الرقم القومي'] || raw['القومي'] || '';
@@ -451,7 +545,7 @@ export async function POST(request: Request) {
         // NATIONAL ID ONLY (user rule): no insurance-number, employee-code, or
         // name fallback. Same code with a different NID must NEVER merge.
         if (validNid) {
-          matched = byNatIdAccount.get(`${accountId}:${nid}`) || null;
+          matched = byNatIdAccount.get(`${rowAccountId}:${nid}`) || null;
           if (!matched) {
             const anyAcc = byNatId.get(nid) || null;
             if (anyAcc) {
@@ -587,7 +681,7 @@ export async function POST(request: Request) {
           }
           if (code) {
             const codeHolder =
-              byCodeAccountDetect.get(`${accountId}:${code}`) ||
+              byCodeAccountDetect.get(`${rowAccountId}:${code}`) ||
               byCodeAccountDetect.get(`txt:${acc.toLowerCase()}:${code}`) ||
               null;
             if (codeHolder && codeHolder.national_id && String(codeHolder.national_id).trim() !== nid) {
@@ -622,7 +716,7 @@ export async function POST(request: Request) {
             const newRecord = {
               id: newId,
               company_account: acc,
-              account_id: accountId,
+              account_id: rowAccountId,
               employee_code: code || null,
               national_id: nid || null,
               employee_name: name || 'بدون اسم',
@@ -643,9 +737,9 @@ export async function POST(request: Request) {
             const lookupItem = newRecord as unknown as EmpMasterLookup;
             if (nid) {
               byNatId.set(nid, lookupItem);
-              if (accountId !== null) byNatIdAccount.set(`${accountId}:${nid}`, lookupItem);
+              if (rowAccountId !== null) byNatIdAccount.set(`${rowAccountId}:${nid}`, lookupItem);
             }
-            if (code && accountId !== null) byCodeAccountDetect.set(`${accountId}:${code}`, lookupItem);
+            if (code && rowAccountId !== null) byCodeAccountDetect.set(`${rowAccountId}:${code}`, lookupItem);
             continue;
           }
           const financialLedger = {
@@ -669,7 +763,7 @@ export async function POST(request: Request) {
           const newRecord = {
             id: newId,
             company_account: acc,
-            account_id: accountId,
+            account_id: rowAccountId,
             employee_code: code || null,
             national_id: nid || null,
             employee_name: name || 'بدون اسم',
@@ -688,9 +782,9 @@ export async function POST(request: Request) {
           const lookupItem = newRecord as unknown as EmpMasterLookup;
           if (nid) {
             byNatId.set(nid, lookupItem);
-            if (accountId !== null) byNatIdAccount.set(`${accountId}:${nid}`, lookupItem);
+            if (rowAccountId !== null) byNatIdAccount.set(`${rowAccountId}:${nid}`, lookupItem);
           }
-          if (code && accountId !== null) byCodeAccountDetect.set(`${accountId}:${code}`, lookupItem);
+          if (code && rowAccountId !== null) byCodeAccountDetect.set(`${rowAccountId}:${code}`, lookupItem);
         }
       }
 
@@ -719,12 +813,13 @@ export async function POST(request: Request) {
     }
 
     // Update import_logs with final metrics
+    const reviewNote = rowsNeedingReview > 0 ? `${rowsNeedingReview} صف بدون رقم قومي صحيح يحتاج مراجعة (المطابقة بالرقم القومي فقط)` : '';
     await supabaseServer
       .from('import_logs')
       .update({
         rows_accepted: rowsAccepted,
         rows_rejected: rowsRejected,
-        notes: rejectedReasons.length > 0 ? rejectedReasons.join(' | ') : 'تم الاستيراد بنجاح دون أخطاء',
+        notes: [rejectedReasons.length > 0 ? rejectedReasons.join(' | ') : 'تم الاستيراد بنجاح دون أخطاء', reviewNote].filter(Boolean).join(' | '),
       })
       .eq('id', importId);
 
@@ -734,8 +829,9 @@ export async function POST(request: Request) {
       totalRowsRead,
       rowsAccepted,
       rowsRejected,
+      rowsNeedingReview,
       rejectedReasons,
-      message: `تم استيراد ${rowsAccepted} سجل بنجاح. ${rowsRejected > 0 ? `(تم رفض ${rowsRejected} سجل غير صالح)` : ''}`,
+      message: `تم استيراد ${rowsAccepted} سجل بنجاح. ${rowsRejected > 0 ? `(تم رفض ${rowsRejected} سجل غير صالح)` : ''}${rowsNeedingReview > 0 ? ` (${rowsNeedingReview} سجل بدون رقم قومي صحيح يحتاج مراجعة)` : ''}`,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'حدث خطأ غير متوقع أثناء استيراد البيانات';

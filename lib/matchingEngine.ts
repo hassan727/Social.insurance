@@ -1,15 +1,16 @@
 /**
  * Matching Engine for EGYPT GAS Unified HR & Insurance Platform
  *
- * Implements strict hierarchical matching rules:
- * 1. National ID (Exact 14 digits) -> 100% confidence -> Auto-match
- * 2. Account + Employee Code (Company Account is mandatory!) -> 98% confidence -> Auto-match
- * 3. Insurance Number (Unique) -> 92% confidence -> Auto-match
- * 4. Normalized Name + Corroborating Data (Phone/Department/Region) -> 75% -> Candidate for review
- * 5. Normalized Name Only -> 50% -> Candidate for review (NEVER auto-match!)
+ * Identity matching is by 14-digit national ID ONLY (user rule 2026-11-25):
+ * 1. National ID (exact 14 digits) -> 100% confidence -> Auto-match
+ * 2. Insurance number / employee code / name -> review candidates ONLY.
+ *    They may be shown to a human as hints, but they NEVER auto-match and
+ *    NEVER link identity: codes and insurance numbers collide across
+ *    companies and time.
  */
 
 import { supabaseServer } from './supabaseServer';
+import { cleanNationalId } from './smartImportService';
 import type { Json } from '@/types/supabase';
 
 export function normalizeArabicText(text: string): string {
@@ -91,7 +92,7 @@ export async function matchIncomingRow(params: {
 }): Promise<MatchResult> {
   const account = params.company_account.trim();
   const code = params.employee_code?.trim() || null;
-  const natId = params.national_id?.replace(/\D/g, '') || null;
+  const natId = cleanNationalId(params.national_id) || null;
   const insNo = params.insurance_number?.trim() || null;
   const rawName = params.employee_name?.trim() || '';
   const normName = normalizeArabicText(rawName);
@@ -118,7 +119,7 @@ export async function matchIncomingRow(params: {
     }
   }
 
-  // ── PRIORITY 2: Insurance Number (Unique State Insurance ID) ──
+  // ── Insurance Number: REVIEW HINT ONLY (never auto-match, user rule) ──
   if (insNo && insNo.length >= 7) {
     const { data: byIns } = await supabaseServer
       .from('employees_master')
@@ -128,53 +129,85 @@ export async function matchIncomingRow(params: {
 
     if (byIns && byIns.length >= 1) {
       const emp = byIns[0];
+      const nidContradiction = !!(natId && emp.national_id && String(emp.national_id).trim() !== natId);
+      const { data: insertedCandidate } = await supabaseServer
+        .from('matching_candidates')
+        .insert({
+          import_id: params.import_id ?? null,
+          sheet_name: params.sheet_name,
+          row_data: params.raw_row as Json,
+          row_number: params.row_number ?? null,
+          raw_code: code,
+          raw_national_id: natId,
+          raw_name: rawName,
+          candidate_employee_id: emp.id,
+          match_type: 'candidate_insurance_hint',
+          confidence_score: 0.5,
+          candidate_snapshot: emp as unknown as Json,
+          status: 'pending',
+          notes: nidContradiction
+            ? `رقم تأميني مشابه (${insNo}) لكن الرقم القومي مختلف — تلميح مراجعة فقط، المطابقة بالرقم القومي فقط`
+            : `رقم تأميني مشابه (${insNo}) — تلميح مراجعة فقط، المطابقة بالرقم القومي فقط`,
+        })
+        .select('id')
+        .maybeSingle();
       return {
-        matched: true,
-        employee_id: emp.id,
-        confidence: 'exact_insurance_no',
-        confidence_score: 0.95,
-        match_rule: `الرقم التأميني مطابق (${insNo})`,
-        requires_review: false,
+        matched: false,
+        employee_id: null,
+        confidence: 'candidate_review',
+        confidence_score: 0.5,
+        match_rule: `رقم تأميني مشابه (${insNo}) - بانتظار المراجعة اليدوية (لا مطابقة تلقائية)`,
+        candidate_id: insertedCandidate?.id,
+        requires_review: true,
         existing_employee: emp,
       };
     }
   }
 
-  // ── PRIORITY 3: Employee Code (Universal Code Match) ──
+  // ── Employee Code: REVIEW HINT ONLY (never auto-match, user rule) ──
   if (code) {
-    // First, search by employee code across all accounts
     const { data: byCodeAll } = await supabaseServer
       .from('employees_master')
       .select('id, employee_code, national_id, employee_name, company_account, current_status, current_job_title, current_department')
       .eq('employee_code', code)
       .limit(5);
 
-    if (byCodeAll && byCodeAll.length === 1) {
-      const emp = byCodeAll[0];
-      // If code is unique in master, it's the same employee regardless of whether sheet says E.G or M.G
+    const hint = (byCodeAll || []).find(e => e.company_account.toLowerCase() === account.toLowerCase()) || (byCodeAll || [])[0];
+    if (hint) {
+      const nidContradiction = !!(natId && hint.national_id && String(hint.national_id).trim() !== natId);
+      const { data: insertedCandidate } = await supabaseServer
+        .from('matching_candidates')
+        .insert({
+          import_id: params.import_id ?? null,
+          sheet_name: params.sheet_name,
+          row_data: params.raw_row as Json,
+          row_number: params.row_number ?? null,
+          raw_code: code,
+          raw_national_id: natId,
+          raw_name: rawName,
+          candidate_employee_id: hint.id,
+          match_type: 'candidate_code_hint',
+          confidence_score: 0.5,
+          candidate_snapshot: hint as unknown as Json,
+          status: 'pending',
+          notes: nidContradiction
+            ? `نفس الكود (${code}) لكن الرقم القومي مختلف — تلميح مراجعة فقط، المطابقة بالرقم القومي فقط`
+            : `نفس الكود (${code}) — تلميح مراجعة فقط، المطابقة بالرقم القومي فقط`,
+        })
+        .select('id')
+        .maybeSingle();
       return {
-        matched: true,
-        employee_id: emp.id,
-        confidence: 'exact_account_code',
-        confidence_score: 0.92,
-        match_rule: `كود الموظف فريد ومطابق (${code})`,
-        requires_review: false,
-        existing_employee: emp,
+        matched: false,
+        employee_id: null,
+        confidence: 'candidate_review',
+        confidence_score: 0.5,
+        match_rule: nidContradiction
+          ? `نفس الكود (${code}) مع رقم قومي مختلف - بانتظار المراجعة اليدوية (لا دمج تلقائي)`
+          : `كود مشابه (${code}) - بانتظار المراجعة اليدوية (لا مطابقة تلقائية)`,
+        candidate_id: insertedCandidate?.id,
+        requires_review: true,
+        existing_employee: hint,
       };
-    } else if (byCodeAll && byCodeAll.length > 1) {
-      // If multiple employees share the code, match with account or name similarity
-      const sameAccount = byCodeAll.find(e => e.company_account.toLowerCase() === account.toLowerCase());
-      if (sameAccount) {
-        return {
-          matched: true,
-          employee_id: sameAccount.id,
-          confidence: 'exact_account_code',
-          confidence_score: 0.90,
-          match_rule: `كود الموظف مطابق مع الحساب (${account} - ${code})`,
-          requires_review: false,
-          existing_employee: sameAccount,
-        };
-      }
     }
   }
 

@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as XLSX from 'xlsx';
 import { supabaseServer } from './supabaseServer';
 import { normalizeArabicText } from './matchingEngine';
+import { cleanNationalId } from './smartImportService';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. معمارية الحسابات والشركات الفريدة (Company Accounts Architecture)
@@ -403,7 +404,7 @@ export async function runOfficialPrintForensicAudit(
       const firstSheet = wb.Sheets[wb.SheetNames[0]];
       const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: '' });
       rawRows.forEach((row) => {
-        const rawNid = String(row['الرقم القومى 2'] || row['الرقم القومي'] || row['الرقم القومى'] || '').replace(/[^\d]/g, '').trim();
+        const rawNid = cleanNationalId(row['الرقم القومى 2'] || row['الرقم القومي'] || row['الرقم القومى']) || '';
         if (rawNid.length !== 14) return;
         const comp = String(row['الشركه '] || row['الشركه'] || row['الشركة'] || '').trim();
         if (targetAccount !== 'ALL' && comp.toUpperCase() !== targetAccount.toUpperCase()) return;
@@ -447,7 +448,7 @@ export async function runOfficialPrintForensicAudit(
   // ب) فحص وارد التأمين والسجلات المرفوعة عبر واجهة الاستيراد (برنت التأمينات الرسمي)
   incomingRecords.forEach((r) => {
     const raw = (r.raw_data as Record<string, string>) || {};
-    const nid = String(r.national_id || raw['الرقم القومى 2'] || raw['الرقم القومى'] || raw['الرقم القومي'] || '').replace(/[^\d]/g, '').trim();
+    const nid = cleanNationalId(r.national_id || raw['الرقم القومى 2'] || raw['الرقم القومى'] || raw['الرقم القومي']) || '';
     if (!nid || nid.length !== 14) return;
 
     const acc = (r.company_account || raw['الشركه'] || raw['الشركة'] || '').trim();
@@ -473,25 +474,21 @@ export async function runOfficialPrintForensicAudit(
   });
 
   // 2. فهرسة شيت وارد التأمين (Incoming Insurance S1)
+  // Identity linkage is by 14-digit national ID ONLY (user rule): no
+  // employee-code fallback index — a code is a per-company label, never an identity.
   const incomingByNid = new Map<string, typeof incomingRecords[0]>();
-  const incomingByCode = new Map<string, typeof incomingRecords[0]>();
   incomingRecords.forEach((r) => {
     const raw = (r.raw_data as Record<string, string>) || {};
-    const nid = (r.national_id || raw['الرقم القومى'] || raw['الرقم القومي'] || '').trim();
-    const code = (r.employee_code || raw['الكود'] || '').trim();
+    const nid = cleanNationalId(r.national_id || raw['الرقم القومى'] || raw['الرقم القومي']) || '';
     if (nid) incomingByNid.set(nid, r);
-    if (code) incomingByCode.set(code, r);
   });
 
   // 3. فهرسة شيت الاستقالات (Resignations S6)
   const resignationByNid = new Map<string, typeof resignationRecords[0]>();
-  const resignationByCode = new Map<string, typeof resignationRecords[0]>();
   resignationRecords.forEach((r) => {
     const raw = (r.raw_data as Record<string, string>) || {};
-    const nid = (r.national_id || raw['الرقم القومى'] || raw['الرقم القومي'] || '').trim();
-    const code = (r.employee_code || raw['الكود'] || '').trim();
+    const nid = cleanNationalId(r.national_id || raw['الرقم القومى'] || raw['الرقم القومي']) || '';
     if (nid) resignationByNid.set(nid, r);
-    if (code) resignationByCode.set(code, r);
   });
 
   // 4. فهرسة المرتبات (Payroll)
@@ -509,9 +506,11 @@ export async function runOfficialPrintForensicAudit(
 
   payrollRecords.forEach((r) => {
     const raw = (r.raw_data as Record<string, string>) || {};
-    const nid = (r.national_id || raw['الرقم القومي'] || raw['الرقم القومى'] || '').trim();
+    const nid = cleanNationalId(r.national_id || raw['الرقم القومي'] || raw['الرقم القومى']) || '';
     const code = (r.employee_code || raw['الكود'] || '').trim();
-    const key = nid || code;
+    // NID-only identity (user rule): rows without a valid NID stay unlinked —
+    // a bare code never attaches a payroll row to a person.
+    const key = nid;
     if (!key) return;
 
     const acc = (raw['الشركة'] || raw['الشركه'] || '').trim();
@@ -547,10 +546,8 @@ export async function runOfficialPrintForensicAudit(
 
   // 5. فهرسة جدول الموظفين الموحد (Master)
   const masterByNid = new Map<string, typeof masterRecords[0]>();
-  const masterByCode = new Map<string, typeof masterRecords[0]>();
   masterRecords.forEach((m) => {
     if (m.national_id) masterByNid.set(m.national_id.trim(), m);
-    if (m.employee_code) masterByCode.set(m.employee_code.trim(), m);
   });
 
   // جمع كافة الأرقام القومية والأكواد الفريدة لفحصها
@@ -576,9 +573,9 @@ export async function runOfficialPrintForensicAudit(
   for (const nid of Array.from(allNids)) {
     const printRec = officialPrintMap.get(nid);
     const masterRec = masterByNid.get(nid);
-    const payRec = payrollMap.get(nid) || (masterRec?.employee_code ? payrollMap.get(masterRec.employee_code) : undefined);
-    const incomingRec = incomingByNid.get(nid) || (masterRec?.employee_code ? incomingByCode.get(masterRec.employee_code) : undefined);
-    const resRec = resignationByNid.get(nid) || (masterRec?.employee_code ? resignationByCode.get(masterRec.employee_code) : undefined);
+    const payRec = payrollMap.get(nid);
+    const incomingRec = incomingByNid.get(nid);
+    const resRec = resignationByNid.get(nid);
 
     const empCode = masterRec?.employee_code || payRec?.code || printRec?.performance_number || incomingRec?.employee_code || '';
     const empName = masterRec?.employee_name || payRec?.name || incomingRec?.employee_name || printRec?.employee_name || 'بدون اسم';

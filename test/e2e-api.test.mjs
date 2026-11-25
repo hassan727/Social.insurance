@@ -573,7 +573,9 @@ const nidFile = mkXlsx([
   { 'الرقم القومي': '77770000000010', 'الاسم': 'موظف سليم', 'الكود': '8008' },        // valid new person
 ]);
 const nidImp = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '7', company_account: 'MG' }, nidFile);
+const nidImpJ = await nidImp.json().catch(() => ({}));
 check('NID-only classic: import accepted', nidImp.status === 200, String(nidImp.status));
+check('NID-only classic: partial outcome disclosed (2 review rows, no false full success)', nidImpJ.rowsNeedingReview === 2 && (nidImpJ.message || '').includes('يحتاج مراجعة'), JSON.stringify({ r: nidImpJ.rowsNeedingReview, m: (nidImpJ.message || '').slice(0, 90) }));
 
 const mA = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='77770000000001'`)).rows[0];
 check('same code + different NID: master A NOT merged', mA?.consolidated_data?.marker === 'A' && !mA?.consolidated_data?.last_source_update, JSON.stringify(mA?.consolidated_data || null).slice(0, 100));
@@ -611,6 +613,55 @@ const shortConf = (await db.query(`SELECT count(*)::int c FROM matching_conflict
 check('12-digit NID: review conflict recorded', shortConf === 1, 'count=' + shortConf);
 const mNew = (await db.query(`SELECT account_id, national_id FROM employees_master WHERE national_id='77770000000010'`)).rows[0];
 check('valid new NID: master created under import account', mNew?.account_id === 2, JSON.stringify(mNew));
+
+
+// ── Destructive-overwrite guard: partial invalid input must NOT replace valid rows ──
+const guardFile = mkXlsx([
+  { 'الرقم القومي': '77770000000020', 'الاسم': 'موظف استبدال سليم', 'الكود': '8020' },
+  { 'الرقم القومي': 'XX1', 'الاسم': 'موظف غير مكتمل', 'الكود': '8021' },
+]);
+const guardRes = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '7', company_account: 'MG', confirm_overwrite: 'true' }, guardFile);
+const guardJ = await guardRes.json().catch(() => ({}));
+check('overwrite guard: partial invalid input refused with 422', guardRes.status === 422 && guardJ.blockedOverwrite === true && guardJ.invalidNidRows === 1, String(guardRes.status) + ' ' + JSON.stringify(guardJ).slice(0, 120));
+const period7AfterRefusal = (await db.query(`SELECT count(*)::int c FROM monthly_payroll_records WHERE period_year=2026 AND period_month=7 AND account_id=2`)).rows[0].c;
+check('overwrite guard: pre-existing period rows UNTOUCHED (no destructive replace)', period7AfterRefusal === 8, 'rows=' + period7AfterRefusal);
+const cleanOw = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '7', company_account: 'MG', confirm_overwrite: 'true' }, mkXlsx([
+  { 'الرقم القومي': '77770000000020', 'الاسم': 'موظف استبدال سليم', 'الكود': '8020' },
+  { 'الرقم القومي': '77770000000021', 'الاسم': 'موظف استبدال ثان', 'الكود': '8021' },
+]));
+const cleanOwJ = await cleanOw.json().catch(() => ({}));
+check('overwrite guard: complete valid file replaces cleanly', cleanOw.status === 200 && cleanOwJ.rowsNeedingReview === 0, String(cleanOw.status));
+const period7AfterClean = (await db.query(`SELECT count(*)::int c FROM monthly_payroll_records WHERE period_year=2026 AND period_month=7 AND account_id=2`)).rows[0].c;
+check('overwrite guard: clean replace wrote exactly the new rows', period7AfterClean === 2, 'rows=' + period7AfterClean);
+
+// ── Official print path (one of the two named mixed sources): NID-only, no false match ──
+const printMapping = JSON.stringify({ national_id: 'الرقم القومي', employee_name: 'اسم المؤمن عليه', employee_code: 'رقم الاداء' });
+const printFile = mkXlsx([
+  { 'الرقم القومي': '77770000000003', 'اسم المؤمن عليه': 'موظف عربي الأرقام', 'رقم الاداء': '8003', 'المهنة': 'محاسب' },
+  { 'الرقم القومي': '77770000000011', 'اسم المؤمن عليه': 'موظف برنت منتحل', 'رقم الاداء': '8003', 'المهنة': 'سائق' },
+  { 'الرقم القومي': 'BAD99', 'اسم المؤمن عليه': 'موظف برنت تالف', 'رقم الاداء': '8010', 'المهنة': 'عامل' },
+]);
+const printImp = await postImport({ source_type: 'official_insurance_print', column_mapping: printMapping, company_account: 'MG' }, printFile);
+const printImpJ = await printImp.json().catch(() => ({}));
+check('official print: import accepted', printImp.status === 200, String(printImp.status) + ' ' + JSON.stringify(printImpJ).slice(0, 100));
+const mCafter = (await db.query(`SELECT national_id, employee_code, insurance_status FROM employees_master WHERE id=(SELECT id FROM employees_master WHERE employee_code='8003' LIMIT 1)`)).rows[0];
+check('official print: NID row matched master C (insurance status set)', mCafter?.insurance_status === 'مؤمن عليه بالبرنت', JSON.stringify(mCafter));
+check('official print: same code + different NID did NOT move master C', mCafter?.national_id === '77770000000003' && mCafter?.employee_code === '8003', JSON.stringify(mCafter));
+const noPrintDup = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id='77770000000011' OR employee_name='موظف برنت تالف'`)).rows[0].c;
+check('official print: no master created from contradicting/malformed rows', noPrintDup === 0, 'count=' + noPrintDup);
+const printCodeConf = (await db.query(`SELECT count(*)::int c FROM matching_conflicts WHERE conflict_type='code_nid_conflict' AND conflict_data->>'incoming_national_id'='77770000000011'`)).rows[0].c;
+check('official print: same-code/different-NID contradiction recorded for review', printCodeConf >= 1, 'count=' + printCodeConf);
+const printInvConf = (await db.query(`SELECT count(*)::int c FROM matching_conflicts WHERE conflict_type='invalid_national_id' AND conflict_data->>'employee_code'='8010'`)).rows[0].c;
+check('official print: malformed NID recorded for review', printInvConf >= 1, 'count=' + printInvConf);
+const printRow = (await db.query(`SELECT national_id FROM incoming_insurance_records WHERE employee_code='8010' ORDER BY created_at DESC LIMIT 1`)).rows[0];
+check('official print: malformed row kept with NULL national_id (no blind strip)', printRow && printRow.national_id === null, JSON.stringify(printRow));
+
+// ── Audit surface: a NID-less payroll row must NOT link to a master by code alone ──
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, consolidated_data) VALUES ('m.g', 2, '77770000000012', '8002', 'موظف كود متشابه', 'Active', '{}')`);
+const auditNid = await (await api('/api/official-print-audit?account=ALL&refresh=true')).json();
+
+const auditRecNid = (auditNid.sampleRecords || auditNid.records || []).find((r) => r.nationalId === '77770000000012' || r.national_id === '77770000000012');
+check('audit: code-only payroll row NOT identity-linked to master (NID-only)', !!auditRecNid && auditRecNid.foundInPayroll === false, JSON.stringify(auditRecNid ? { f: auditRecNid.foundInPayroll } : 'RECORD NOT FOUND'));
 
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
