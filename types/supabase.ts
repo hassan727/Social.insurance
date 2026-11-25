@@ -474,6 +474,7 @@ export type Database = {
       }
       import_logs: {
         Row: {
+          account_id: number | null
           column_mapping: Json | null
           created_at: string
           file_name: string
@@ -488,6 +489,7 @@ export type Database = {
           total_rows_read: number | null
         }
         Insert: {
+          account_id?: number | null
           column_mapping?: Json | null
           created_at?: string
           file_name: string
@@ -502,6 +504,7 @@ export type Database = {
           total_rows_read?: number | null
         }
         Update: {
+          account_id?: number | null
           column_mapping?: Json | null
           created_at?: string
           file_name?: string
@@ -599,6 +602,7 @@ export type Database = {
       }
       monthly_insurance_records: {
         Row: {
+          account_id: number | null
           created_at: string
           department: string | null
           employee_code: string | null
@@ -615,6 +619,7 @@ export type Database = {
           sap_code: string | null
         }
         Insert: {
+          account_id?: number | null
           created_at?: string
           department?: string | null
           employee_code?: string | null
@@ -631,6 +636,7 @@ export type Database = {
           sap_code?: string | null
         }
         Update: {
+          account_id?: number | null
           created_at?: string
           department?: string | null
           employee_code?: string | null
@@ -648,6 +654,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "monthly_insurance_records_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "company_accounts"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "monthly_insurance_records_import_id_fkey"
             columns: ["import_id"]
             isOneToOne: false
@@ -658,6 +671,7 @@ export type Database = {
       }
       monthly_payroll_records: {
         Row: {
+          account_id: number | null
           attendance_days: string | null
           created_at: string
           department: string | null
@@ -676,6 +690,7 @@ export type Database = {
           sap_code: string | null
         }
         Insert: {
+          account_id?: number | null
           attendance_days?: string | null
           created_at?: string
           department?: string | null
@@ -694,6 +709,7 @@ export type Database = {
           sap_code?: string | null
         }
         Update: {
+          account_id?: number | null
           attendance_days?: string | null
           created_at?: string
           department?: string | null
@@ -712,6 +728,13 @@ export type Database = {
           sap_code?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "monthly_payroll_records_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "company_accounts"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "monthly_payroll_records_import_id_fkey"
             columns: ["import_id"]

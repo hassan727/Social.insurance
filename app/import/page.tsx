@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   UploadCloud, FileSpreadsheet, CheckCircle2, AlertTriangle,
   RefreshCw, AlertCircle, Table, Check, Sparkles,
@@ -69,8 +69,11 @@ export default function ImportPage() {
   const [sourceType,      setSourceType]      = useState<SourceType>('incoming_insurance');
   const [selectedFile,    setSelectedFile]    = useState<File | null>(null);
   const [isDragging,      setIsDragging]      = useState(false);
-  const [periodYear,      setPeriodYear]      = useState<number>(new Date().getFullYear());
-  const [periodMonth,     setPeriodMonth]     = useState<number>(new Date().getMonth() + 1);
+  const [periodYear,      setPeriodYear]      = useState<number | null>(null); // no default: operator must pick the file's real period
+  const [periodMonth,     setPeriodMonth]     = useState<number | null>(null);
+  const [accounts,        setAccounts]        = useState<{ id: number; account_code: string; account_name: string }[]>([]);
+  const [accountsError,   setAccountsError]   = useState(false);
+  const [selectedAccount, setSelectedAccount] = useState<string>(''); // no default: explicit account required for monthly imports
   const [loadingPreview,  setLoadingPreview]  = useState(false);
   const [sheets,          setSheets]          = useState<string[]>([]);
   const [selectedSheet,   setSelectedSheet]   = useState<string>('');
@@ -93,6 +96,26 @@ export default function ImportPage() {
   const isMonthly = sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance';
   const activeSrc = SOURCE_TYPES.find((s) => s.id === sourceType)!;
 
+  /* ── Load selectable accounts (explicit choice, no default) ── */
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/company-accounts');
+        const data = await res.json();
+        if (data.success) setAccounts(data.accounts || []);
+        else setAccountsError(true);
+      } catch { setAccountsError(true); }
+    })();
+  }, []);
+
+  const monthlyContextMissing = isMonthly && (!selectedAccount || !periodYear || !periodMonth);
+  const requireMonthlyContext = (): boolean => {
+    if (!isMonthly) return true;
+    if (!selectedAccount) { toast.warning('اختر الحساب (الشركة) أولاً — لا يوجد حساب افتراضي'); return false; }
+    if (!periodYear || !periodMonth) { toast.warning('حدد سنة وشهر الملف الفعلية — لا يوجد شهر افتراضي'); return false; }
+    return true;
+  };
+
   /* ── File handling ── */
   const handleFileProcess = (file: File) => {
     if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
@@ -113,13 +136,14 @@ export default function ImportPage() {
   /* ── Preview ── */
   const handlePreview = async (sheetName?: string) => {
     if (!selectedFile) { toast.warning('اختر ملف Excel أولاً'); return; }
+    if (!requireMonthlyContext()) return;
     setLoadingPreview(true); setImportResult(null);
     const tid = toast.loading('جارٍ فحص وقراءة الملف...');
     const fd  = new FormData();
     fd.append('file', selectedFile);
     fd.append('source_type', sourceType);
     if (sheetName) fd.append('sheet_name', sheetName);
-    if (isMonthly) { fd.append('period_year', String(periodYear)); fd.append('period_month', String(periodMonth)); }
+    if (isMonthly) { fd.append('period_year', String(periodYear)); fd.append('period_month', String(periodMonth)); fd.append('company_account', selectedAccount); }
     try {
       const res  = await fetch('/api/import/preview', { method: 'POST', body: fd });
       const data = await res.json();
@@ -143,6 +167,7 @@ export default function ImportPage() {
   /* ── Execute import ── */
   const handleExecuteImport = async () => {
     if (!selectedFile || !selectedSheet) { toast.error('يرجى معاينة الملف أولاً'); return; }
+    if (!requireMonthlyContext()) return;
     setImporting(true); setUploadProgress(10);
     setUploadStage('جارٍ تهيئة البيانات والتحقق من المعايير...');
     const interval = setInterval(() => {
@@ -159,7 +184,7 @@ export default function ImportPage() {
     fd.append('sheet_name', selectedSheet);
     fd.append('column_mapping', JSON.stringify(columnMapping));
     fd.append('confirm_overwrite', confirmOverwrite ? 'true' : 'false');
-    if (isMonthly) { fd.append('period_year', String(periodYear)); fd.append('period_month', String(periodMonth)); }
+    if (isMonthly) { fd.append('period_year', String(periodYear)); fd.append('period_month', String(periodMonth)); fd.append('company_account', selectedAccount); }
     try {
       const res  = await fetch('/api/import/execute', { method: 'POST', body: fd });
       const data = await res.json();
@@ -375,28 +400,46 @@ export default function ImportPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <Calendar style={{ width: 18, height: 18, color: '#818cf8' }} />
                     <div>
-                      <p style={{ fontSize: 12, fontWeight: 700, color: '#f1f5f9', margin: 0 }}>فترة الملف الشهري</p>
-                      <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>اختر السنة والشهر اللذين ينتمي لهما هذا الملف</p>
+                      <p style={{ fontSize: 12, fontWeight: 700, color: '#f1f5f9', margin: 0 }}>حساب وفترة الملف الشهري</p>
+                      <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>اختر الحساب والسنة والشهر الذين ينتمي لهم هذا الملف — بلا أي افتراض تلقائي</p>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 10 }}>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.05)', border: `1px solid ${!selectedAccount ? 'rgba(251,113,133,0.4)' : 'rgba(52,211,153,0.3)'}` }}>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>الحساب:</label>
+                      <select
+                        value={selectedAccount}
+                        onChange={(e) => setSelectedAccount(e.target.value)}
+                        style={{ background: 'transparent', border: 'none', color: '#f1f5f9', fontSize: 13, fontWeight: 700, cursor: 'pointer', outline: 'none', maxWidth: 220 }}
+                      >
+                        <option value="" style={{ background: '#111827' }}>اختر الحساب…</option>
+                        {accounts.map((a) => (
+                          <option key={a.id} value={a.account_code} style={{ background: '#111827' }}>{a.account_name}</option>
+                        ))}
+                      </select>
+                      {accountsError && <span style={{ fontSize: 10, color: '#fb7185' }}>تعذر تحميل الحسابات</span>}
+                    </div>
                     {[
                       { label: 'الشهر', value: periodMonth, onChange: setPeriodMonth, options: Array.from({ length: 12 }, (_, i) => ({ v: i + 1, l: `${i + 1} · ${new Date(2026, i).toLocaleString('ar-EG', { month: 'long' })}` })) },
                       { label: 'السنة',  value: periodYear,  onChange: setPeriodYear,  options: [2024, 2025, 2026, 2027].map((y) => ({ v: y, l: String(y) })) },
                     ].map((sel) => (
-                      <div key={sel.label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(148,163,184,0.1)' }}>
+                      <div key={sel.label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.05)', border: `1px solid ${sel.value === null ? 'rgba(251,113,133,0.4)' : 'rgba(148,163,184,0.1)'}` }}>
                         <label style={{ fontSize: 11, fontWeight: 700, color: '#64748b' }}>{sel.label}:</label>
                         <select
-                          value={sel.value}
-                          onChange={(e) => sel.onChange(parseInt(e.target.value, 10))}
+                          value={sel.value ?? ''}
+                          onChange={(e) => { const v = parseInt(e.target.value, 10); if (!Number.isNaN(v)) sel.onChange(v); }}
                           style={{ background: 'transparent', border: 'none', color: '#f1f5f9', fontSize: 13, fontWeight: 700, cursor: 'pointer', outline: 'none' }}
                         >
+                          <option value="" style={{ background: '#111827' }}>اختر…</option>
                           {sel.options.map((o) => (
                             <option key={o.v} value={o.v} style={{ background: '#111827' }}>{o.l}</option>
                           ))}
                         </select>
                       </div>
                     ))}
+                    {monthlyContextMissing && (
+                      <span style={{ fontSize: 11, color: '#fda4af', alignSelf: 'center' }}>الحساب والشهر والسنة مطلوبون قبل الاستيراد</span>
+                    )}
                   </div>
                 </div>
               </motion.div>

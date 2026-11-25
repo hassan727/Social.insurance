@@ -15,6 +15,13 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'يجب تقديم معرّف واحد على الأقل للموظف' }, { status: 400 });
     }
 
+    // A name alone is not an identifier: without a national ID or employee
+    // code the monthly fetch would be unfiltered and could return strangers'
+    // rows. Reject instead of risking cross-person data.
+    if (!nationalId && !employeeCode) {
+      return NextResponse.json({ error: 'البحث بالاسم فقط غير مدعوم للتفاصيل — يلزم الرقم القومي أو كود الموظف' }, { status: 400 });
+    }
+
     const selectedYear = yearStr ? parseInt(yearStr, 10) : undefined;
     const selectedMonth = monthStr ? parseInt(monthStr, 10) : undefined;
 

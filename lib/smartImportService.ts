@@ -1054,6 +1054,20 @@ export async function importSheet(
       }
 
       // E) Phase 1 Bridge Batches (Bridging the Two Worlds):
+      // Stamp account identity on monthly bridge rows with the same evidence
+      // rule as the migration (exact national_id -> employees_master).
+      // Unresolved rows keep account_id = null and land in quarantine.
+      const bridgeNids = [...new Set([...payrollBatch, ...insuranceBatch].map((r) => r.national_id).filter(Boolean))] as string[];
+      const accountByNid = new Map<string, number | null>();
+      for (let i = 0; i < bridgeNids.length; i += 500) {
+        const { data: masters } = await supabaseServer
+          .from('employees_master')
+          .select('national_id, account_id')
+          .in('national_id', bridgeNids.slice(i, i + 500));
+        (masters || []).forEach((m) => accountByNid.set(m.national_id as string, (m.account_id as number | null) ?? null));
+      }
+      payrollBatch.forEach((r) => { r.account_id = (r.national_id && accountByNid.get(r.national_id)) || null; });
+      insuranceBatch.forEach((r) => { r.account_id = (r.national_id && accountByNid.get(r.national_id)) || null; });
       for (let i = 0; i < incomingBatch.length; i += 150) {
         const chunk = incomingBatch.slice(i, i + 150);
         // Upsert: update existing record if same employee in same company_account

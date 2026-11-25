@@ -1470,7 +1470,7 @@ export default function LookupPage() {
                               </td>
                               <td>
                                 {(() => {
-                                  const st = c.status || 'مستمر';
+                                  const st = c.status || '—'; // unknown stays unknown — never defaulted to مستمر
                                   const isActive = /مستمر|active|نشط/i.test(st) && !/غير|not/i.test(st);
                                   const isInactive = /غير|not active|منته|ملغ/i.test(st);
                                   return (
@@ -1875,8 +1875,10 @@ export default function LookupPage() {
                       <div style={{ padding: '10px 18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
                         {[
                           { icon: '💼', label: 'الوظيفة', value: details.incomingInsurance.record?.job_title },
-                          { icon: '🏢', label: 'الحالة الوظيفية', value: details.incomingInsurance.record?.status, colorFn: (v: string) => /غير|not active|منته|ملغ/i.test(v) ? '#fda4af' : /مستمر|active|نشط/i.test(v) ? '#6ee7b7' : '#e2e8f0' },
-                          { icon: '🛡️', label: 'الحالة التأمينية', value: details.incomingInsurance.record?.insurance_status, colorFn: (v: string) => /غير مؤمن|ملغ|منته|not/i.test(v) ? '#fda4af' : /مؤمن|active|مشترك/i.test(v) ? '#c4b5fd' : '#e2e8f0' },
+                          { icon: '🗂️', label: 'حالة وارد التأمين (مصدره)', value: details.incomingInsurance.record?.status, colorFn: (v: string) => /غير|not active|منته|ملغ/i.test(v) ? '#fda4af' : '#e2e8f0' },
+                          { icon: '🛡️', label: 'الحالة التأمينية (وارد)', value: details.incomingInsurance.record?.insurance_status, colorFn: (v: string) => /غير مؤمن|ملغ|منته|not/i.test(v) ? '#fda4af' : /مؤمن|active|مشترك/i.test(v) ? '#c4b5fd' : '#e2e8f0' },
+                          { icon: '📇', label: 'حالة الدليل (Database)', value: details.masterStatus?.value, colorFn: (v: string) => /غير|not active|منته|ملغ/i.test(v) ? '#fda4af' : '#e2e8f0' },
+                          { icon: '📇', label: 'التأمين في الدليل', value: details.masterStatus?.insuranceValue, colorFn: (v: string) => /غير مؤمن|ملغ|منته|not/i.test(v) ? '#fda4af' : '#e2e8f0' },
                           {
                             icon: '🔢',
                             label: 'الرقم التأميني',
@@ -2289,8 +2291,10 @@ export default function LookupPage() {
                                 { label: 'Account (الشركة)', value: details.incomingInsurance.company_account, accent: '#34d399' },
                                 { label: 'الوظيفة', value: details.incomingInsurance.record?.job_title },
                                 { label: 'الرقم التأميني', value: details.incomingInsurance.record?.insurance_number, mono: true, accent: '#818cf8' },
-                                { label: 'الحالة الوظيفية', value: details.incomingInsurance.record?.status },
-                                { label: 'الحالة التأمينية', value: details.incomingInsurance.record?.insurance_status },
+                                { label: 'حالة وارد التأمين (مصدره)', value: details.incomingInsurance.record?.status },
+                                { label: 'الحالة التأمينية (وارد)', value: details.incomingInsurance.record?.insurance_status },
+                                { label: 'حالة الدليل (Database)', value: details.masterStatus?.value },
+                                { label: 'التأمين في الدليل', value: details.masterStatus?.insuranceValue },
                                 { label: 'بداية الاشتراك', value: details.incomingInsurance.record?.subscription_start_date, mono: true },
                                 { label: 'نهاية الاشتراك', value: details.incomingInsurance.record?.subscription_end_date, mono: true },
                                 { label: 'سبب الانتهاء', value: details.incomingInsurance.record?.termination_reason },

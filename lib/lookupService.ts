@@ -736,12 +736,18 @@ export interface MonthAvailability {
   hasInsurance: boolean;
 }
 
-export async function getAvailableImportedPeriods(): Promise<MonthAvailability[]> {
-  const { data: logs } = await supabaseServer
+export async function getAvailableImportedPeriods(accountId?: number | null): Promise<MonthAvailability[]> {
+  let logsQuery = supabaseServer
     .from('import_logs')
     .select('source_type, period_year, period_month')
     .not('period_year', 'is', null)
     .not('period_month', 'is', null);
+  // When an account is known, only that account's imported periods count —
+  // another company's file must never light this employee's month chips.
+  if (accountId !== undefined && accountId !== null) {
+    logsQuery = logsQuery.eq('account_id', accountId);
+  }
+  const { data: logs } = await logsQuery;
 
   const periodsMap = new Map<string, { year: number; month: number; hasPayroll: boolean; hasInsurance: boolean }>();
 
@@ -924,6 +930,11 @@ export interface EmployeeDetailsResult {
     insuranceRecord?: Record<string, unknown> | null;
   };
   unifiedProfile?: UnifiedEmployeeProfile;
+  masterStatus?: {
+    value: string | null;
+    insuranceValue: string | null;
+    source: string;
+  };
   s1_calculation?: S1CalculationInfo;
   s6_calculation?: S6CalculationInfo;
 }
@@ -941,6 +952,20 @@ export async function getEmployeeFullDetails(params: {
 
   const cleanNid = national_id ? national_id.replace(/\D/g, '') : '';
   const hasValidNid = cleanNid.length === 14;
+
+  // 0. Resolve the employee's account FIRST (exact national_id match on
+  // employees_master). Every monthly fact below is scoped to this account.
+  // No resolved account => quarantine: facts are flagged, never guessed.
+  let masterEmp: Record<string, unknown> | null = null;
+  if (hasValidNid) {
+    let mQuery = supabaseServer.from('employees_master').select('*').eq('national_id', cleanNid);
+    if (requestedAccount && requestedAccount !== '—') {
+      mQuery = mQuery.ilike('company_account', requestedAccount);
+    }
+    const { data: mData } = await mQuery.limit(1).maybeSingle();
+    if (mData) masterEmp = mData;
+  }
+  const resolvedAccountId = (masterEmp?.account_id as number | null) ?? null;
 
   // 1. Fetch matching incoming insurance records
   let incomingQuery = supabaseServer.from('incoming_insurance_records').select('*');
@@ -1006,38 +1031,75 @@ export async function getEmployeeFullDetails(params: {
   const { data: resData } = await resQuery.limit(10);
   if (resData) resignationRecords = resData;
 
-  // 3. Fetch all monthly payroll records for this employee
-  let payrollQuery = supabaseServer.from('monthly_payroll_records').select('*');
-  if (hasValidNid) {
-    payrollQuery = payrollQuery.eq('national_id', cleanNid);
-  } else {
-    const payrollOrConditions: string[] = [];
-    if (national_id) payrollOrConditions.push(`national_id.eq.${national_id}`);
-    if (employee_code) payrollOrConditions.push(`employee_code.eq.${employee_code}`);
-    if (payrollOrConditions.length > 0) payrollQuery = payrollQuery.or(payrollOrConditions.join(','));
-  }
-
+  // 3. Fetch all monthly payroll records for this employee — scoped to the
+  // employee's account. Without a national_id or code there is NO fetch at
+  // all (a name alone must never pull an unfiltered monthly scan).
   let payrollRecords: Record<string, unknown>[] = [];
-  const { data: payData } = await payrollQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
-  if (payData) payrollRecords = payData;
+  if (hasValidNid || employee_code) {
+    let payrollQuery = supabaseServer.from('monthly_payroll_records').select('*');
+    if (hasValidNid) {
+      payrollQuery = payrollQuery.eq('national_id', cleanNid);
+    } else {
+      const payrollOrConditions: string[] = [];
+      if (national_id) payrollOrConditions.push(`national_id.eq.${national_id}`);
+      if (employee_code) payrollOrConditions.push(`employee_code.eq.${employee_code}`);
+      if (payrollOrConditions.length > 0) payrollQuery = payrollQuery.or(payrollOrConditions.join(','));
+    }
+    if (resolvedAccountId !== null) {
+      payrollQuery = payrollQuery.eq('account_id', resolvedAccountId);
+    }
+    const { data: payData } = await payrollQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
+    if (payData) payrollRecords = payData;
 
-  // 4. Fetch all monthly insurance records for this employee
-  let miQuery = supabaseServer.from('monthly_insurance_records').select('*');
-  if (hasValidNid) {
-    miQuery = miQuery.eq('national_id', cleanNid);
-  } else {
-    const miOrConditions: string[] = [];
-    if (national_id) miOrConditions.push(`national_id.eq.${national_id}`);
-    if (employee_code) miOrConditions.push(`employee_code.eq.${employee_code}`);
-    if (miOrConditions.length > 0) miQuery = miQuery.or(miOrConditions.join(','));
+    // Quarantine surface: same person's rows with NO account attribution are
+    // excluded above; count and report them instead of silently mixing.
+    if (hasValidNid && resolvedAccountId !== null) {
+      const { count: quarantinedPay } = await supabaseServer
+        .from('monthly_payroll_records')
+        .select('*', { count: 'exact', head: true })
+        .eq('national_id', cleanNid)
+        .is('account_id', null);
+      if (quarantinedPay && quarantinedPay > 0) {
+        conflicts.push(`${quarantinedPay} سجل مرتبات شهري للموظف بلا حساب مؤكد — أُقصيت من العرض وتحتاج مراجعة`);
+      }
+    }
+  } else if (employee_name) {
+    conflicts.push('البحث بالاسم فقط لا يكفي لجلب السجلات الشهرية — يلزم الرقم القومي أو كود الموظف');
   }
 
+  // 4. Fetch all monthly insurance records for this employee — same
+  // account scoping and no-identifier guard as payroll.
   let monthlyInsRecords: Record<string, unknown>[] = [];
-  const { data: miData } = await miQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
-  if (miData) monthlyInsRecords = miData;
+  if (hasValidNid || employee_code) {
+    let miQuery = supabaseServer.from('monthly_insurance_records').select('*');
+    if (hasValidNid) {
+      miQuery = miQuery.eq('national_id', cleanNid);
+    } else {
+      const miOrConditions: string[] = [];
+      if (national_id) miOrConditions.push(`national_id.eq.${national_id}`);
+      if (employee_code) miOrConditions.push(`employee_code.eq.${employee_code}`);
+      if (miOrConditions.length > 0) miQuery = miQuery.or(miOrConditions.join(','));
+    }
+    if (resolvedAccountId !== null) {
+      miQuery = miQuery.eq('account_id', resolvedAccountId);
+    }
+    const { data: miData } = await miQuery.order('period_year', { ascending: true }).order('period_month', { ascending: true });
+    if (miData) monthlyInsRecords = miData;
 
-  // 5. Get available imported periods
-  const availablePeriods = await getAvailableImportedPeriods();
+    if (hasValidNid && resolvedAccountId !== null) {
+      const { count: quarantinedIns } = await supabaseServer
+        .from('monthly_insurance_records')
+        .select('*', { count: 'exact', head: true })
+        .eq('national_id', cleanNid)
+        .is('account_id', null);
+      if (quarantinedIns && quarantinedIns > 0) {
+        conflicts.push(`${quarantinedIns} سجل تأمينات شهري للموظف بلا حساب مؤكد — أُقصيت من العرض وتحتاج مراجعة`);
+      }
+    }
+  }
+
+  // 5. Get available imported periods — for THIS account only
+  const availablePeriods = await getAvailableImportedPeriods(resolvedAccountId);
 
   // Calculate First Appearances strictly from imported and verified data
   let firstPayroll: { year: number; month: number } | null = null;
@@ -1180,15 +1242,9 @@ export async function getEmployeeFullDetails(params: {
   const targetCode = employee_code || (incomingRecord?.employee_code as string) || '';
   const targetName = employee_name || (incomingRecord?.employee_name as string) || '';
 
-  let masterEmp: Record<string, unknown> | null = null;
-  if (hasValidNid) {
-    let mQuery = supabaseServer.from('employees_master').select('*').eq('national_id', cleanNid);
-    if (requestedAccount && requestedAccount !== '—') {
-      mQuery = mQuery.ilike('company_account', requestedAccount);
-    }
-    const { data: mData } = await mQuery.limit(1).maybeSingle();
-    if (mData) masterEmp = mData;
-  } else {
+  // masterEmp was already resolved above for valid NIDs; try looser matching
+  // only when it is still unknown.
+  if (!masterEmp) {
     const masterOrConds: string[] = [];
     if (targetNid) masterOrConds.push(`national_id.eq.${targetNid}`);
     if (targetCode) masterOrConds.push(`employee_code.eq.${targetCode}`);
@@ -1427,7 +1483,7 @@ export async function getEmployeeFullDetails(params: {
   const unifiedProfile: UnifiedEmployeeProfile = {
     found: Boolean(masterEmp || allSheetRecords.length > 0 || incomingRecord),
     masterId: masterEmp?.id as string || null,
-    companyAccount: (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null) || 'E.G',
+    companyAccount: (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null), // no default: unknown stays unknown
     employeeCode: cleanDbCode || targetCode,
     employeeName: cleanDbName || targetName,
     nationalId: cleanDbNid || targetNid,
@@ -1452,8 +1508,26 @@ export async function getEmployeeFullDetails(params: {
     ),
   };
 
-  // Company account rule: Sharka in incoming insurance, master, or requested
-  const companyAccount = (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null) || 'E.G';
+  // Company account: only evidence-supported sources. No fallback.
+  const companyAccount = (incomingRecord?.company_account as string) || (masterEmp?.company_account as string) || (requestedAccount && requestedAccount !== '—' ? requestedAccount : null);
+
+  // Source-separated status conflicts: facts from different sources are
+  // surfaced side by side, never reconciled by an inferred precedence, and
+  // missing payroll is never treated as proof of termination.
+  const waradStatus = String(incomingRecord?.status || '');
+  const waradLooksActive = /مستمر|active|نشط/i.test(waradStatus) && !/غير|not/i.test(waradStatus);
+  const masterStatusStr = String(masterEmp?.current_status || '');
+  const masterLooksInactive = /غير|not active|منته|ملغ/i.test(masterStatusStr);
+  const masterLooksActive = /مستمر|active|نشط/i.test(masterStatusStr) && !/غير|not/i.test(masterStatusStr);
+  if (resignationRecords.length > 0 && waradLooksActive) {
+    conflicts.push(`تعارض حالة: يوجد ${resignationRecords.length} سجل استقالة بينما حالة وارد التأمين "${waradStatus}" — يحتاج مراجعة`);
+  }
+  if (masterLooksInactive && waradLooksActive) {
+    conflicts.push(`تعارض حالة: حالة الدليل "${masterStatusStr}" بينما حالة وارد التأمين "${waradStatus}" — يحتاج مراجعة`);
+  }
+  if (masterLooksActive && resignationRecords.length > 0) {
+    conflicts.push(`تعارض حالة: حالة الدليل "${masterStatusStr}" بينما يوجد سجل استقالة مسجل — يحتاج مراجعة`);
+  }
 
   // ── S1 Calculation (استمارة س1 - بداية الاشتراك) ──
   const s1Year = firstBoth?.year || firstPayroll?.year || (monthlyInsRecords[0]?.period_year as number) || null;
@@ -1492,15 +1566,20 @@ export async function getEmployeeFullDetails(params: {
         insurance_number: (incomingRecord?.insurance_number as string) || (masterEmp?.insurance_number as string) || (socialInsData?.insuranceNumber as string) || null,
         job_title: (incomingRecord?.job_title as string) || (masterEmp?.current_job_title as string) || cleanDbJob || null,
         insurance_job_title: (incomingRecord?.insurance_job_title as string) || (masterEmp?.insurance_job_title as string) || (socialInsData?.insuranceJobTitle as string) || null,
-        status: (incomingRecord?.status as string) || (masterEmp?.current_status as string) || cleanDbStatus || 'Active',
-        insurance_status: (incomingRecord?.insurance_status as string) || (masterEmp?.insurance_status as string) || (socialInsData?.insuranceStatus as string) || null,
+        status: (incomingRecord?.status as string) || null, // warad record's own status only — master status is reported separately
+        insurance_status: (incomingRecord?.insurance_status as string) || null, // warad's own insurance status only
         subscription_start_date: (incomingRecord?.subscription_start_date as string) || (masterEmp?.insurance_start_date as string) || (socialInsData?.subscriptionStartDate as string) || null,
-        company_account: companyAccount || (masterEmp?.company_account as string) || 'E.G',
+        company_account: companyAccount || (masterEmp?.company_account as string) || null,
         employee_code: (incomingRecord?.employee_code as string) || (masterEmp?.employee_code as string) || cleanDbCode || targetCode || null,
         national_id: (incomingRecord?.national_id as string) || (masterEmp?.national_id as string) || cleanDbNid || targetNid || null,
         employee_name: (incomingRecord?.employee_name as string) || (masterEmp?.employee_name as string) || cleanDbName || targetName || 'بدون اسم',
       },
-      company_account: companyAccount || (masterEmp?.company_account as string) || 'E.G',
+      company_account: companyAccount || (masterEmp?.company_account as string) || null,
+    },
+    masterStatus: {
+      value: (masterEmp?.current_status as string) || null,
+      insuranceValue: (masterEmp?.insurance_status as string) || null,
+      source: 'employees_master',
     },
     resignation: {
       found: resignationRecords.length > 0,

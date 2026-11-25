@@ -17,6 +17,26 @@ function normalizeArabicText(text: string): string {
     .toLowerCase();
 }
 
+// Resolve an operator-selected account against company_accounts (id, code, or alias).
+// Returns null when unknown/ambiguous — callers must reject, never default.
+async function resolveAccountId(raw: string): Promise<number | null> {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const { data, error } = await supabaseServer
+    .from('company_accounts')
+    .select('id, account_code, aliases')
+    .eq('is_active', true);
+  if (error || !data) return null;
+  const asNum = Number(trimmed);
+  const lowered = trimmed.toLowerCase();
+  const match = data.find((a) =>
+    (Number.isInteger(asNum) && a.id === asNum) ||
+    a.account_code.toLowerCase() === lowered ||
+    (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === lowered))
+  );
+  return match ? match.id : null;
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
@@ -26,6 +46,7 @@ export async function POST(request: Request) {
     const mappingJson = formData.get('column_mapping') as string | null;
     const yearStr = formData.get('period_year') as string | null;
     const monthStr = formData.get('period_month') as string | null;
+    const accountRaw = formData.get('company_account') as string | null;
     const confirmOverwrite = formData.get('confirm_overwrite') === 'true';
 
     if (!file || !sourceType || !mappingJson) {
@@ -46,7 +67,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'يجب تحديد السنة والشهر لملفات المرتبات والتأمينات الشهرية' }, { status: 400 });
     }
 
-    // Check for previous import
+    // Account context is mandatory for monthly imports — explicit operator
+    // selection, validated server-side. No default, no filename inference.
+    let accountId: number | null = null;
+    if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
+      if (!accountRaw || !accountRaw.trim()) {
+        return NextResponse.json({ error: 'يجب اختيار الحساب (الشركة) صراحةً قبل استيراد ملف شهري' }, { status: 400 });
+      }
+      accountId = await resolveAccountId(accountRaw);
+      if (accountId === null) {
+        return NextResponse.json({ error: 'الحساب المحدد غير معروف. أضفه أولاً في الحسابات أو راجع الإدخال — لا يوجد افتراض تلقائي.' }, { status: 400 });
+      }
+    }
+
+    // Check for previous import — scoped to the SAME account + period, so one
+    // company's re-import never touches another company's data.
     let hasExisting = false;
     if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
       const { count } = await supabaseServer
@@ -54,7 +89,8 @@ export async function POST(request: Request) {
         .select('*', { count: 'exact', head: true })
         .eq('source_type', sourceType)
         .eq('period_year', periodYear!)
-        .eq('period_month', periodMonth!);
+        .eq('period_month', periodMonth!)
+        .eq('account_id', accountId!);
       hasExisting = (count || 0) > 0;
     } else {
       const { count } = await supabaseServer
@@ -73,7 +109,8 @@ export async function POST(request: Request) {
       if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
         existingQuery = existingQuery
           .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!);
+          .eq('period_month', periodMonth!)
+          .eq('account_id', accountId!);
       }
 
       const { data: existingLog } = await existingQuery
@@ -133,25 +170,29 @@ export async function POST(request: Request) {
           .from('monthly_payroll_records')
           .delete()
           .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!);
+          .eq('period_month', periodMonth!)
+          .eq('account_id', accountId!);
         await supabaseServer
           .from('import_logs')
           .delete()
           .eq('source_type', sourceType)
           .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!);
+          .eq('period_month', periodMonth!)
+          .eq('account_id', accountId!);
       } else if (sourceType === 'monthly_insurance') {
         await supabaseServer
           .from('monthly_insurance_records')
           .delete()
           .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!);
+          .eq('period_month', periodMonth!)
+          .eq('account_id', accountId!);
         await supabaseServer
           .from('import_logs')
           .delete()
           .eq('source_type', sourceType)
           .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!);
+          .eq('period_month', periodMonth!)
+          .eq('account_id', accountId!);
       } else if (sourceType === 'incoming_insurance' || (sourceType as string) === 'official_insurance_print') {
         if ((sourceType as string) === 'official_insurance_print') {
           await supabaseServer
@@ -189,6 +230,7 @@ export async function POST(request: Request) {
         sheet_name: targetSheetName,
         period_year: periodYear,
         period_month: periodMonth,
+        account_id: accountId,
         total_rows_read: totalRowsRead,
         column_mapping: columnMapping,
       })
@@ -255,7 +297,8 @@ export async function POST(request: Request) {
           national_id: natId || getVal(row, 'national_id') || rawRowObj['الرقم القومى 2'] || rawRowObj['الرقم القومي'] || null,
           job_title: getVal(row, 'job_title') || null,
           status: getVal(row, 'status') || rawRowObj['الحاله '] || rawRowObj['الحالة'] || null,
-          company_account: getVal(row, 'company_account') || rawRowObj['الشركه '] || rawRowObj['الشركه'] || rawRowObj['الشركة'] || 'E.G',
+          // No default account: missing company text stays null and surfaces for review
+          company_account: getVal(row, 'company_account') || rawRowObj['الشركه '] || rawRowObj['الشركه'] || rawRowObj['الشركة'] || null,
           insurance_number: getVal(row, 'insurance_number') || rawRowObj['الرقم التأميني للمؤمن علية'] || rawRowObj['الرقم التاميني للمؤمن علية'] || null,
           insurance_status: getVal(row, 'insurance_status') || 'مؤمن عليه',
           termination_reason: getVal(row, 'termination_reason') || null,
@@ -287,6 +330,7 @@ export async function POST(request: Request) {
           import_id: importId,
           period_year: periodYear!,
           period_month: periodMonth!,
+          account_id: accountId!,
           employee_code: empCode || null,
           national_id: natId || null,
           employee_name: empName || null,
@@ -304,6 +348,7 @@ export async function POST(request: Request) {
           import_id: importId,
           period_year: periodYear!,
           period_month: periodMonth!,
+          account_id: accountId!,
           employee_code: empCode || null,
           employee_name: empName || null,
           national_id: natId || null,
