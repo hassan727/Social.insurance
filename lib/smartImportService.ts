@@ -1011,7 +1011,9 @@ export async function importSheet(
         // الشركه/الشركة cell wins over the operator-selected account. On a
         // sheet that HAS a company column, a blank or unknown cell is
         // fail-closed review — never the operator default, never guessed.
-        const rowAccCell = String(rowData['الشركه'] ?? rowData['الشركة'] ?? '').trim();
+        // Registered sheets store the company cell under the mapped key
+        // (company_account), not the raw header text — read both.
+        const rowAccCell = String(rowData['company_account'] ?? rowData['الشركه'] ?? rowData['الشركة'] ?? '').trim();
         let rowAccountId: number | null = null;
         if (rowAccCell) {
           rowAccountId = resolveRowAccount(rowAccCell);
@@ -1146,7 +1148,9 @@ export async function importSheet(
               national_id: rawNatId || null,
               employee_name: rawName || null,
               existing_account: matchedEmp.company_account,
-              import_account: companyAccount,
+              // Resolved ROW account (explicit cell wins over the operator
+              // selection), not the workbook/operator account.
+              import_account: effectiveAccText,
             });
             continue;
           }
