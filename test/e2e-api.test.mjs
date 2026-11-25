@@ -821,6 +821,80 @@ check('CAT6: valid rows DO have latest sheet_data (no collateral loss)', okSD ==
 const orphanHist = (await db.query(`SELECT count(*)::int c FROM employee_history h LEFT JOIN employees_master em ON em.id=h.employee_id WHERE em.id IS NULL`)).rows[0].c;
 check('CAT6: no orphan history rows (FK-safe flush)', orphanHist === 0, 'orphans=' + orphanHist);
 
+// CAT7: account-scoped checklist writes + data-quality coverage with
+// same-named per-account catalogs, legacy shared fallback, ambiguous
+// fail-closed. Fixtures: Requests in BOTH accounts, Archives only in EG,
+// one shared مناقضات sheet, two shared وارد sheets (ambiguity), RES in both.
+await db.query(`
+  INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
+    ('m.g', 2, '88880000000041', '8841', 'موظف مودرن قائمة', 'Active'),
+    ('E.G', 1, '88880000000042', '8842', 'موظف غاز قائمة', 'Active'),
+    ('m.g', 2, '88880000000043', '8843', 'موظف مودرن مستقيل', 'Active'),
+    ('E.G', 1, '88880000000044', '8844', 'موظف غاز مستقيل', 'Active'),
+    ('m.g', 2, '88880000000045', '8845', 'موظف مودرن جديد', 'Active');
+  INSERT INTO dynamic_sheets (sheet_name, display_name, column_definitions, matching_keys, account_id) VALUES
+    ('Requests','Requests','[]'::jsonb,ARRAY['national_id'],1),
+    ('Requests','Requests','[]'::jsonb,ARRAY['national_id'],2),
+    ('Archives','Archives','[]'::jsonb,ARRAY['national_id'],1),
+    ('New','New','[]'::jsonb,ARRAY['national_id'],1),
+    ('ارقام وارد التامين','وارد مشترك أ','[]'::jsonb,ARRAY['national_id'],NULL),
+    ('وارد قديم','وارد مشترك ب','[]'::jsonb,ARRAY['national_id'],NULL),
+    ('RES','RES','[]'::jsonb,ARRAY['national_id'],1),
+    ('RES','RES','[]'::jsonb,ARRAY['national_id'],2);`);
+// Deterministic other-account-only scenario for 'New': remove any legacy
+// shared 'New' catalog (CAT7 is the final block; earlier assertions already ran).
+await db.query(`DELETE FROM sheet_data WHERE sheet_id IN (SELECT id FROM dynamic_sheets WHERE sheet_name='New' AND account_id IS NULL)`);
+await db.query(`DELETE FROM dynamic_sheets WHERE sheet_name='New' AND account_id IS NULL`);
+const resSheet1 = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name='RES' AND account_id=1`)).rows[0].id;
+const resSheet2 = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name='RES' AND account_id=2`)).rows[0].id;
+const emp43 = (await db.query(`SELECT id FROM employees_master WHERE national_id='88880000000043'`)).rows[0].id;
+const emp44 = (await db.query(`SELECT id FROM employees_master WHERE national_id='88880000000044'`)).rows[0].id;
+await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_national_id, row_code, row_data, is_latest) VALUES
+  ($1, $3, '88880000000043', '8843', '{"تاريخ الاستقاله":"2026-01-01"}', true),
+  ($2, $4, '88880000000044', '8844', '{"تاريخ الاستقاله":"2026-01-02"}', true)`, [resSheet2, resSheet1, emp43, emp44]);
+
+const postChecklist = (payload) => api('/api/checklist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+
+// 1) same-named catalogs: account-2 employee's request lands ONLY in account-2 Requests
+const cl1 = await postChecklist({ national_id: '88880000000041', employee_code: '8841', employee_name: 'موظف مودرن قائمة', request_type: 'خطاب', request_status: 'جاري' });
+check('CAT7: checklist POST with same-named Requests catalogs returns 200', cl1.status === 200, String(cl1.status));
+const reqAcct = (await db.query(`SELECT DISTINCT ds.account_id FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000041' AND ds.sheet_name='Requests'`)).rows.map((r) => r.account_id);
+check('CAT7: write landed ONLY in account-2 Requests catalog', reqAcct.length === 1 && reqAcct[0] === 2, JSON.stringify(reqAcct));
+
+// 2) never another account's sheet: account-2 employee's Archives update must
+// NOT land in account-1's Archives; it lands in the legacy SHARED Archives.
+const cl2 = await postChecklist({ national_id: '88880000000041', employee_code: '8841', employee_name: 'موظف مودرن قائمة', archives_supply_status: 'تم التوريد' });
+const archOtherAcct = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000041' AND ds.sheet_name='Archives' AND ds.account_id=1`)).rows[0].c;
+check('CAT7: NO checklist write into account-1 (other account) Archives', archOtherAcct === 0, 'rows=' + archOtherAcct);
+const archShared = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000041' AND ds.sheet_name='Archives' AND ds.account_id IS NULL`)).rows[0].c;
+check('CAT7: the write used the legacy SHARED Archives (fallback, not cross-account)', archShared === 1, 'rows=' + archShared);
+
+// 2b) other-account-only, no shared fallback: fail closed with warning
+const cl2b = await postChecklist({ national_id: '88880000000045', employee_code: '8845', employee_name: 'موظف مودرن جديد', add_to_new_sheet: true, new_employee_data: { name: 'موظف مودرن جديد' } });
+const cl2bj = await cl2b.json().catch(() => ({}));
+const newRows = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000045' AND ds.sheet_name='New'`)).rows[0].c;
+check('CAT7: only-other-account sheet -> NO write (fail closed)', newRows === 0, 'rows=' + newRows);
+check('CAT7: cross-account skip surfaces explicit warning', JSON.stringify(cl2bj.sideEffects || []).includes('لتجنب الخلط بين الحسابات'), JSON.stringify(cl2bj.sideEffects || []).slice(0, 200));
+
+// 3) legacy shared fallback: the single pre-existing NULL-account مناقضات sheet receives the write
+const cl3 = await postChecklist({ national_id: '88880000000042', employee_code: '8842', employee_name: 'موظف غاز قائمة', insurance_status: 'مناقضة', discrepancy_note: 'اختبار' });
+check('CAT7: legacy shared fallback POST returns 200', cl3.status === 200, String(cl3.status));
+const discRows = (await db.query(`SELECT DISTINCT ds.sheet_name, ds.account_id FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000042' AND ds.sheet_name IN ('شيت المنقاضات','المنقاضات')`)).rows;
+check('CAT7: write landed in a legacy SHARED (NULL) مناقضات sheet', discRows.length === 1 && discRows[0].account_id === null, JSON.stringify(discRows));
+
+// 4) ambiguous ownership (two shared وارد sheets): fail closed, no write anywhere
+const cl4 = await postChecklist({ national_id: '88880000000042', employee_code: '8842', employee_name: 'موظف غاز قائمة', insurance_status: 'تم التوريد' });
+const cl4j = await cl4.json().catch(() => ({}));
+const wardRows = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000042' AND ds.sheet_name ILIKE '%وارد%'`)).rows[0].c;
+check('CAT7: ambiguous shared sheets -> NO write (fail closed)', wardRows === 0, 'rows=' + wardRows);
+check('CAT7: ambiguity surfaces explicit warning', JSON.stringify(cl4j.sideEffects || []).includes('تعدد'), JSON.stringify(cl4j.sideEffects || []).slice(0, 200));
+
+// 5) data-quality RES check covers BOTH accounts' catalogs
+const dq = await api('/api/data-quality', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checks: ['active_in_db_resigned_in_res'] }) });
+check('CAT7: data-quality run succeeds', dq.status === 200, String(dq.status));
+const dqFlagged = (await db.query(`SELECT DISTINCT em.national_id FROM data_discrepancies dd JOIN employees_master em ON em.id=dd.employee_id WHERE dd.discrepancy_type='active_in_db_resigned_in_res' AND em.national_id IN ('88880000000043','88880000000044')`)).rows.map((r) => r.national_id).sort();
+check('CAT7: RES check flags BOTH accounts\' resigned-active employees', dqFlagged.length === 2 && dqFlagged[0] === '88880000000043' && dqFlagged[1] === '88880000000044', JSON.stringify(dqFlagged));
+
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();
 process.exit(failures === 0 ? 0 : 1);

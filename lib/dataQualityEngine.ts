@@ -354,18 +354,23 @@ async function checkInsuranceNumberDuplicate(): Promise<DiscrepancyRecord[]> {
 
 async function checkActiveResignedConflict(): Promise<DiscrepancyRecord[]> {
   // Find employees marked Active in master but having resignation data in sheet_data
-  const { data: resSheet } = await supabaseServer
+  // Every RES catalog entry across accounts (+ legacy shared): with
+  // per-account catalogs the same worksheet name exists once per account,
+  // so a single maybeSingle() would error or silently cover one account.
+  // Rows are linked to employees (person-centric), so checking every
+  // account's RES sheet is correct coverage.
+  const { data: resSheets } = await supabaseServer
     .from('dynamic_sheets')
     .select('id')
-    .eq('sheet_name', 'RES')
-    .maybeSingle();
+    .or('sheet_name.eq.RES,sheet_name.eq.RES.');
 
-  if (!resSheet) return [];
+  if (!resSheets || resSheets.length === 0) return [];
+  const resSheetIds = resSheets.map((s) => s.id as string);
 
   const { data: resignedRows } = await supabaseServer
     .from('sheet_data')
     .select('employee_id, row_data, row_code, row_national_id, row_name')
-    .eq('sheet_id', resSheet.id)
+    .in('sheet_id', resSheetIds)
     .eq('is_latest', true)
     .not('employee_id', 'is', null);
 

@@ -103,6 +103,48 @@ export async function POST(request: NextRequest) {
     const now = new Date().toISOString();
     const sideEffects: string[] = [];
 
+    // Resolve the employee's account ONCE (distinct accounts of matching
+    // masters; exactly one -> account-scoped sheet writes, otherwise
+    // unresolved -> legacy shared fallback only). A checklist write must
+    // never land in a sheet grounded to a DIFFERENT account.
+    let employeeAccountId: number | null = null;
+    {
+      const { data: mastersForAccount } = await supabaseServer
+        .from('employees_master')
+        .select('account_id')
+        .or(orConds.join(','));
+      const distinctAccounts = [...new Set(
+        (mastersForAccount || [])
+          .map((m) => (m as { account_id: number | null }).account_id)
+          .filter((a): a is number => a !== null && a !== undefined),
+      )];
+      if (distinctAccounts.length === 1) employeeAccountId = distinctAccounts[0];
+    }
+
+    // Sheet resolution for checklist side-effect writes:
+    //  1. the sheet grounded to the employee's own account (exactly one);
+    //  2. otherwise a single legacy shared (account_id NULL) sheet;
+    //  3. otherwise fail closed (no write) with an explicit warning — never
+    //     pick a sheet grounded to another account, never guess on ambiguity.
+    type SheetRef = { id: string; sheet_name?: string; account_id: number | null };
+    const resolveSheetForEmployee = async (
+      nameFilter: { or?: string; ilike?: string },
+    ): Promise<{ sheet: SheetRef | null; warning: string | null }> => {
+      let q: any = supabaseServer.from('dynamic_sheets').select('id, sheet_name, account_id');
+      if (nameFilter.or) q = q.or(nameFilter.or);
+      if (nameFilter.ilike) q = q.ilike('sheet_name', nameFilter.ilike);
+      const { data: matches } = await q;
+      const all = (matches || []) as SheetRef[];
+      const mine = employeeAccountId !== null ? all.filter((s) => s.account_id === employeeAccountId) : [];
+      const legacy = all.filter((s) => s.account_id === null || s.account_id === undefined);
+      if (mine.length === 1) return { sheet: mine[0], warning: null };
+      if (mine.length > 1) return { sheet: null, warning: 'تعذر تحديد نسخة الورقة الخاصة بحساب الموظف (تعدد) — لم تتم الكتابة' };
+      if (legacy.length === 1) return { sheet: legacy[0], warning: null };
+      if (legacy.length > 1) return { sheet: null, warning: 'تعذر تحديد الورقة المشتركة (تعدد) — لم تتم الكتابة' };
+      if (all.length > 0) return { sheet: null, warning: 'الورقة موجودة لحساب آخر فقط — لم تتم الكتابة لتجنب الخلط بين الحسابات' };
+      return { sheet: null, warning: null };
+    };
+
     // ── 1. Update employees_master.insurance_status ──────────────────────
     if (insurance_status) {
       const { error: updateErr } = await supabaseServer
@@ -122,13 +164,10 @@ export async function POST(request: NextRequest) {
 
     // ── 2. مناقضة → insert/update sheet_data for شيت المنقاضات ─────────
     if (insurance_status === 'مناقضة') {
-      // Find the dynamic_sheets row for شيت المنقاضات
-      const { data: discSheet } = await supabaseServer
-        .from('dynamic_sheets')
-        .select('id, sheet_name')
-        .or('sheet_name.eq.شيت المنقاضات,sheet_name.eq.المنقاضات')
-        .limit(1)
-        .maybeSingle();
+      // Find the dynamic_sheets row for شيت المنقاضات (account-scoped)
+      const { sheet: discSheet, warning: discWarn } = await resolveSheetForEmployee({
+        or: 'sheet_name.eq.شيت المنقاضات,sheet_name.eq.المنقاضات',
+      });
 
       if (discSheet) {
         // Check if already exists
@@ -172,18 +211,16 @@ export async function POST(request: NextRequest) {
           sideEffects.push('تمت إضافة الموظف إلى شيت المناقضات');
         }
       } else {
-        sideEffects.push('تنبيه: لم يتم العثور على شيت المناقضات في قاعدة البيانات (يمكن استيراده أولاً)');
+        sideEffects.push(discWarn ?? 'تنبيه: لم يتم العثور على شيت المناقضات في قاعدة البيانات (يمكن استيراده أولاً)');
       }
     }
 
     // ── 3. تم التوريد → update/insert in ارقام وارد التامين ─────────────
     if (insurance_status === 'تم التوريد') {
-      const { data: incomingSheet } = await supabaseServer
-        .from('dynamic_sheets')
-        .select('id, sheet_name')
-        .ilike('sheet_name', '%وارد%')
-        .limit(1)
-        .maybeSingle();
+      const { sheet: incomingSheet, warning: incWarn } = await resolveSheetForEmployee({
+        ilike: '%وارد%',
+      });
+      if (incWarn) sideEffects.push(incWarn);
 
       if (incomingSheet) {
         const { data: existingInc } = await supabaseServer
@@ -229,12 +266,10 @@ export async function POST(request: NextRequest) {
 
     // ── 4. Archives supply & documents update ────────────────────────────
     if (archives_supply_status || archives_supply_date || archives_docs) {
-      const { data: archSheet } = await supabaseServer
-        .from('dynamic_sheets')
-        .select('id')
-        .eq('sheet_name', 'Archives')
-        .limit(1)
-        .maybeSingle();
+      const { sheet: archSheet, warning: archWarn } = await resolveSheetForEmployee({
+        or: 'sheet_name.eq.Archives',
+      });
+      if (archWarn) sideEffects.push(archWarn);
 
       if (archSheet) {
         const { data: archRow } = await supabaseServer
@@ -296,12 +331,10 @@ export async function POST(request: NextRequest) {
 
     // ── 5. RES ready or supplied for S6 ──────────────────────────────────
     if (res_ready_for_s6 === true || res_supplied_s6 === true) {
-      const { data: resSheet } = await supabaseServer
-        .from('dynamic_sheets')
-        .select('id')
-        .or('sheet_name.eq.RES.,sheet_name.eq.RES')
-        .limit(1)
-        .maybeSingle();
+      const { sheet: resSheet, warning: resWarn } = await resolveSheetForEmployee({
+        or: 'sheet_name.eq.RES.,sheet_name.eq.RES',
+      });
+      if (resWarn) sideEffects.push(resWarn);
 
       const resStateLabel = res_supplied_s6 ? 'تم التوريد' : 'جاهز لتوريد سن 6';
 
@@ -361,12 +394,10 @@ export async function POST(request: NextRequest) {
 
     // ── 6. New employee sheet (ورقة الموظفين الجدد) ──────────────────────
     if (add_to_new_sheet === true && new_employee_data) {
-      const { data: newSheet } = await supabaseServer
-        .from('dynamic_sheets')
-        .select('id')
-        .eq('sheet_name', 'New')
-        .limit(1)
-        .maybeSingle();
+      const { sheet: newSheet, warning: newWarn } = await resolveSheetForEmployee({
+        or: 'sheet_name.eq.New',
+      });
+      if (newWarn) sideEffects.push(newWarn);
 
       if (newSheet) {
         const { data: existingNew } = await supabaseServer
@@ -416,12 +447,10 @@ export async function POST(request: NextRequest) {
 
     // ── 7. Add a new Request to Requests sheet ───────────────────────────
     if (request_type) {
-      const { data: reqSheet } = await supabaseServer
-        .from('dynamic_sheets')
-        .select('id')
-        .eq('sheet_name', 'Requests')
-        .limit(1)
-        .maybeSingle();
+      const { sheet: reqSheet, warning: reqWarn } = await resolveSheetForEmployee({
+        or: 'sheet_name.eq.Requests',
+      });
+      if (reqWarn) sideEffects.push(reqWarn);
 
       if (reqSheet) {
         await supabaseServer
