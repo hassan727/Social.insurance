@@ -414,7 +414,7 @@ check('smart-import preview accepts valid account (same source as execute)', pv.
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
 check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 20 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 12 prior + snap4 99999999999997 + snap5/6 99999999999998/99 (99999999999996 was created in SheetE reimport; counted)
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
-check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count); // +1: first-import dup fixture 88888888888888 (EG)
+check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count);
 
 // ── Account-scoped source catalog (repair 000005) ───────────────────────────
 // Source identity is (account, worksheet name). Placed after the report-count
@@ -742,7 +742,14 @@ check('catalog: MG row data filed under MG catalog sheet (not operator EG)', sdB
 // simulate a PRIOR MG contribution to CatMix (employee C) + an unrelated worksheet contribution
 await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('m.g', 2, '55550000000003', 'C103', 'كتالوج مودرن غائب', 'Active')`);
 const cEmp = (await db.query(`SELECT id FROM employees_master WHERE national_id='55550000000003'`)).rows[0].id;
-await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_national_id, is_latest) VALUES ($1, $2, '{}', '55550000000003', true)`, [mgCatId, cEmp]);
+// C's prior contribution came from an EG-OPERATED import (this same stream)
+const egStreamLog = (await db.query(`INSERT INTO import_logs (source_type, file_name, account_id) VALUES ('multi_sheet_import', 'EGYPT GAS.xlsx', 1) RETURNING id`)).rows[0].id;
+await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_national_id, is_latest, import_id) VALUES ($1, $2, '{}', '55550000000003', true, $3)`, [mgCatId, cEmp, egStreamLog]);
+// D's contribution to the same MG catalog came from MODERN's OWN workbook (MG-operated stream) — must never flip on an EG-stream prune
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES ('m.g', 2, '55550000000004', 'C104', 'كتالوج مودرن ملفه هو', 'Active')`);
+const dEmp = (await db.query(`SELECT id FROM employees_master WHERE national_id='55550000000004'`)).rows[0].id;
+const mgStreamLog = (await db.query(`INSERT INTO import_logs (source_type, file_name, account_id) VALUES ('multi_sheet_import', 'Modern Gas.xlsx', 2) RETURNING id`)).rows[0].id;
+await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_national_id, is_latest, import_id) VALUES ($1, $2, '{}', '55550000000004', true, $3)`, [mgCatId, cEmp === dEmp ? cEmp : dEmp, mgStreamLog]);
 const otherSheet = (await db.query(`INSERT INTO dynamic_sheets (sheet_name, display_name, is_active, column_definitions, matching_keys, account_id) VALUES ('CatOther','CatOther',true,'[]'::jsonb,ARRAY['national_id'],2) RETURNING id`)).rows[0].id;
 await db.query(`INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_national_id, is_latest) VALUES ($1, $2, '{}', '55550000000003', true)`, [otherSheet, cEmp]);
 // re-import same worksheet, C absent -> only C's CatMix contribution flips
@@ -752,6 +759,8 @@ const cFlip = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$
 check('prune: absent MG employee CatMix contribution flipped (is_latest=false)', cFlip?.is_latest === false, JSON.stringify(cFlip));
 const cOther = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [otherSheet, cEmp])).rows[0];
 check('prune: OTHER worksheet contribution retained untouched', cOther?.is_latest === true, JSON.stringify(cOther));
+const dRow = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [mgCatId, dEmp])).rows[0];
+check('prune stream scope: MG-operated contribution in same MG catalog NOT flipped by EG stream', dRow?.is_latest === true, JSON.stringify(dRow));
 const aStill = await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id='55550000000001' AND sd.sheet_id=$1 AND sd.is_latest`, [egCatId]);
 check('prune: present EG employee contribution still latest', aStill.rows[0].c === 1, 'count=' + aStill.rows[0].c);
 // mixed error blocks prune: B absent from file + one unresolved row -> B must NOT flip
@@ -766,6 +775,19 @@ const bRow = await db.query(`SELECT sd.is_latest FROM sheet_data sd JOIN employe
 check('prune BLOCKED on mixed error: absent MG row still latest (no false full-sync)', bRow.rows.length >= 1, 'latestRows=' + bRow.rows.length);
 const cm3warn = JSON.stringify((cm3j.detailed_results?.CatMix?.warnings) || (cm3j.detailed_results?.CatMix?.errors) || []);
 check('prune blocked: operator warned snapshot not treated as complete', cm3warn.includes('لقطة') || cm3warn.includes('فشل') || cm3warn.includes('شركة الصف'), cm3warn.slice(0, 160));
+
+// Absent-company prune: re-upload the same mixed worksheet with ZERO m.g rows.
+// The m.g contribution (written by this EG stream) must flip; Modern's own
+// stream contribution (D) must survive.
+const catMixOnlyEG = mkXlsxMulti({ CatMix: [
+  { 'الرقم القومي': '55550000000001', 'الاسم': 'كتالوج غاز', 'الكود': 'C101', 'الشركه': 'E.G' },
+] });
+const cm4 = await postSmartAcct(catMixOnlyEG, ['CatMix'], 'EG');
+check('catalog: EG-only re-import succeeds', cm4.status === 200, String(cm4.status));
+const bGone = await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN employees_master em ON em.id=sd.employee_id WHERE em.national_id='55550000000002' AND sd.sheet_id=$1 AND sd.is_latest`, [mgCatId]);
+check('prune: entirely-absent company contribution flipped on clean re-upload', bGone.rows[0].c === 0, 'latest=' + bGone.rows[0].c);
+const dStill = (await db.query(`SELECT is_latest FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [mgCatId, dEmp])).rows[0];
+check('prune: other-workbook stream contribution still retained', dStill?.is_latest === true, JSON.stringify(dStill));
 
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();

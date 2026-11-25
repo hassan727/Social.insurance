@@ -43,6 +43,7 @@ interface ImportResult {
     total_errors: number;
     total_cross_account_conflicts?: number;
     sheets_success: number;
+    sheets_partial?: number;
     sheets_failed: number;
   };
   detailed_results: Record<string, {
@@ -158,6 +159,7 @@ export default function SmartImportPage() {
       total_errors: 0,
       total_cross_account_conflicts: 0,
       sheets_success: 0,
+      sheets_partial: 0,
       sheets_failed: 0,
     };
     const combinedSheetResults: Record<string, any> = {};
@@ -202,8 +204,13 @@ export default function SmartImportPage() {
           combinedSummary.total_errors += data.summary.total_errors || 0;
           combinedSummary.total_cross_account_conflicts += data.summary.total_cross_account_conflicts || 0;
         }
+        // Distinguish fully successful worksheets from processed-with-issues:
+        // a sheet with errors/conflicts is NOT a full success.
+        const sheetIssues = ((data.summary && data.summary.total_errors) || 0) + ((data.summary && data.summary.total_cross_account_conflicts) || 0);
         if (data.success === false || (data.summary && data.summary.sheets_failed > 0)) {
           combinedSummary.sheets_failed += 1;
+        } else if (sheetIssues > 0) {
+          combinedSummary.sheets_partial += 1;
         } else {
           combinedSummary.sheets_success += (data.summary && data.summary.sheets_success) || 1;
         }
@@ -642,7 +649,7 @@ export default function SmartImportPage() {
                 <div style={{ fontSize: 32, fontWeight: 900, color: '#cbd5e1', marginBottom: 6, letterSpacing: '-0.02em' }}>
                   {importResult.summary.sheets_success}/{importResult.summary.total_sheets_imported}
                 </div>
-                <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>ورقة ناجحة</div>
+                <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600 }}>ورقة ناجحة بالكامل{(importResult.summary.sheets_partial || 0) > 0 ? ` (+${importResult.summary.sheets_partial} جزئيًا)` : ''}</div>
               </div>
 
               <div className="glass-card" style={{ padding: '18px', borderRadius: 14, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.3)' }}>

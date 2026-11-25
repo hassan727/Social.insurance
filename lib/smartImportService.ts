@@ -887,8 +887,13 @@ export async function importSheet(
       );
       return m ? (m.id as number) : null;
     };
+    // Canonical stored form per account: the dotted alias (E.G / M.G), falling
+    // back to the code — same convention as the import route canonicalization.
     const accountCodeById = new Map<number, string>();
-    (rowAccounts || []).forEach((a) => accountCodeById.set(a.id as number, String(a.account_code).trim().toLowerCase()));
+    (rowAccounts || []).forEach((a) => {
+      const dotted = Array.isArray(a.aliases) ? a.aliases.find((al: string) => /^[A-Za-z]\.[A-Za-z]/.test(String(al).trim())) : null;
+      accountCodeById.set(a.id as number, String(dotted || a.account_code).trim());
+    });
 
     // Identity matching is by 14-digit national ID ONLY (user rule): no
     // insurance-number / employee-code / name fallback maps.
@@ -1179,7 +1184,12 @@ export async function importSheet(
           employeesToUpdate.push({
             id: matchedEmp.id,
             data: {
-              company_account: companyAccount,
+              // Row account wins (confirmed mixed-source model): stamp the
+              // RESOLVED row account, never the operator-selected text — the
+              // company_account trigger derives account_id from this text, so
+              // operator text here silently restamps the master cross-account.
+              company_account: effectiveAccText,
+              account_id: effectiveAccountId,
               employee_code: rawCode || matchedEmp.employee_code,
               national_id: rawNatId || matchedEmp.national_id,
               employee_name: rawName || matchedEmp.employee_name,
@@ -1414,11 +1424,27 @@ export async function importSheet(
       // FAIL CLOSED: never prune on a partial/failed/empty sync. A prune is
       // only a verified full snapshot of this (worksheet, account).
       if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping && crossAccountConflicts.length === 0) {
-        // Per-source-worksheet prune ACROSS row accounts: each account's own
-        // catalog flips only its own absent employees; other worksheets and
-        // other accounts' contributions are retained untouched.
-        for (const [acct, acctSheetId] of Array.from(sheetIdByAccount.entries())) {
-          if (acct === null) continue;
+        // Per-source-worksheet prune across row accounts. Source identity is
+        // the (OPERATOR account, worksheet name) stream, grounded in
+        // import_logs.account_id (user-confirmed 2026-11-25: one workbook per
+        // company, stable worksheet names, re-uploaded as-is). Each account's
+        // catalog for this worksheet name flips only rows that (a) belong to
+        // that account's absent employees AND (b) were written by THIS
+        // stream's imports. Rows routed here from another company's workbook,
+        // or with no import linkage, are never touched (fail closed).
+        const { data: streamLogs } = await supabaseServer
+          .from('import_logs')
+          .select('id')
+          .eq('account_id', accountId);
+        const streamLogIds = (streamLogs || []).map((l) => l.id as string);
+        const { data: nameSheets } = await supabaseServer
+          .from('dynamic_sheets')
+          .select('id, account_id')
+          .eq('sheet_name', sheetName)
+          .not('account_id', 'is', null);
+        for (const cat of (nameSheets || []) as Array<{ id: string; account_id: number }>) {
+          const acct = cat.account_id;
+          const acctSheetId = cat.id;
           const importedEmpIds = empIdsBySheet.get(acctSheetId) || new Set<string>();
           const { data: accEmps, error: accErr } = await supabaseServer
             .from('employees_master')
@@ -1433,12 +1459,17 @@ export async function importSheet(
             .filter((id) => !importedEmpIds.has(id));
           for (let i = 0; i < staleEmpIds.length; i += 200) {
             const chunk = staleEmpIds.slice(i, i + 200);
-            const { error: flipErr } = await supabaseServer
+            let flipQ = supabaseServer
               .from('sheet_data')
               .update({ is_latest: false })
               .eq('sheet_id', acctSheetId)
               .eq('is_latest', true)
               .in('employee_id', chunk);
+            // Stream scoping only when the stream has logged imports; with no
+            // logs there is nothing this stream could have written.
+            if (streamLogIds.length === 0) continue;
+            flipQ = flipQ.in('import_id', streamLogIds);
+            const { error: flipErr } = await flipQ;
             if (flipErr) errors.push(`Snapshot flip error: ${flipErr.message}`);
           }
         }
