@@ -45,18 +45,18 @@ http.createServer((req, res) => {
 }).listen(3002);
 await sleep(2000);
 const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], { cwd: new URL('..', import.meta.url).pathname, env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' }, stdio: 'ignore' });
-for (let i = 0; i < 60; i++) { try { await fetch('http://127.0.0.1:3100/api/company-accounts'); break; } catch { await sleep(1500); } }
+for (let i = 0; i < 60; i++) { try { await fetch('http://localhost:3100/api/company-accounts'); break; } catch { await sleep(1500); } }
 console.log('stack up');
 
 const browser = await chromium.launch({ headless: true });
 let page;
 
 // 2. lookup: conflict NID details, desktop + mobile
-for (const [w, h, tag] of [[390, 844, 'mobile']]) {
+for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
   page = await browser.newPage({ viewport: { width: w, height: h } });
   // warm the dev compile for /lookup before driving the UI
-  await fetch('http://127.0.0.1:3100/lookup').catch(() => {});
-  await page.goto('http://127.0.0.1:3100/lookup', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await fetch('http://localhost:3100/lookup').catch(() => {});
+  await page.goto('http://localhost:3100/lookup', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForSelector('input.input-dark', { timeout: 60000 });
   await sleep(3000);
   const input = page.locator('input[placeholder*="الرقم القومي"]').first();
@@ -68,9 +68,11 @@ for (const [w, h, tag] of [[390, 844, 'mobile']]) {
   const cand = page.locator('text=موظف تعارض').first();
   await cand.click({ timeout: 15000 }).catch((e) => console.log('candidate click failed', String(e).slice(0, 60)));
   await page.waitForSelector('text=حُجبت', { timeout: 20000 }).catch(() => console.log('conflict text not found: ' + tag));
-  console.log('PAGE TEXT SNIPPET:', (await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 400));
+  await page.addStyleTag({ content: '* { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }' });
   await sleep(800);
-  await page.screenshot({ path: `/downloads/e2e-lookup-conflict-${tag}.png`, fullPage: true });
+  await page.locator('text=تعارض في المعرفات').first().scrollIntoViewIfNeeded().catch(() => {});
+  await sleep(500);
+  await page.screenshot({ path: `/downloads/e2e-lookup-conflict-${tag}.png`, fullPage: false });
   console.log('shot: lookup conflict ' + tag);
   await page.close();
 }

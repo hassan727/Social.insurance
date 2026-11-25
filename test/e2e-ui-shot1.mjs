@@ -44,22 +44,51 @@ http.createServer((req, res) => {
   req.pipe(p); p.on('error', () => { res.statusCode = 502; res.end(); });
 }).listen(3002);
 await sleep(2000);
-const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], { cwd: new URL('..', import.meta.url).pathname, env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' }, stdio: 'ignore' });
-for (let i = 0; i < 60; i++) { try { await fetch('http://127.0.0.1:3100/api/company-accounts'); break; } catch { await sleep(1500); } }
+const dev = spawn('npm', ['run', 'dev', '--', '-p', '3100'], { cwd: new URL('..', import.meta.url).pathname, env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:3002', NEXT_PUBLIC_SUPABASE_ANON_KEY: ANON_JWT, APP_JWT_SECRET: 'test-only-dummy-secret-32chars-minimum', PORT: '3100' }, stdio: ['ignore', 'pipe', 'pipe'] });
+dev.stdout.on('data', (d) => process.stdout.write('[dev] ' + d));
+dev.stderr.on('data', (d) => process.stdout.write('[dev-err] ' + d));
+for (let i = 0; i < 60; i++) { try { await fetch('http://localhost:3100/api/company-accounts'); break; } catch { await sleep(1500); } }
 console.log('stack up');
 
 const browser = await chromium.launch({ headless: true });
 // 1. smart-import: dynamic account selector
 let page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-await page.goto('http://127.0.0.1:3100/smart-import', { waitUntil: 'domcontentloaded', timeout: 60000 });
-await sleep(1500);
+page.on('console', (m) => console.log('CONSOLE', m.type(), m.text().slice(0, 150)));
+page.on('response', async (r) => { if (r.url().includes('/api/')) console.log('API', r.status(), r.url().slice(0, 80), (await r.text().catch(() => '')).slice(0, 150)); });
+page.on('pageerror', (e) => console.log('PAGEERROR', String(e).slice(0, 200)));
+page.on('requestfailed', (r) => console.log('REQFAIL', r.url().slice(0, 100), r.failure()?.errorText));
+page.on('response', (r) => { if (r.status() >= 400 && !r.url().includes('/api/')) console.log('HTTP', r.status(), r.url().slice(0, 100)); });
+await fetch('http://localhost:3100/smart-import').catch(() => {});
+await page.goto('http://localhost:3100/smart-import', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForSelector('text=اختر حساب الشركة', { timeout: 60000 });
+const diag = await page.evaluate(async () => {
+  const r = await fetch('/api/company-accounts');
+  const t = await r.text();
+  return { status: r.status, body: t.slice(0, 200) };
+}).catch((e) => ({ err: String(e).slice(0, 150) }));
+console.log('DIAG', JSON.stringify(diag));
+await sleep(6000);
+console.log('BUTTONS', await page.locator('button').count(), 'ACCT-BTNS', await page.locator('button:has-text("غاز"), button:has-text("مودرن"), button:has-text("Gas")').count());
+console.log('HYDRATED?', await page.evaluate(() => !!document.querySelector('input[type=file]')));
+console.log('REACT_ATTACHED', await page.evaluate(() => { const el = document.querySelector('button'); return el ? Object.keys(el).filter((k) => k.startsWith('__react')).length : -1; }));
+console.log('SCRIPTS', await page.evaluate(() => performance.getEntriesByType('resource').filter((e) => e.initiatorType === 'script').length), 'REACT_ROOT', await page.evaluate(() => Object.keys(document.getElementById('__next') || {}).length));
+await page.addStyleTag({ content: '* { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }' });
+await sleep(800);
 await page.screenshot({ path: '/downloads/e2e-smart-import-dynamic-accounts.png', fullPage: false });
+const pv = await browser.newPage({ viewport: { width: 390, height: 844 } });
+await pv.goto('http://localhost:3100/smart-import', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await pv.waitForSelector('text=اختر حساب الشركة', { timeout: 60000 });
+await pv.addStyleTag({ content: '* { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }' });
+await sleep(800);
+await pv.screenshot({ path: '/downloads/e2e-smart-import-mobile.png', fullPage: false });
+await pv.close();
+console.log('shot: smart-import mobile');
 console.log('shot: smart-import');
 await page.close();
 // 2. lookup: conflict NID details, desktop + mobile
 for (const [w, h, tag] of []) {
   page = await browser.newPage({ viewport: { width: w, height: h } });
-  await page.goto('http://127.0.0.1:3100/lookup', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.goto('http://localhost:3100/lookup', { waitUntil: 'domcontentloaded', timeout: 60000 });
   const input = page.locator('input').first();
   await input.fill('11111111111111');
   await page.locator('button', { hasText: /بحث|استعلام/ }).first().click().catch(() => input.press('Enter'));

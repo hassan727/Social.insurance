@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Database,
   Sparkles, Building2, RefreshCw, FileText, History, Download, Clock,
@@ -61,6 +61,13 @@ export default function SmartImportPage() {
   // choose explicitly, and the code is validated server-side.
   const [accounts, setAccounts] = useState<{ id: number; account_code: string; account_name: string }[]>([]);
   const [companyAccount, setCompanyAccount] = useState<string>('');
+
+  useEffect(() => {
+    fetch('/api/company-accounts')
+      .then((r) => r.json())
+      .then((d) => { if (d?.accounts) setAccounts(d.accounts); })
+      .catch(() => {});
+  }, []);
   const [isDragging, setIsDragging] = useState(false);
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
