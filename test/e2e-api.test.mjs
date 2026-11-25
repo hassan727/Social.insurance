@@ -31,6 +31,8 @@ await db.query(`
     ('monthly_payroll', 'EG OCT.xlsx', 2026, 10, 1), ('monthly_payroll', 'MODERN OCT.xlsx', 2026, 10, 2);`);
 const eg = (await db.query(`SELECT id FROM import_logs WHERE file_name='EG OCT.xlsx'`)).rows[0].id;
 const mg = (await db.query(`SELECT id FROM import_logs WHERE file_name='MODERN OCT.xlsx'`)).rows[0].id;
+await db.query(`INSERT INTO monthly_insurance_records (import_id, period_year, period_month, national_id, employee_code, employee_name, account_id) VALUES
+  ($1, 2026, 9, '22222222222222', '2002', 'موظف متفق', 2)`, [mg]);
 await db.query(`INSERT INTO monthly_payroll_records (import_id, period_year, period_month, national_id, employee_code, employee_name, account_id) VALUES
   ($1, 2026, 10, '11111111111111', '1001', 'موظف تعارض', 1),
   ($2, 2026, 10, '11111111111111', '1001', 'موظف تعارض', 2),
@@ -92,6 +94,10 @@ check('agreeing NID: latest_evidence = real period + account label', d2.details?
 
 const d3 = await (await api('/api/lookup/details?national_id=33333333333333')).json();
 check('payroll-only NID: single-account rows scoped+returned', monthsWith(d3).length === 1 && monthsWith(d3)[0].payrollRecord.account_id === 2, 'months=' + monthsWith(d3).length + ' err=' + (d3.error || ''));
+const d2f = await (await api('/api/lookup/details?national_id=22222222222222&company_account=MG')).json();
+check('requested canonical code resolves by IDENTITY (not raw text): agreement stays agreement', d2f.details?.accountDisplay?.status === 'resolved' && d2f.details?.accountDisplay?.masterCode === 'MG' && d2f.details?.accountDisplay?.waradCode === 'MG' && !(d2f.details?.conflicts || []).some((c) => c.includes('مصدر واحد')), JSON.stringify({ad: d2f.details?.accountDisplay, conflicts: d2f.details?.conflicts}));
+check('agreeing NID: latest_insurance evidence shown', d2.details?.latest_evidence?.insurance?.month === 9 && d2.details?.latest_evidence?.insurance?.accountCode === 'MG', JSON.stringify(d2.details?.latest_evidence || null));
+
 check('payroll-only NID: single-source note', (d3.details?.conflicts || []).some((c) => c.includes('السجلات الشهرية نفسها')));
 
 const mkXlsx = (rows) => { const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1'); return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })); };
@@ -121,6 +127,27 @@ check('overwrite via route: EG Oct UNTOUCHED', egRows.rows[0].c === 1, 'count=' 
 const newRow = await db.query(`SELECT account_id FROM monthly_payroll_records WHERE national_id='44444444444444'`);
 check('new row stamped with validated account (no default)', newRow.rows.length === 1 && newRow.rows[0].account_id === 2, JSON.stringify(newRow.rows));
 
+// Blank-cell no-erase policy (user-approved 11:04). Seed an employee with
+// existing values, then import files whose cells are BLANK for those fields.
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status, current_job_title, consolidated_data) VALUES ('m.g', 2, '55555555555555', '5005', 'موظف خانات', 'Active', 'محاسب', '{"الوظيفه":"محاسب","الراتب":5000,"عدد أيام":0}')`);
+// classic import: payroll file with NO job title column (missing column) must not erase current_job_title
+const blankPay = mkXlsx([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005' }]);
+const bp = await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '11', company_account: 'MG' }, blankPay);
+check('classic import (missing job column) succeeds', bp.status === 200 || bp.status === 409, String(bp.status));
+const bpw = bp.status === 409 ? await postImport({ source_type: 'monthly_payroll', column_mapping: mapping, period_year: '2026', period_month: '11', company_account: 'MG', confirm_overwrite: 'true' }, blankPay) : bp;
+check('classic import overwrite ok', bpw.status === 200, String(bpw.status));
+const mAfterClassic = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+check('classic: missing column did NOT erase master job title', mAfterClassic.current_job_title === 'محاسب', String(mAfterClassic.current_job_title));
+// smart-import merge: BLANK الوظيفه cell must not erase; nonempty الراتب must update; zero preserved
+const smartBlank = mkXlsx([{ 'الرقم القومي': '55555555555555', 'الاسم': 'موظف خانات', 'الكود': '5005', 'الوظيفه': '', 'الراتب': 7000 }]);
+const sm = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([smartBlank]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'MG'); return fd; })() });
+const smj = await sm.json().catch(() => ({}));
+const mAfterSmart = (await db.query(`SELECT consolidated_data FROM employees_master WHERE national_id='55555555555555'`)).rows[0];
+const cd = mAfterSmart?.consolidated_data || {};
+check('smart-import merge: blank cell did NOT erase existing value', cd['الوظيفه'] === 'محاسب', JSON.stringify(cd).slice(0, 120) + ' status=' + sm.status + ' err=' + (smj.error || ''));
+check('smart-import merge: nonempty cell updated', String(cd['الراتب']) === '7000', String(cd['الراتب']));
+check('smart-import merge: meaningful zero preserved', String(cd['عدد أيام']) === '0', String(cd['عدد أيام']));
+
 const si = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); return fd; })() });
 check('smart-import execute w/o account → 400 (no bypass)', si.status === 400, String(si.status));
 const siBad = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'NOPE'); return fd; })() });
@@ -129,7 +156,7 @@ const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() =>
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
 
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 3 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count);
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 4 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count);
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 1 && qEg.data[0].national_id === '11111111111111', 'count=' + qEg.total_count);
 

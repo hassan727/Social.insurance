@@ -1015,12 +1015,38 @@ export async function getEmployeeFullDetails(params: {
   const cleanNid = national_id ? national_id.replace(/\D/g, '') : '';
   const hasValidNid = cleanNid.length === 14;
 
+  // Account catalog FIRST: a requested-account filter must match by account
+  // IDENTITY (code/aliases), never by raw text equality — the UI passes the
+  // canonical code (MG) while sources store text (m.g / مودرن جاس).
+  const { data: allAccounts } = await supabaseServer
+    .from('company_accounts')
+    .select('id, account_code, aliases')
+    .eq('is_active', true);
+  const resolveAccountText = (txt: unknown): number | null => {
+    const t = String(txt || '').trim().toLowerCase();
+    if (!t) return null;
+    const m = (allAccounts || []).find(
+      (a) => a.account_code.toLowerCase() === t ||
+        (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === t))
+    );
+    return m ? (m.id as number) : null;
+  };
+  const aliasTextsOf = (id: number): string[] => {
+    const a = (allAccounts || []).find((x) => x.id === id);
+    if (!a) return [];
+    return [a.account_code, ...(Array.isArray(a.aliases) ? a.aliases : [])].map((t) => String(t).trim()).filter(Boolean);
+  };
+  const requestedAccountId = (requestedAccount && requestedAccount !== '—') ? resolveAccountText(requestedAccount) : null;
+
   // 0. Resolve the employee's master record FIRST (exact national_id), so
   // account evidence is available before any monthly fact is fetched.
   let masterEmp: Record<string, unknown> | null = null;
   if (hasValidNid) {
     let mQuery = supabaseServer.from('employees_master').select('*').eq('national_id', cleanNid);
-    if (requestedAccount && requestedAccount !== '—') {
+    if (requestedAccountId !== null) {
+      const aliasOr = [`account_id.eq.${requestedAccountId}`, ...aliasTextsOf(requestedAccountId).map((t) => `company_account.ilike.${t}`)].join(',');
+      mQuery = mQuery.or(aliasOr);
+    } else if (requestedAccount && requestedAccount !== '—') {
       mQuery = mQuery.ilike('company_account', requestedAccount);
     }
     const { data: mData } = await mQuery.limit(1).maybeSingle();
@@ -1037,7 +1063,10 @@ export async function getEmployeeFullDetails(params: {
     const incomingOrConditions: string[] = [];
     if (national_id) incomingOrConditions.push(`national_id.eq.${national_id}`);
     if (employee_code) {
-      if (requestedAccount && requestedAccount !== '—') {
+      if (requestedAccountId !== null) {
+        const aliasOr = aliasTextsOf(requestedAccountId).map((t) => `company_account.ilike.${t}`).join(',');
+        incomingQuery = incomingQuery.eq('employee_code', employee_code).or(aliasOr);
+      } else if (requestedAccount && requestedAccount !== '—') {
         incomingQuery = incomingQuery.eq('employee_code', employee_code).ilike('company_account', requestedAccount);
       } else {
         incomingOrConditions.push(`employee_code.eq.${employee_code}`);
@@ -1053,7 +1082,9 @@ export async function getEmployeeFullDetails(params: {
   if (data && data.length > 0) {
     let candidatePool = data;
     if (requestedAccount && requestedAccount !== '—') {
-      const matchPool = data.filter(r => r.company_account && String(r.company_account).trim().toLowerCase() === requestedAccount.trim().toLowerCase());
+      const matchPool = requestedAccountId !== null
+        ? data.filter(r => r.company_account && resolveAccountText(r.company_account) === requestedAccountId)
+        : data.filter(r => r.company_account && String(r.company_account).trim().toLowerCase() === requestedAccount.trim().toLowerCase());
       if (matchPool.length > 0) candidatePool = matchPool;
     }
 
@@ -1078,7 +1109,10 @@ export async function getEmployeeFullDetails(params: {
     const resOrConditions: string[] = [];
     if (national_id) resOrConditions.push(`national_id.eq.${national_id}`);
     if (employee_code) {
-      if (requestedAccount && requestedAccount !== '—') {
+      if (requestedAccountId !== null) {
+        const aliasOr = aliasTextsOf(requestedAccountId).map((t) => `company_account.ilike.${t}`).join(',');
+        resQuery = resQuery.eq('employee_code', employee_code).or(aliasOr);
+      } else if (requestedAccount && requestedAccount !== '—') {
         resQuery = resQuery.eq('employee_code', employee_code).ilike('company_account', requestedAccount);
       } else {
         resOrConditions.push(`employee_code.eq.${employee_code}`);
@@ -1097,19 +1131,6 @@ export async function getEmployeeFullDetails(params: {
   // surfaced as a conflict and facts stay UNscoped — never silently filtered
   // by an untrusted source. A single available source scopes with a visible
   // pending-confirmation note. No source at all stays unscoped + noted.
-  const { data: allAccounts } = await supabaseServer
-    .from('company_accounts')
-    .select('id, account_code, aliases')
-    .eq('is_active', true);
-  const resolveAccountText = (txt: unknown): number | null => {
-    const t = String(txt || '').trim().toLowerCase();
-    if (!t) return null;
-    const m = (allAccounts || []).find(
-      (a) => a.account_code.toLowerCase() === t ||
-        (Array.isArray(a.aliases) && a.aliases.some((al: string) => al.trim().toLowerCase() === t))
-    );
-    return m ? (m.id as number) : null;
-  };
   const masterAccountId = (masterEmp?.account_id as number | null) ?? null;
   const waradAccountId = resolveAccountText(incomingRecord?.company_account);
   let resolvedAccountId: number | null = null;

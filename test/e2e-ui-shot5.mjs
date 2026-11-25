@@ -28,6 +28,8 @@ await db.query(`
     ('monthly_payroll', 'EG OCT.xlsx', 2026, 10, 1), ('monthly_payroll', 'MODERN OCT.xlsx', 2026, 10, 2);`);
 const eg = (await db.query(`SELECT id FROM import_logs WHERE file_name='EG OCT.xlsx'`)).rows[0].id;
 const mg = (await db.query(`SELECT id FROM import_logs WHERE file_name='MODERN OCT.xlsx'`)).rows[0].id;
+await db.query(`INSERT INTO monthly_insurance_records (import_id, period_year, period_month, national_id, employee_code, employee_name, account_id) VALUES
+  ($1, 2026, 9, '22222222222222', '2002', 'موظف متفق', 2)`, [mg]);
 await db.query(`INSERT INTO monthly_payroll_records (import_id, period_year, period_month, national_id, employee_code, employee_name, account_id) VALUES
   ($1, 2026, 10, '11111111111111', '1001', 'موظف تعارض', 1),
   ($2, 2026, 10, '11111111111111', '1001', 'موظف تعارض', 2),
@@ -64,7 +66,10 @@ for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
   const cand = page.locator('text=موظف متفق').first();
   await cand.click({ timeout: 15000 }).catch((e) => console.log('candidate click failed', String(e).slice(0, 60)));
   await page.waitForSelector('text=آخر دليل مرتبات', { timeout: 20000 }).catch(() => console.log('evidence chip not found: ' + tag));
-  await sleep(9000); // toasts dismiss + animations settle, NO overrides
+  await sleep(6000);
+  await page.locator('[role="status"] button, .toast button, [aria-label="close"], [aria-label="Close"]').click({ timeout: 1500 }).catch(() => {});
+  await page.locator('div:has-text("تعارض في المعرفات")').first().waitFor({ timeout: 3000 }).catch(() => {});
+  await sleep(5000); // toasts dismiss + animations settle, NO overrides
   await page.locator('text=آخر دليل مرتبات').first().scrollIntoViewIfNeeded().catch(() => {});
   await sleep(800);
   await page.screenshot({ path: `/downloads/e2e-profile-evidence-chips-${tag}.png`, fullPage: false });

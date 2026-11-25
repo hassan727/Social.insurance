@@ -409,11 +409,19 @@ export async function upsertEmployee(
       throw new Error(`Employee ${matchResult.employee_id} not found`);
     }
 
-    // Merge consolidated_data
+    // Merge consolidated_data. USER-APPROVED POLICY (11:04): a blank cell in
+    // an import file means "this file has no data for this field" — it must
+    // NEVER erase an existing value. null/undefined/'' entries are dropped
+    // from the merge; meaningful zero / false / '0' values are preserved.
+    // Clearing a value requires a deliberate user action, not an empty cell.
     const oldConsolidatedData = (existingEmp.consolidated_data as Record<string, unknown>) || {};
+    const isBlankCell = (v: unknown) => v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+    const nonBlankRowData = Object.fromEntries(
+      Object.entries(row_data as Record<string, unknown>).filter(([, v]) => !isBlankCell(v))
+    );
     const newConsolidatedData = {
       ...oldConsolidatedData,
-      ...row_data,
+      ...nonBlankRowData,
     };
 
     // Track changed fields
@@ -896,7 +904,14 @@ export async function importSheet(
           // Existing employee
           updatedEmployees++;
           const oldConsolidated = (matchedEmp.consolidated_data as Record<string, unknown>) || {};
-          const newConsolidated = { ...oldConsolidated, ...rowData };
+          // USER-APPROVED POLICY (11:04): blank/null/'' cells never erase
+          // existing values; meaningful zero/false survive. Missing column =
+          // key absent = untouched. Clearing is a deliberate action only.
+          const isBlankCell2 = (v: unknown) => v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+          const newConsolidated = {
+            ...oldConsolidated,
+            ...Object.fromEntries(Object.entries(rowData as Record<string, unknown>).filter(([, v]) => !isBlankCell2(v))),
+          };
           matchedEmp.consolidated_data = toJson(newConsolidated);
 
           // Extract all enriched fields for a complete employees_master update
