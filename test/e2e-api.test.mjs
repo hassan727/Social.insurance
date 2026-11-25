@@ -229,6 +229,63 @@ if (auditRec) {
   check('explicit-0 payroll record counts as present', auditRec.foundInPayroll === true, JSON.stringify(auditRec.foundInPayroll));
 }
 
+// ── Per-worksheet snapshot reimport semantics (user-approved 12:05) ─────────
+// A re-upload of the SAME worksheet is a new snapshot of that source: rows
+// absent from it lose THAT worksheet's contribution only; the employee and
+// other worksheets' contributions are retained; absent whole worksheets are
+// untouched; blank cells still never erase.
+const mkXlsxMulti = (sheets) => { const wb = XLSX.utils.book_new(); for (const [nm, rows] of Object.entries(sheets)) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), nm); return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })); };
+const postSmart = (buf, sheets) => api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf]), 'snap.xlsx'); fd.append('selected_sheets', JSON.stringify(sheets)); fd.append('company_account', 'MG'); return fd; })() });
+
+// SNAP1 (99999999999991): SheetC (title+salary) + SheetD (title+region), agreeing title
+const snap1 = mkXlsxMulti({
+  SheetC: [{ 'الرقم القومي': '99999999999991', 'الاسم': 'موظف لقطة أول', 'الكود': '9001', 'الوظيفه': 'محاسب', 'الراتب': 5000 }],
+  SheetD: [{ 'الرقم القومي': '99999999999991', 'الاسم': 'موظف لقطة أول', 'الكود': '9001', 'الوظيفه': 'محاسب', 'المنطقه': 'القاهرة' }],
+});
+const snap1res = await postSmart(snap1, ['SheetC', 'SheetD']);
+check('snapshot fixture: multi-worksheet import succeeds', snap1res.status === 200, String(snap1res.status));
+const snapId = (await db.query(`SELECT id FROM employees_master WHERE national_id='99999999999991' AND account_id=2`)).rows[0].id;
+// Reimport SheetC ONLY, SNAP1 absent (a different employee row keeps it non-empty)
+const snap1b = mkXlsxMulti({ SheetC: [{ 'الرقم القومي': '99999999999992', 'الاسم': 'موظف لقطة بديل', 'الكود': '9002', 'الوظيفه': 'سائق', 'الراتب': 3000 }] });
+const snap1bres = await postSmart(snap1b, ['SheetC']);
+check('snapshot reimport (employee absent) succeeds', snap1bres.status === 200, String(snap1bres.status));
+const sn1 = (await db.query(`SELECT current_job_title, current_region, consolidated_data FROM employees_master WHERE id=$1`, [snapId])).rows[0];
+check('snapshot: removed-worksheet-only key (الراتب) gone from blob', sn1.consolidated_data['الراتب'] === undefined, JSON.stringify(Object.keys(sn1.consolidated_data)));
+check('snapshot: other-worksheet contribution (المنطقه) retained', String(sn1.consolidated_data['المنطقه']) === 'القاهرة');
+check('snapshot: scalar kept from surviving worksheet', sn1.current_job_title === 'محاسب', String(sn1.current_job_title));
+const sn1alive = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE id=$1`, [snapId])).rows[0].c;
+check('snapshot: employee NOT deleted when absent from one worksheet', sn1alive === 1);
+
+// SNAP2 (99999999999993): SheetE vs SheetF conflicting titles; remove SheetE row
+const snap2 = mkXlsxMulti({
+  SheetE: [{ 'الرقم القومي': '99999999999993', 'الاسم': 'موظف لقطة ثان', 'الكود': '9003', 'الوظيفه': 'مشرف' }],
+  SheetF: [{ 'الرقم القومي': '99999999999993', 'الاسم': 'موظف لقطة ثان', 'الكود': '9003', 'الوظيفه': 'محاسب' }],
+});
+await postSmart(snap2, ['SheetE', 'SheetF']);
+const snap2Id = (await db.query(`SELECT id FROM employees_master WHERE national_id='99999999999993' AND account_id=2`)).rows[0].id;
+const sn2pre = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [snap2Id])).rows[0];
+check('snapshot conflict fixture: title withheld before removal', sn2pre.current_job_title === null && !!((sn2pre.consolidated_data.field_conflicts || {})['الوظيفه']));
+const snap2b = mkXlsxMulti({ SheetE: [{ 'الرقم القومي': '99999999999996', 'الاسم': 'موظف لقطة بديل ثان', 'الكود': '9006', 'الوظيفه': 'فني' }] });
+await postSmart(snap2b, ['SheetE']);
+const sn2 = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [snap2Id])).rows[0];
+check('snapshot: formerly-conflicting source removed -> resolves from survivor', sn2.current_job_title === 'محاسب', String(sn2.current_job_title));
+check('snapshot: conflict cleared after survivor resolution', !(sn2.consolidated_data.field_conflicts || {})['الوظيفه']);
+
+// SNAP3 (99999999999994): only in SheetG; removed from it. Last source absence.
+const snap3 = mkXlsxMulti({ SheetG: [{ 'الرقم القومي': '99999999999994', 'الاسم': 'موظف لقطة ثالث', 'الكود': '9004', 'الوظيفه': 'عامل', 'الحاله': 'Active' }] });
+await postSmart(snap3, ['SheetG']);
+const snap3Id = (await db.query(`SELECT id FROM employees_master WHERE national_id='99999999999994' AND account_id=2`)).rows[0].id;
+const snap3b = mkXlsxMulti({ SheetG: [{ 'الرقم القومي': '99999999999995', 'الاسم': 'موظف لقطة بديل ثالث', 'الكود': '9005', 'الوظيفه': 'حارس' }] });
+await postSmart(snap3b, ['SheetG']);
+const sn3 = (await db.query(`SELECT current_job_title, current_status, national_id, consolidated_data FROM employees_master WHERE id=$1`, [snap3Id])).rows[0];
+check('last source absent: scalar NULL, not resurrected', sn3.current_job_title === null, String(sn3.current_job_title));
+check('last source absent: status NULL, never guessed termination', sn3.current_status === null, String(sn3.current_status));
+check('last source absent: identity retained, blob sheet keys removed', sn3.national_id === '99999999999994' && sn3.consolidated_data['الوظيفه'] === undefined);
+
+// Unseen worksheet untouched: SNAP1's SheetD rows still latest after all SheetC/E/G reimports
+const sheetDlatest = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='SheetD' AND sd.employee_id=$1 AND sd.is_latest=true`, [snapId])).rows[0].c;
+check("unseen worksheet untouched by other worksheets reimports", sheetDlatest === 1);
+
 const si = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); return fd; })() });
 check('smart-import execute w/o account → 400 (no bypass)', si.status === 400, String(si.status));
 const siBad = await api('/api/smart-import/execute', { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', new Blob([buf1]), 't.xlsx'); fd.append('selected_sheets', '["Sheet1"]'); fd.append('company_account', 'NOPE'); return fd; })() });
@@ -237,7 +294,7 @@ const pv = await api('/api/smart-import/preview', { method: 'POST', body: (() =>
 check('smart-import preview accepts valid account (same source as execute)', pv.status !== 400, String(pv.status));
 
 const qAll = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
-check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 6 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 4 prior fixture employees + audit fixture 77777777777777 + first-import dup fixture 88888888888888
+check('reports query default = ALL accounts (no EG default)', qAll.success && qAll.total_count === 12 && qAll.query_info.company_account === 'ALL', 'count=' + qAll.total_count); // 6 prior fixtures + 6 snapshot fixtures (99999999999991..96)
 const qEg = await (await api('/api/dynamic-reports/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"company_account":"E.G"}' })).json();
 check('reports query explicit E.G scopes correctly', qEg.success && qEg.total_count === 2 && (qEg.data || []).every((r) => ['11111111111111','88888888888888'].includes(r.national_id)), 'count=' + qEg.total_count); // +1: first-import dup fixture 88888888888888 (EG)
 

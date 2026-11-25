@@ -1085,6 +1085,40 @@ export async function importSheet(
         if (error) errors.push(`Bulk sheet_data error: ${error.message}`);
       }
 
+      // C2) Per-worksheet snapshot semantics (user-approved 2026-11-25 12:05):
+      // a re-upload of THIS worksheet for THIS account is a new snapshot of
+      // that source. Rows whose employee is absent from the new file stop
+      // being latest (this source's contribution is recomputed away by the
+      // zz_sheet_data_contribution_removed trigger); rows for employees who
+      // ARE in the file keep their history, so a blank cell still never
+      // erases (newest non-blank wins within the source). A worksheet that
+      // is simply not part of this upload is untouched. When the account is
+      // unresolved (accountId null) the flip is skipped rather than guessed.
+      if (currentSheetId && accountId !== null) {
+        const importedEmpIds = new Set(sheetDataToInsert.map((r) => r.employee_id).filter(Boolean));
+        const { data: accEmps, error: accErr } = await supabaseServer
+          .from('employees_master')
+          .select('id')
+          .eq('account_id', accountId);
+        if (accErr) {
+          warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr.message}`);
+        } else {
+          const staleEmpIds = (accEmps || [])
+            .map((e) => e.id as string)
+            .filter((id) => !importedEmpIds.has(id));
+          for (let i = 0; i < staleEmpIds.length; i += 200) {
+            const chunk = staleEmpIds.slice(i, i + 200);
+            const { error: flipErr } = await supabaseServer
+              .from('sheet_data')
+              .update({ is_latest: false })
+              .eq('sheet_id', currentSheetId)
+              .eq('is_latest', true)
+              .in('employee_id', chunk);
+            if (flipErr) errors.push(`Snapshot flip error: ${flipErr.message}`);
+          }
+        }
+      }
+
       // D) Batch Insert History (chunks of 250)
       for (let i = 0; i < historyToInsert.length; i += 250) {
         const chunk = historyToInsert.slice(i, i + 250);

@@ -145,6 +145,110 @@ await db.query(`DELETE FROM monthly_payroll_records WHERE period_year = 2026 AND
 const survivors = (await db.query(`SELECT national_id, account_id FROM monthly_payroll_records WHERE period_year = 2026 AND period_month = 10 ORDER BY national_id`)).rows;
 check('scoped delete: only MG Oct rows removed; EG + quarantined Oct rows survive', survivors.length === 4 && survivors.every((r) => r.account_id !== 2), `survivors=${survivors.length}`);
 
+// ── Forward migrations 000002..000004 VERBATIM (source-aware merge, trigger
+// fix, source-removal recompute) ────────────────────────────────────────────
+for (const f of ['20261125000002_blank_cell_no_erase_consolidation.sql', '20261125000003_fix_sheet_data_update_trigger.sql', '20261125000004_source_removal_recompute.sql']) {
+  try {
+    await db.query(readFileSync(MIG_DIR + f, 'utf8'));
+    console.log('forward migration applied VERBATIM:', f);
+  } catch (e) {
+    console.log('FAIL  forward migration failed verbatim:', f, '—', String(e.message).split('\n')[0]);
+    failures++;
+  }
+}
+
+// ── Source-removal recompute fixtures ───────────────────────────────────────
+await db.query(`
+  INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
+    ('E.G', 1, '12121212121212', 'RR1', 'موظف حذف أول', 'Active'),
+    ('E.G', 1, '13131313131313', 'RR2', 'موظف حذف ثان', 'Active'),
+    ('E.G', 1, '14141414141414', 'RR3', 'موظف حذف ثالث', 'Active'),
+    ('E.G', 1, '15151515151515', 'RR4', 'موظف حذف رابع', 'Active'),
+    ('E.G', 1, '16161616161616', 'RR5', 'موظف حذف خامس', 'Active');
+  INSERT INTO dynamic_sheets (sheet_name, display_name, is_master_source, column_definitions, matching_keys) VALUES
+    ('SA','SA',false,'[]'::jsonb,ARRAY['national_id']),
+    ('SB','SB',false,'[]'::jsonb,ARRAY['national_id']),
+    ('SC','SC',false,'[]'::jsonb,ARRAY['national_id']),
+    ('SD','SD',false,'[]'::jsonb,ARRAY['national_id']),
+    ('SE','SE',false,'[]'::jsonb,ARRAY['national_id']),
+    ('SF','SF',false,'[]'::jsonb,ARRAY['national_id']),
+    ('SG','SG',false,'[]'::jsonb,ARRAY['national_id'])
+  ON CONFLICT DO NOTHING;
+  INSERT INTO import_logs (source_type, file_name) VALUES ('smart_import', 'rr.xlsx');`);
+const rrLog = (await db.query(`SELECT id FROM import_logs WHERE file_name='rr.xlsx'`)).rows[0].id;
+const rr = {};
+for (const [k, nid] of [['RR1','12121212121212'],['RR2','13131313131313'],['RR3','14141414141414'],['RR4','15151515151515'],['RR5','16161616161616']]) {
+  rr[k] = (await db.query(`SELECT id FROM employees_master WHERE national_id=$1 AND account_id=1`, [nid])).rows[0].id;
+}
+const sh = {};
+for (const n of ['SA','SB','SC','SD','SE','SF','SG']) {
+  sh[n] = (await db.query(`SELECT id FROM dynamic_sheets WHERE sheet_name=$1`, [n])).rows[0].id;
+}
+const addRow = (sheet, emp, nid, code, name, data) => db.query(
+  `INSERT INTO sheet_data (sheet_id, employee_id, row_data, row_code, row_national_id, row_name, import_id, row_number, is_latest, created_at) VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,1,true,NOW())`,
+  [sh[sheet], emp, JSON.stringify(data), code, nid, name, rrLog]);
+
+// RR1: two agreeing sources, distinct keys
+await addRow('SA', rr.RR1, '12121212121212', 'RR1', 'موظف حذف أول', { 'الوظيفه': 'محاسب', 'الراتب': 5000 });
+await addRow('SB', rr.RR1, '12121212121212', 'RR1', 'موظف حذف أول', { 'الوظيفه': 'محاسب', 'المنطقه': 'القاهرة' });
+// RR2: two conflicting sources
+await addRow('SC', rr.RR2, '13131313131313', 'RR2', 'موظف حذف ثان', { 'الوظيفه': 'مشرف' });
+await addRow('SD', rr.RR2, '13131313131313', 'RR2', 'موظف حذف ثان', { 'الوظيفه': 'محاسب' });
+// RR3: single source + a non-sheet blob key (classic-route shape)
+await addRow('SE', rr.RR3, '14141414141414', 'RR3', 'موظف حذف ثالث', { 'الوظيفه': 'عامل', 'الحاله': 'Active' });
+await db.query(`UPDATE employees_master SET consolidated_data = consolidated_data || '{"financial_ledger":{"total":123}}'::jsonb WHERE id=$1`, [rr.RR3]);
+// RR4: single source, removed via is_latest flip (snapshot path)
+await addRow('SF', rr.RR4, '15151515151515', 'RR4', 'موظف حذف رابع', { 'الوظيفه': 'سائق' });
+// RR5: legacy blob key with NO provenance + one sheet key
+await db.query(`UPDATE employees_master SET consolidated_data = consolidated_data || '{"قديم_بدون_مصدر":"قيمة"}'::jsonb, sheet_source_keys='[]'::jsonb WHERE id=$1`, [rr.RR5]);
+await addRow('SG', rr.RR5, '16161616161616', 'RR5', 'موظف حذف خامس', { 'الوظيفه': 'فني' });
+
+let m1 = (await db.query(`SELECT current_job_title, consolidated_data, sheet_source_keys, sheet_source_columns FROM employees_master WHERE id=$1`, [rr.RR1])).rows[0];
+check('provenance maintained by merge: الراتب in sheet_source_keys, current_job_title in sheet_source_columns',
+  (m1.sheet_source_keys || []).includes('الراتب') && (m1.sheet_source_columns || []).includes('current_job_title'),
+  JSON.stringify({ k: m1.sheet_source_keys, c: m1.sheet_source_columns }));
+check('merge before removal: agreed title set, both blob keys present',
+  m1.current_job_title === 'محاسب' && m1.consolidated_data['الراتب'] !== undefined && m1.consolidated_data['المنطقه'] !== undefined);
+
+// DELETE one of two agreeing sources (admin delete path)
+await db.query(`DELETE FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [sh.SA, rr.RR1]);
+m1 = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [rr.RR1])).rows[0];
+check('admin DELETE: removed-source-only key (الراتب) gone from blob', m1.consolidated_data['الراتب'] === undefined, JSON.stringify(Object.keys(m1.consolidated_data)));
+check('admin DELETE: surviving-source key (المنطقه) retained', String(m1.consolidated_data['المنطقه']) === 'القاهرة');
+check('admin DELETE: agreed scalar kept (other source still provides)', m1.current_job_title === 'محاسب', String(m1.current_job_title));
+
+// DELETE one of two conflicting sources -> resolves from survivor
+let m2 = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [rr.RR2])).rows[0];
+check('before removal: conflict withheld + recorded', m2.current_job_title === null && !!((m2.consolidated_data.field_conflicts || {})['current_job_title'] || (m2.consolidated_data.field_conflicts || {})['الوظيفه']));
+await db.query(`DELETE FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [sh.SC, rr.RR2]);
+m2 = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [rr.RR2])).rows[0];
+check('conflicting source removed: resolves from surviving source', m2.current_job_title === 'محاسب', String(m2.current_job_title));
+check('conflict cleared after resolution', !(m2.consolidated_data.field_conflicts || {})['current_job_title'] && !(m2.consolidated_data.field_conflicts || {})['الوظيفه']);
+
+// DELETE the LAST source: no resurrection, no termination, identity kept
+await db.query(`DELETE FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [sh.SE, rr.RR3]);
+const m3 = (await db.query(`SELECT current_job_title, current_status, national_id, consolidated_data FROM employees_master WHERE id=$1`, [rr.RR3])).rows[0];
+check('last source removed: sheet-sourced scalar NULL (not resurrected)', m3.current_job_title === null, String(m3.current_job_title));
+check('last source removed: status NULL (never guessed termination)', m3.current_status === null, String(m3.current_status));
+check('last source removed: identity (national_id) retained for reimport matching', m3.national_id === '14141414141414');
+check('last source removed: sheet blob keys gone, non-sheet key (financial_ledger) preserved',
+  m3.consolidated_data['الوظيفه'] === undefined && JSON.stringify(m3.consolidated_data.financial_ledger) === '{"total":123}',
+  JSON.stringify(m3.consolidated_data));
+const rr3alive = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE id=$1`, [rr.RR3])).rows[0].c;
+check('last source removed: employee row NOT deleted', rr3alive === 1);
+
+// is_latest flip (snapshot replacement path) removes contribution the same way
+await db.query(`UPDATE sheet_data SET is_latest=false WHERE sheet_id=$1 AND employee_id=$2`, [sh.SF, rr.RR4]);
+const m4 = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [rr.RR4])).rows[0];
+check('snapshot flip: removed-source scalar NULL via is_latest path', m4.current_job_title === null, String(m4.current_job_title));
+check('snapshot flip: blob key removed via is_latest path', m4.consolidated_data['الوظيفه'] === undefined);
+
+// No-provenance fallback: unknown-provenance keys are preserved, sheet keys removed
+await db.query(`DELETE FROM sheet_data WHERE sheet_id=$1 AND employee_id=$2`, [sh.SG, rr.RR5]);
+const m5 = (await db.query(`SELECT current_job_title, consolidated_data FROM employees_master WHERE id=$1`, [rr.RR5])).rows[0];
+check('no-provenance key preserved (documented fallback)', String(m5.consolidated_data['قديم_بدون_مصدر']) === 'قيمة', JSON.stringify(m5.consolidated_data));
+check('provenanced sheet key removed while fallback key kept', m5.consolidated_data['الوظيفه'] === undefined && m5.current_job_title === null);
+
 // ── dupdb: audit DO block must ABORT the migration on existing duplicates ───
 const db2 = connect('dupdb');
 await db2.connect();
