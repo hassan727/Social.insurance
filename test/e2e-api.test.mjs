@@ -918,10 +918,16 @@ const s46 = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_na
 check('CAT8: unresolved employee -> NO sheet write anywhere (incl. shared)', s46 === 0, 'rows=' + s46);
 check('CAT8: unresolved surfaces explicit warning', JSON.stringify(c8aj.sideEffects || []).includes('تعذر تحديد حساب الموظف'), JSON.stringify(c8aj.sideEffects || []).slice(0, 200));
 
-// 2) globally-matched update via code collision: nid unique to acct-2 but code present in BOTH accounts
+// 2) valid unique NID + colliding code: the NID wins (identity rule) — ONLY
+// the NID's own-account master is updated; the colliding-code master in the
+// other account is untouched; the code mismatch warns but never matches
 const c8b = await postChecklist({ national_id: '88880000000047', employee_code: '8847', insurance_status: 'حالة كات8ب' });
+const c8bj = await c8b.json().catch(() => ({}));
 const m47 = (await db.query(`SELECT national_id, insurance_status FROM employees_master WHERE national_id IN ('88880000000047','88880000000048')`)).rows;
-check('CAT8: code-collision global match -> NEITHER master mutated (fail closed)', m47.length === 2 && m47.every((r) => r.insurance_status === null), JSON.stringify(m47));
+const m47own = m47.find((r) => r.national_id === '88880000000047');
+const m47other = m47.find((r) => r.national_id === '88880000000048');
+check('CAT8: valid unique NID + colliding code -> ONLY own-account master updated', m47own && m47own.insurance_status === 'حالة كات8ب' && m47other && m47other.insurance_status === null, JSON.stringify(m47));
+check('CAT8: code collision surfaces warn-only notice', JSON.stringify(c8bj.sideEffects || []).includes('الكود مسجّل لموظف آخر'), JSON.stringify(c8bj.sideEffects || []).slice(0, 200));
 
 // 3) resolved single account: scoped master update touches exactly ONE master
 const c8c = await postChecklist({ national_id: '88880000000041', employee_code: '8841', insurance_status: 'حالة كات8ج' });
@@ -942,15 +948,42 @@ await postChecklist({ national_id: '88880000000052', employee_name: 'موظف م
 const shared = await db.query(`SELECT sd.row_national_id, sd.row_data->>'الاسم' nm, sd.row_data->>'NOTE' note FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name IN ('شيت المنقاضات','المنقاضات') AND ds.account_id IS NULL AND sd.row_national_id IN ('88880000000051','88880000000052') ORDER BY sd.row_national_id`);
 check('CAT8: shared sheet keeps BOTH persons as separate rows', shared.rows.length === 2 && shared.rows[0].nm === 'موظف غاز مشترك' && shared.rows[1].nm === 'موظف مودرن مشترك' && shared.rows[0].note === 'ملاحظة غاز' && shared.rows[1].note === 'ملاحظة مودرن', JSON.stringify(shared.rows));
 
-// 6) cross-account code collision: a POST carrying a code present in BOTH
-// accounts is globally-matched -> unresolved -> fail closed; the other
-// person's shared-sheet row is NOT mutated
+// 6) cross-account code collision on a shared-sheet write: the NID still
+// identifies the person — the POST updates ONLY its own NID's row and the
+// other account's row stays byte-identical; the code mismatch warns
 await db.query(`UPDATE sheet_data SET row_code='8851' WHERE row_national_id='88880000000051'`);
-await postChecklist({ national_id: '88880000000052', employee_code: '8851', employee_name: 'موظف مودرن مشترك', insurance_status: 'مناقضة', discrepancy_note: 'محاولة خلط' });
+const c8g = await postChecklist({ national_id: '88880000000052', employee_code: '8851', employee_name: 'موظف مودرن مشترك', insurance_status: 'مناقضة', discrepancy_note: 'تحديث مودرن' });
+const c8gj = await c8g.json().catch(() => ({}));
 const after = await db.query(`SELECT sd.row_national_id, sd.row_data->>'NOTE' note FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name IN ('شيت المنقاضات','المنقاضات') AND ds.account_id IS NULL AND sd.row_national_id IN ('88880000000051','88880000000052') ORDER BY sd.row_national_id`);
-check('CAT8: code-collision POST does NOT mutate the other account\'s shared row', after.rows.length === 2 && after.rows[0].note === 'ملاحظة غاز' && after.rows[1].note === 'ملاحظة مودرن', JSON.stringify(after.rows));
-const mixed = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_data->>'NOTE'='محاولة خلط'`)).rows[0].c;
-check('CAT8: no contamination row written anywhere', mixed === 0, 'rows=' + mixed);
+check('CAT8: colliding-code POST updates ONLY own NID row, other account untouched', after.rows.length === 2 && after.rows[0].note === 'ملاحظة غاز' && after.rows[1].note === 'تحديث مودرن', JSON.stringify(after.rows));
+check('CAT8: warn-only code notice on shared write', JSON.stringify(c8gj.sideEffects || []).includes('الكود مسجّل لموظف آخر'), JSON.stringify(c8gj.sideEffects || []).slice(0, 200));
+
+// CAT9: identity rule end-to-end — valid unique NID + code shared across
+// accounts writes correctly; missing/invalid NID -> review, zero writes.
+await db.query(`INSERT INTO employees_master (company_account, account_id, national_id, employee_code, employee_name, current_status) VALUES
+  ('E.G', 1, '88880000000061', '8861', 'موظف غاز كود مشترك', 'Active'),
+  ('m.g', 2, '88880000000062', '8861', 'موظف مودرن كود مشترك', 'Active');`);
+
+// 1) valid unique NID + shared code: resolves by NID to account 1, write
+// lands ONLY in account-1 Requests, code warning shown
+const c9a = await postChecklist({ national_id: '88880000000061', employee_code: '8861', employee_name: 'موظف غاز كود مشترك', request_type: 'خطاب' });
+const c9aj = await c9a.json().catch(() => ({}));
+const reqAcct61 = (await db.query(`SELECT DISTINCT ds.account_id FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE sd.row_national_id='88880000000061' AND ds.sheet_name='Requests'`)).rows.map((r) => r.account_id);
+check('CAT9: valid NID + shared code -> write lands ONLY in own account Requests', reqAcct61.length === 1 && reqAcct61[0] === 1, JSON.stringify(reqAcct61));
+check('CAT9: shared code warns but never blocks the valid NID', JSON.stringify(c9aj.sideEffects || []).includes('الكود مسجّل لموظف آخر') && JSON.stringify(c9aj.sideEffects || []).includes('تم إضافة طلب'), JSON.stringify(c9aj.sideEffects || []).slice(0, 250));
+
+// 2) missing NID (code only): review, ZERO writes anywhere
+const c9b = await postChecklist({ employee_code: '8861', employee_name: 'بدون رقم قومي', insurance_status: 'مناقضة', discrepancy_note: 'x', request_type: 'خطاب' });
+const c9bj = await c9b.json().catch(() => ({}));
+const m61 = (await db.query(`SELECT count(*)::int c FROM employees_master WHERE national_id IN ('88880000000061','88880000000062') AND insurance_status IS NOT NULL`)).rows[0].c;
+const s61 = (await db.query(`SELECT count(*)::int c FROM sheet_data sd JOIN dynamic_sheets ds ON ds.id=sd.sheet_id WHERE ds.sheet_name='Requests' AND sd.row_data->>'الاسم'='بدون رقم قومي'`)).rows[0].c;
+check('CAT9: missing NID -> review warning, no master mutation, no sheet write', JSON.stringify(c9bj.sideEffects || []).includes('مراجعة يدوية') && m61 === 0 && s61 === 0, JSON.stringify(c9bj.sideEffects || []).slice(0, 200) + ' m=' + m61 + ' s=' + s61);
+
+// 3) invalid NID (not 14 digits): review, ZERO writes
+const c9c = await postChecklist({ national_id: '12345', employee_code: '8861', insurance_status: 'مناقضة' });
+const c9cj = await c9c.json().catch(() => ({}));
+const s99 = (await db.query(`SELECT count(*)::int c FROM sheet_data WHERE row_national_id='12345'`)).rows[0].c;
+check('CAT9: invalid NID -> review warning, no write anywhere', JSON.stringify(c9cj.sideEffects || []).includes('مراجعة يدوية') && s99 === 0, JSON.stringify(c9cj.sideEffects || []).slice(0, 200) + ' rows=' + s99);
 
 console.log(failures === 0 ? 'ALL E2E API ASSERTIONS PASSED' : failures + ' FAILURES');
 dev.kill(); pr.kill(); await db.end(); await ep.stop();

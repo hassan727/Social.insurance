@@ -96,12 +96,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'يجب تقديم الرقم القومي أو كود الموظف' }, { status: 400 });
     }
 
-    const orConds: string[] = [];
-    if (national_id)   orConds.push(`national_id.eq.${national_id}`);
-    if (employee_code) orConds.push(`employee_code.eq.${employee_code}`);
-
     const now = new Date().toISOString();
     const sideEffects: string[] = [];
+
+    // Identity = the 14-digit national ID ONLY (user-confirmed rule).
+    // Missing/invalid NID -> manual review, no writes. An employee code may
+    // warn but NEVER identifies a person: a cross-account code collision
+    // must neither block nor redirect a valid unique NID.
+    const validNid = typeof national_id === 'string' && /^\d{14}$/.test(national_id.trim());
+    const NID_REVIEW_WARN = 'لا يوجد رقم قومي صحيح (14 رقمًا) — يحتاج الطلب مراجعة يدوية، لم تتم أي كتابة';
 
     // Resolve the employee's account ONCE (distinct accounts of matching
     // masters; exactly one -> account-scoped writes, otherwise UNRESOLVED
@@ -110,17 +113,31 @@ export async function POST(request: NextRequest) {
     // or master grounded to a DIFFERENT account, and a person whose account
     // cannot be determined must not be written anywhere.
     let employeeAccountId: number | null = null;
-    {
+    if (validNid) {
       const { data: mastersForAccount } = await supabaseServer
         .from('employees_master')
         .select('account_id')
-        .or(orConds.join(','));
+        .eq('national_id', national_id);
       const distinctAccounts = [...new Set(
         (mastersForAccount || [])
           .map((m) => (m as { account_id: number | null }).account_id)
           .filter((a): a is number => a !== null && a !== undefined),
       )];
       if (distinctAccounts.length === 1) employeeAccountId = distinctAccounts[0];
+    }
+    if (!validNid) {
+      sideEffects.push(NID_REVIEW_WARN);
+    } else if (employee_code) {
+      // warn-only cross-check: the code NEVER identifies the person
+      const { data: codeOthers } = await supabaseServer
+        .from('employees_master')
+        .select('national_id')
+        .eq('employee_code', employee_code)
+        .neq('national_id', national_id)
+        .limit(1);
+      if (codeOthers && codeOthers.length > 0) {
+        sideEffects.push('تنبيه: الكود مسجّل لموظف آخر برقم قومي مختلف — تم الاعتماد على الرقم القومي فقط');
+      }
     }
 
     const UNRESOLVED_WARN = 'تعذر تحديد حساب الموظف (غير مسجل أو مسجل في أكثر من حساب) — لم تتم الكتابة';
@@ -134,7 +151,7 @@ export async function POST(request: NextRequest) {
     const resolveSheetForEmployee = async (
       nameFilter: { or?: string; ilike?: string },
     ): Promise<{ sheet: SheetRef | null; warning: string | null }> => {
-      if (employeeAccountId === null) return { sheet: null, warning: UNRESOLVED_WARN };
+      if (employeeAccountId === null) return { sheet: null, warning: validNid ? UNRESOLVED_WARN : null };
       let q: any = supabaseServer.from('dynamic_sheets').select('id, sheet_name, account_id');
       if (nameFilter.or) q = q.or(nameFilter.or);
       if (nameFilter.ilike) q = q.ilike('sheet_name', nameFilter.ilike);
@@ -153,15 +170,15 @@ export async function POST(request: NextRequest) {
     // Person identity inside sheet_data: the 14-digit national ID ONLY.
     // A shared (legacy) sheet holds rows from BOTH accounts, and employee
     // codes collide across accounts — matching by code there would update
-    // the other account's person's row. NID when present, code only as a
-    // last resort when no NID was supplied.
-    const rowMatchCol = national_id ? 'row_national_id' : 'row_code';
-    const rowMatchVal = national_id ?? employee_code ?? '';
+    // the other account's person's row. NID exclusively; without a valid
+    // NID no write section runs at all (review warning above).
+    const rowMatchCol = 'row_national_id';
+    const rowMatchVal = national_id ?? '';
 
     // ── 1. Update employees_master.insurance_status ──────────────────────
     if (insurance_status) {
       if (employeeAccountId === null) {
-        sideEffects.push(UNRESOLVED_WARN + ' (سجل الموظف)');
+        if (validNid) sideEffects.push(UNRESOLVED_WARN + ' (سجل الموظف)');
       } else {
         const { error: updateErr } = await supabaseServer
           .from('employees_master')
@@ -169,7 +186,7 @@ export async function POST(request: NextRequest) {
             insurance_status,
             last_updated_at: now,
           })
-          .or(orConds.join(','))
+          .eq('national_id', national_id)
           .eq('account_id', employeeAccountId);
 
         if (updateErr) {
@@ -228,7 +245,7 @@ export async function POST(request: NextRequest) {
             });
           sideEffects.push('تمت إضافة الموظف إلى شيت المناقضات');
         }
-      } else {
+      } else if (validNid) {
         sideEffects.push(discWarn ?? 'تنبيه: لم يتم العثور على شيت المناقضات في قاعدة البيانات (يمكن استيراده أولاً)');
       }
     }
@@ -400,22 +417,23 @@ export async function POST(request: NextRequest) {
 
       // Also ensure updated in resignation_records table (person-keyed,
       // no account column: fail closed when the account is unresolved,
-      // match by NID when present so a cross-account code collision
-      // cannot touch the other account's person)
+      // matched strictly by NID so a cross-account code collision cannot
+      // touch the other account's person)
       if (employeeAccountId !== null) {
-        let resQ: any = supabaseServer
+        await supabaseServer
           .from('resignation_records')
           .update({
             insurance_supply_type: res_supply_type || 'يدوي',
             supply_date: res_supply_date || now.split('T')[0],
-          });
-        resQ = national_id ? resQ.eq('national_id', national_id) : resQ.or(orConds.join(','));
-        await resQ;
-      } else {
+          })
+          .eq('national_id', national_id);
+      } else if (validNid) {
         sideEffects.push(UNRESOLVED_WARN + ' (سجل الاستقالات)');
       }
 
-      sideEffects.push(`تم تأشير استمارة سن 6 كـ "${resStateLabel}" للموظف في شيت RES.`);
+      if (employeeAccountId !== null) {
+        sideEffects.push(`تم تأشير استمارة سن 6 كـ "${resStateLabel}" للموظف في شيت RES.`);
+      }
     }
 
     // ── 6. New employee sheet (ورقة الموظفين الجدد) ──────────────────────
@@ -504,11 +522,11 @@ export async function POST(request: NextRequest) {
     }
 
     // ── 8. Synchronize with search_history for live daily audit reporting ──
-    try {
+    if (validNid) try {
       const { data: recentSearch } = await supabaseServer
         .from('search_history')
         .select('id, insurance_status, search_result')
-        .or(orConds.join(','))
+        .eq('national_id', national_id)
         .order('search_timestamp', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -568,15 +586,22 @@ export async function POST(request: NextRequest) {
       updated_at:              now,
     };
 
-    // Try upsert into checklist_records (table may not exist yet — handle gracefully)
-    const { error: clErr } = await (supabaseServer as unknown as { from: (table: string) => any })
-      .from('checklist_records')
-      .upsert(checklistPayload, {
-        onConflict: national_id ? 'national_id' : 'employee_code',
-        ignoreDuplicates: false,
-      });
+    // Try upsert into checklist_records (table may not exist yet — handle gracefully).
+    // NID-keyed only; without a valid NID nothing is logged (review warning above).
+    let clErr: { message: string } | null = null;
+    if (validNid) {
+      const { error } = await (supabaseServer as unknown as { from: (table: string) => any })
+        .from('checklist_records')
+        .upsert(checklistPayload, {
+          onConflict: 'national_id',
+          ignoreDuplicates: false,
+        });
+      clErr = error;
+    }
 
-    if (clErr) {
+    if (!validNid) {
+      // nothing logged — review warning already present
+    } else if (clErr) {
       // Table might not exist yet — log and continue
       console.warn('checklist_records upsert failed (table may not exist):', clErr.message);
       sideEffects.push('تنبيه: جدول checklist_records غير موجود — البيانات حُفظت في جداول الأوراق الأخرى فقط');
