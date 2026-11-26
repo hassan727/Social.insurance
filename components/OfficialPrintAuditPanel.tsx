@@ -573,8 +573,8 @@ export default function OfficialPrintAuditPanel() {
             </div>
 
             {/* Table */}
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem', direction: 'rtl' }}>
+            <div style={{ overflow: 'auto', maxHeight: 'calc(100vh - 140px)' }}>
+              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: '0.8rem', direction: 'rtl' }}>
                 <thead>
                   <tr style={{ background: 'rgba(15,23,42,0.5)' }}>
                     {[
@@ -589,6 +589,7 @@ export default function OfficialPrintAuditPanel() {
                       'التصنيف الجنائي',
                     ].map((col) => (
                       <th key={col} style={{
+                        position: 'sticky', top: 0, zIndex: 2, background: '#0f172a',
                         padding: '10px 12px', textAlign: 'right',
                         color: '#94a3b8', fontWeight: 700, fontSize: '0.75rem',
                         borderBottom: '1px solid rgba(148,163,184,0.1)',
