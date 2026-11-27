@@ -6,6 +6,7 @@ import {
   governorateFromAddress, accountDisplay,
   type LetterFields, type Quarter, type Sector,
 } from '@/lib/hrLetterEngine';
+import { HR_LETTER_TEMPLATE_B64 } from '@/lib/hrLetterTemplate';
 
 // مفردات مرتب — read-only letter engine. No writes to any table.
 // GET ?nid=14digits&quarter=Q1..Q4&sector=bank|consumer|installment|gov&entity=...&download=docx
@@ -31,7 +32,7 @@ function cairoToday(): string {
 
 export async function GET(request: Request) {
   try {
-    const { searchParams, origin } = new URL(request.url);
+    const { searchParams } = new URL(request.url);
     const nid = (searchParams.get('nid') || '').trim();
     const quarter = (searchParams.get('quarter') || 'Q3') as Quarter;
     const sector = (searchParams.get('sector') || 'bank') as Sector;
@@ -144,9 +145,7 @@ export async function GET(request: Request) {
     if (!download) return NextResponse.json(preview);
     if (!entity) return NextResponse.json({ error: 'اختار الجهة الأول' }, { status: 400 });
 
-    const tplRes = await fetch(`${origin}/hr-letter-template.docx`);
-    if (!tplRes.ok) throw new Error('template fetch failed: ' + tplRes.status);
-    const zip = await JSZip.loadAsync(await tplRes.arrayBuffer());
+    const zip = await JSZip.loadAsync(Buffer.from(HR_LETTER_TEMPLATE_B64, 'base64'));
     let xml = await zip.file('word/document.xml')!.async('string');
     xml = fillFront(xml, fields).xml;
     const back = addBackSection(xml, fields);
