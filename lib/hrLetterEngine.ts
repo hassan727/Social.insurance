@@ -66,7 +66,7 @@ function esc(s: string): string {
 const RPR = '<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" /><w:b /><w:bCs /><w:sz w:val="28" /><w:szCs w:val="28" /><w:rtl /><w:lang w:bidi="ar-EG" /></w:rPr>';
 
 function collapsePara(p: string, newText: string): string {
-  const m = p.match(/<w:pPr>.*?<\/w:pPr>/s);
+  const m = p.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
   const ppr = m ? m[0] : '';
   const openTag = p.slice(0, p.indexOf('>') + 1);
   return openTag + ppr + '<w:r>' + RPR + '<w:t xml:space="preserve">' + esc(newText) + '</w:t></w:r></w:p>';
@@ -80,7 +80,7 @@ const BODY = (f: LetterFields, words: string) =>
 // Front page: replace entity line, body paragraph, print-date line. Returns {xml, words}.
 export function fillFront(xml: string, f: LetterFields): { xml: string; words: string } {
   const words = tafqeet(f.amount);
-  const paras = xml.match(/<w:p[ >].*?<\/w:p>/gs) || [];
+  const paras = xml.match(/<w:p[ >][\s\S]*?<\/w:p>/g) || [];
   for (const p of paras) {
     if (p.includes('السادة/')) xml = xml.replace(p, collapsePara(p, 'السادة/ ' + f.entity));
     else if (p.includes('بهذا نفيد')) xml = xml.replace(p, collapsePara(p, BODY(f, words)));
@@ -121,7 +121,7 @@ export function addBackSection(xml: string, f: LetterFields): { xml: string; ext
   const i = xml.lastIndexOf('<w:sectPr');
   const j = xml.lastIndexOf('</w:sectPr>') + '</w:sectPr>'.length;
   const sect = xml.slice(i, j);
-  let backSect = sect.replace(/<w:pgBorders.*?<\/w:pgBorders>/s, '');
+  let backSect = sect.replace(/<w:pgBorders[\s\S]*?<\/w:pgBorders>/, '');
   backSect = backSect.replace('r:id="rId8"', 'r:id="rId100"').replace('r:id="rId9"', 'r:id="rId101"');
   const bodyEnd = xml.lastIndexOf('</w:body>');
   const out = xml.slice(0, i)
