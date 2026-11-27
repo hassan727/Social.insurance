@@ -51,6 +51,14 @@ const NAV_GROUPS: NavGroup[] = [
         badge: '360°',
         badgeColor: '#a78bfa',
       },
+      {
+        href: '/hr-letter',
+        label: 'مفردات مرتب',
+        desc: 'طباعة خطاب مفردات المرتب لموظف (رقم قومي + جهة + ربع) مع تصدير إكسل للطلبات',
+        icon: FileSpreadsheet,
+        badge: 'جديد',
+        badgeColor: '#34d399',
+      },
     ],
   },
   {
