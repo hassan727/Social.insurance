@@ -709,23 +709,39 @@ async function syncEmployeeWithDatabase(params: {
   const masterUpdateData: Record<string, unknown> = {
     last_updated_at: now,
   };
-  if (employee_name) masterUpdateData.employee_name = employee_name;
-  if (national_id) masterUpdateData.national_id = national_id;
-  if (employee_code) masterUpdateData.employee_code = employee_code;
+  // name / national ID / code go through edit_master_core below (uniqueness + history).
+  // The account moves only through the confirmed transfer, never from this screen.
   if (insurance_number !== undefined) masterUpdateData.insurance_number = insurance_number || null;
   if (job_title !== undefined) masterUpdateData.current_job_title = job_title || null;
-  if (insurance_job_title !== undefined) masterUpdateData.insurance_job_title = insurance_job_title || null;
-  if (company_account !== undefined) masterUpdateData.company_account = company_account || null;
   if (phone_number !== undefined) masterUpdateData.phone_number = phone_number || null;
   if (insurance_status !== undefined) masterUpdateData.insurance_status = insurance_status || null;
   if (status !== undefined) masterUpdateData.current_status = status || null;
   if (subscription_start_date !== undefined) masterUpdateData.insurance_start_date = subscription_start_date || null;
 
   if (existingMaster?.id) {
-    await supabaseService
-      .from('employees_master')
-      .update(masterUpdateData as never)
-      .eq('id', existingMaster.id);
+    // Every master/profile edit goes through edit_employee_profile: uniqueness checks + history old vs new.
+    const { last_updated_at: _lu, ...profileFields } = masterUpdateData;
+    void _lu;
+    if (Object.keys(profileFields).length > 0 || employee_name || national_id || employee_code || insurance_job_title !== undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: core, error: coreErr } = await (supabaseService as any).rpc('edit_employee_profile', {
+        p_employee_id: existingMaster.id,
+        p_fields: {
+          ...profileFields,
+          ...(employee_name ? { employee_name } : {}),
+          ...(national_id ? { national_id } : {}),
+          ...(employee_code ? { employee_code } : {}),
+          ...(insurance_job_title !== undefined ? { insurance_job_title: insurance_job_title || null } : {}),
+        },
+        p_by: 'شاشة البحث',
+        p_reason: 'تعديل من شاشة البحث',
+      });
+      if (coreErr) throw new Error(`فشل تعديل الماستر: ${coreErr.message}`);
+      const res = core as unknown as { success?: boolean; error?: string; holder_name?: string } | null;
+      if (!res || res.success !== true) {
+        throw new Error(`لم يتم تعديل الماستر (${res?.error ?? 'unknown'})${res?.holder_name ? ` — مسجل باسم ${res.holder_name}` : ''}`);
+      }
+    }
   } else {
     // Insert new employee master row
     await supabaseService
