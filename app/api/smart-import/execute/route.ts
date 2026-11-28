@@ -12,6 +12,7 @@ export async function POST(request: Request) {
     const file = formData.get('file') as File | null;
     const rawAccount = (formData.get('company_account') as string | null) || '';
     const selectedSheetsStr = formData.get('selected_sheets') as string | null;
+    const dryRun = formData.get('dry_run') === 'true';
 
     if (!file) {
       return NextResponse.json({ error: 'الملف مطلوب' }, { status: 400 });
@@ -75,7 +76,8 @@ export async function POST(request: Request) {
       workbook,
       selectedSheets,
       file.name,
-      accountId
+      accountId,
+      dryRun
     );
 
     // Calculate summary
@@ -105,10 +107,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: summary.sheets_failed === 0,
+      dry_run: dryRun,
       message:
-        summary.sheets_failed === 0
-          ? `تم استيراد ${summary.total_sheets_imported} ورقة بنجاح: ${summary.total_new_employees} موظف جديد، ${summary.total_updated_employees} موظف محدث`
-          : `تم استيراد ${summary.sheets_success} ورقة بنجاح، ${summary.sheets_failed} ورقة فشلت`,
+        (dryRun ? 'معاينة بدون حفظ — لم يتغير أي شيء في البيانات: ' : '') +
+        (summary.sheets_failed === 0
+          ? `تمت معالجة ${summary.total_sheets_imported} ورقة بنجاح: ${summary.total_new_employees} موظف جديد، ${summary.total_updated_employees} موظف محدث`
+          : `تمت معالجة ${summary.sheets_success} ورقة بنجاح، ${summary.sheets_failed} ورقة فشلت`),
       summary,
       detailed_results: results,
     });
