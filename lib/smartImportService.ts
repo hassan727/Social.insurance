@@ -568,7 +568,8 @@ export async function importSheet(
   sheetName: string,
   workbook: XLSX.WorkBook,
   importLogId: string,
-  accountId: number | null = null
+  accountId: number | null = null,
+  dryRun: boolean = false
 ): Promise<ImportResult> {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -649,7 +650,7 @@ export async function importSheet(
       );
       if (usageAccs.size <= 1 && (usageAccs.size === 0 || accountId === null || usageAccs.has(accountId))) {
         // No data, or only this account's data: grounded to claim for this account.
-        if (accountId !== null) {
+        if (accountId !== null && !dryRun) {
           // Guarded claim: only if still unclaimed, then VERIFY the stamp
           // landed. A unique-index conflict or a lost race must never leave
           // the import attached to an unscoped shared row.
@@ -821,6 +822,7 @@ export async function importSheet(
         sheetIdByAccount.set(acct, existing.id as string);
         return existing.id as string;
       }
+      if (dryRun) return undefined; // dry run: never register new sheets
       const { data: inserted } = await supabaseService.from('dynamic_sheets').insert({
         sheet_name: sheetName,
         display_name: sheetName,
@@ -1363,6 +1365,8 @@ export async function importSheet(
     // rows that still fail become review errors, never phantom "new" counts,
     // and their dependent sheet_data/history rows are dropped below.
     const failedEmpIds = new Set<string>();
+    if (dryRun) { newEmployees += employeesToInsert.length; }
+    if (!dryRun)
     for (let i = 0; i < employeesToInsert.length; i += 150) {
         const chunk = employeesToInsert.slice(i, i + 150);
         const { error } = await supabaseService.from('employees_master').insert(chunk);
@@ -1379,6 +1383,8 @@ export async function importSheet(
       }
 
       // B) Batch Update Existing Employees (parallel chunks of 20)
+      if (dryRun) { updatedEmployees += employeesToUpdate.length; }
+      if (!dryRun)
       for (let i = 0; i < employeesToUpdate.length; i += 20) {
         const chunk = employeesToUpdate.slice(i, i + 20);
         await Promise.all(
@@ -1410,6 +1416,7 @@ export async function importSheet(
         set.add(eid);
         empIdsBySheet.set(sid, set);
       });
+      if (!dryRun)
       for (const [sid, empSet] of Array.from(empIdsBySheet.entries())) {
         const ids = Array.from(empSet);
         for (let i = 0; i < ids.length; i += 200) {
@@ -1439,6 +1446,7 @@ export async function importSheet(
           skippedRows++;
         }
       };
+      if (!dryRun)
       for (let i = 0; i < sheetDataFiltered.length; i += 250) {
         const chunk = sheetDataFiltered.slice(i, i + 250);
         const { error } = await supabaseService.from('sheet_data').insert(chunk);
@@ -1451,6 +1459,7 @@ export async function importSheet(
 
       // D) Batch Insert History (chunks of 250)
       const historyFiltered = historyToInsert.filter((h) => !failedEmpIds.has(h.employee_id as string));
+      if (!dryRun)
       for (let i = 0; i < historyFiltered.length; i += 250) {
         const chunk = historyFiltered.slice(i, i + 250);
         const { error: histErr } = await supabaseService.from('employee_history').insert(chunk);
@@ -1473,6 +1482,7 @@ export async function importSheet(
         const rowAcc = resolveRowAccount(rd['الشركه'] ?? rd['الشركة']);
         r.account_id = rowAcc ?? accountId;
       });
+      if (!dryRun)
       for (let i = 0; i < incomingBatch.length; i += 150) {
         const chunk = incomingBatch.slice(i, i + 150);
         // Upsert: update existing record if same employee in same company_account
@@ -1488,16 +1498,19 @@ export async function importSheet(
           if (insertErr) console.error('Bridge incoming_insurance error:', insertErr.message);
         }
       }
+      if (!dryRun)
       for (let i = 0; i < resignationBatch.length; i += 150) {
         const chunk = resignationBatch.slice(i, i + 150);
         const { error } = await supabaseService.from('resignation_records').insert(chunk);
         if (error) console.error('Bridge resignation_records error:', error.message);
       }
+      if (!dryRun)
       for (let i = 0; i < payrollBatch.length; i += 150) {
         const chunk = payrollBatch.slice(i, i + 150);
         const { error } = await supabaseService.from('monthly_payroll_records').insert(chunk);
         if (error) { errors.push(`Bridge monthly_payroll error: ${error.message}`); processingFailures++; }
       }
+      if (!dryRun)
       for (let i = 0; i < insuranceBatch.length; i += 150) {
         const chunk = insuranceBatch.slice(i, i + 150);
         const { error } = await supabaseService.from('monthly_insurance_records').insert(chunk);
@@ -1515,7 +1528,7 @@ export async function importSheet(
       // unresolved (accountId null) the flip is skipped rather than guessed.
       // FAIL CLOSED: never prune on a partial/failed/empty sync. A prune is
       // only a verified full snapshot of this (worksheet, account).
-      if (currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping && crossAccountConflicts.length === 0) {
+      if (!dryRun && currentSheetId && accountId !== null && processingFailures === 0 && nonEmptyRows > 0 && !incompleteMapping && crossAccountConflicts.length === 0) {
         // Per-source-worksheet prune across row accounts. Source identity is
         // the (OPERATOR account, worksheet name) stream, grounded in
         // import_logs.account_id (user-confirmed 2026-11-25: one workbook per
@@ -1581,7 +1594,7 @@ export async function importSheet(
       }
 
       // 9. Update sheet statistics
-      if (currentSheetId) {
+      if (!dryRun && currentSheetId) {
         await supabaseService
           .from('dynamic_sheets')
           .update({
@@ -1629,12 +1642,15 @@ export async function importMultiSheetExcel(
     workbook: XLSX.WorkBook,
     selectedSheets: string[],
     fileName: string,
-    accountId?: number | null
+    accountId?: number | null,
+    dryRun: boolean = false
   ): Promise<Record<string, ImportResult>> {
     const results: Record<string, ImportResult> = {};
 
-    // Create import log
-    const { data: importLog, error: logError } = await supabaseService
+    // Create import log (skipped entirely in a dry run: nothing is persisted)
+    const { data: importLog, error: logError } = dryRun
+      ? { data: { id: '00000000-0000-0000-0000-000000000000' }, error: null } as { data: { id: string } | null; error: unknown }
+      : await supabaseService
       .from('import_logs')
       .insert({
         source_type: 'multi_sheet_import',
@@ -1651,7 +1667,7 @@ export async function importMultiSheetExcel(
 
     // Import each selected sheet
     for (const sheetName of selectedSheets) {
-      results[sheetName] = await importSheet(companyAccount, sheetName, workbook, importLog.id, accountId ?? null);
+      results[sheetName] = await importSheet(companyAccount, sheetName, workbook, importLog.id, accountId ?? null, dryRun);
     }
 
     // Update import log with summary
@@ -1659,6 +1675,7 @@ export async function importMultiSheetExcel(
     const totalUpdated = Object.values(results).reduce((sum, r) => sum + r.updated_employees, 0);
     const totalSkipped = Object.values(results).reduce((sum, r) => sum + r.skipped_rows, 0);
 
+    if (!dryRun)
     await supabaseService
       .from('import_logs')
       .update({
@@ -1669,6 +1686,7 @@ export async function importMultiSheetExcel(
       .eq('id', importLog.id);
 
     // Invalidate reports cache immediately so reports reflect new data in real-time
+    if (!dryRun)
     try {
       invalidateReportsCache();
     } catch {
@@ -1678,6 +1696,7 @@ export async function importMultiSheetExcel(
     // Run conflict detection after import (non-blocking — fires and forgets)
     // The Postgres function detect_all_field_conflicts() scans all employees
     // and inserts into field_conflicts for any field-level mismatch.
+    if (!dryRun)
     (supabaseService.rpc('detect_all_field_conflicts') as unknown as Promise<unknown>).then(() => {
       console.log('[smartImport] Conflict detection complete after import');
     }).catch((e: unknown) => {
