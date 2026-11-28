@@ -849,7 +849,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* Target Month Mode Filter */}
-                <div style={{ display: compactSearch ? 'none' : 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: compactSearch ? 6 : 10, marginBottom: compactSearch ? 6 : 18 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#cbd5e1' }}>
                     <Calendar style={{ width: 15, height: 15, color: '#818cf8' }} />
                     <span>نطاق شهر الفحص:</span>
@@ -942,7 +942,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* ─── Search Purpose Selector ─── */}
-                <div style={{ display: compactSearch ? 'none' : 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: compactSearch ? 6 : 10, marginBottom: compactSearch ? 8 : 18, padding: compactSearch ? '0' : '12px 16px', borderRadius: 14, background: compactSearch ? 'transparent' : 'rgba(255,255,255,0.02)', border: compactSearch ? 'none' : '1px solid rgba(255,255,255,0.07)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
                     <FileText style={{ width: 14, height: 14, color: '#818cf8' }} />
                     <span>غرض البحث:</span>
@@ -1323,34 +1323,6 @@ export default function LookupPage() {
 
                   {compactSearch && (
                     <>
-                      <select
-                        value={effS1Ov ? effS1Ov.year + '-' + effS1Ov.month : searchTargetPeriod}
-                        onChange={(e) => handleTargetPeriodChange(e.target.value)}
-                        title="نطاق شهر الفحص"
-                        className="font-mono-pro"
-                        style={{ fontSize: 12, fontWeight: 800, padding: '9px 10px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.16)', color: '#e2e8f0', cursor: 'pointer', flexShrink: 0, maxWidth: 190 }}
-                      >
-                        <option value="auto">أول شهر ظهور مشترك (تلقائي)</option>
-                        {availablePeriods.map((p) => (
-                          <option key={'cp_' + p.year + '_' + p.month} value={p.year + '-' + p.month}>
-                            شهر {p.month}/{p.year}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={searchPurpose}
-                        onChange={(e) => setSearchPurpose(e.target.value as typeof searchPurpose)}
-                        title="غرض البحث"
-                        style={{ fontSize: 12, fontWeight: 800, padding: '9px 10px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.16)', color: '#e2e8f0', cursor: 'pointer', flexShrink: 0, maxWidth: 190 }}
-                      >
-                        <option value="general">بحث عام</option>
-                        <option value="s1">س1 — تسجيل تأمين جديد</option>
-                        <option value="s6">س6 — إنهاء اشتراك</option>
-                        <option value="discrepancy">شيت المناقضات</option>
-                        <option value="supplied">تم التوريد</option>
-                        <option value="archives">الأرشيف والمستندات</option>
-                        <option value="details">تفاصيل موظف كاملة</option>
-                      </select>
                       <button
                         type="button"
                         onClick={() => setViewMode('operations_log')}
