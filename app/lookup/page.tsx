@@ -113,7 +113,7 @@ function CopyableCellNumber({ value, label }: { value?: string | number | null; 
   );
 }
 
-function FieldCard({ label, children, accent }: { label: string; children: React.ReactNode; accent?: string }) {
+function FieldCard({ label, children, accent, span, nowrap }: { label: string; children: React.ReactNode; accent?: string; span?: number; nowrap?: boolean }) {
   return (
     <div style={{
       background: 'rgba(255,255,255,0.02)',
@@ -121,9 +121,53 @@ function FieldCard({ label, children, accent }: { label: string; children: React
       borderRadius: 12,
       padding: '8px 12px',
       minWidth: 0,
+      gridColumn: span ? ('span ' + span) : undefined,
     }}>
       <div style={{ fontSize: 10, color: accent || '#94a3b8', marginBottom: 4, fontWeight: 700 }}>{label}</div>
-      <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{children}</div>
+      <div style={{ minWidth: 0, overflowWrap: nowrap ? 'normal' : 'anywhere', whiteSpace: nowrap ? 'nowrap' : undefined }}>{children}</div>
+    </div>
+  );
+}
+
+/* Insurance profession you can edit straight on the employee card (Hassan 2026-11-28).
+   Saves to employees_master.insurance_job_title through /api/lookup/update-ins-job. */
+function InsJobEditField({ value, saving, onSave }: { value?: string | null; saving: boolean; onSave: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const save = () => {
+    const v = draft.trim();
+    if (!v) { toast.warning('اكتب مهنة التأمينات الأول'); return; }
+    onSave(v);
+    setEditing(false);
+  };
+  if (!editing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, color: value ? '#ffffff' : '#94a3b8', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{value || '—'}</span>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setDraft(value || ''); setEditing(true); }}
+          title="تعديل مهنة التأمينات — بتتحفظ في الماستر (ملف الموظف)"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 8, fontSize: 10, fontWeight: 800, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24', cursor: 'pointer', flexShrink: 0 }}
+        >
+          ✏️ تعديل
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }} onClick={(e) => e.stopPropagation()}>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } if (e.key === 'Escape') setEditing(false); }}
+        autoFocus
+        placeholder="اكتب مهنة التأمينات…"
+        className="input-dark"
+        style={{ fontSize: 11, padding: '4px 8px', borderRadius: 8, minWidth: 130, flex: 1 }}
+      />
+      <button type="button" disabled={saving} onClick={save} style={{ padding: '4px 10px', borderRadius: 8, fontSize: 10, fontWeight: 800, background: '#10b981', color: '#fff', border: 'none', cursor: 'pointer', flexShrink: 0 }}>{saving ? '…' : 'حفظ'}</button>
+      <button type="button" onClick={() => setEditing(false)} style={{ padding: '4px 8px', borderRadius: 8, fontSize: 10, fontWeight: 800, background: 'rgba(255,255,255,0.08)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.15)', cursor: 'pointer', flexShrink: 0 }}>إلغاء</button>
     </div>
   );
 }
@@ -137,6 +181,43 @@ export default function LookupPage() {
   // In-memory only: no override = default (first joint month).
   const [s1EmpMonths, setS1EmpMonths] = useState<Record<string, { year: number; month: number }>>({});
   const [s1EmpSel, setS1EmpSel] = useState<string | null>(null);
+  // Editable insurance profession per employee (Hassan, 2026-11-28): saved directly to
+  // employees_master.insurance_job_title via /api/lookup/update-ins-job. Payroll
+  // profession, sheets and the search log are never touched; a new official print
+  // import keeps its behavior and may overwrite the value (his decision).
+  const [insJobEditing, setInsJobEditing] = useState<string | null>(null);
+  const [insJobDraft, setInsJobDraft] = useState('');
+  const [insJobSaving, setInsJobSaving] = useState(false);
+
+  const saveInsJobEdit = async (candId: string, nid: string, value: string) => {
+    if (!nid) return;
+    const v = value.trim();
+    if (!v) {
+      toast.warning('اكتب مهنة التأمينات الأول');
+      return;
+    }
+    setInsJobSaving(true);
+    try {
+      const res = await fetch('/api/lookup/update-ins-job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ national_id: nid, insurance_job_title: v }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        toast.error(data.error || 'حصل خطأ أثناء الحفظ');
+        return;
+      }
+      setCandidates((prev) => prev.map((x) => (x.id === candId ? { ...x, insurance_job_title: v } : x)));
+      setSelectedCandidate((prev) => (prev && (prev.id === candId || prev.national_id === nid) ? { ...prev, insurance_job_title: v } : prev));
+      setInsJobEditing(null);
+      toast.success('اتحفظت مهنة التأمينات في ملف الموظف ✓');
+    } catch {
+      toast.error('حصل خطأ أثناء الحفظ');
+    } finally {
+      setInsJobSaving(false);
+    }
+  };
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchTargetPeriod, setSearchTargetPeriod] = useState<string>('auto'); // 'auto' or 'YYYY-M'
@@ -152,6 +233,26 @@ export default function LookupPage() {
   const [searchPurpose, setSearchPurpose] = useState<'general' | 's1' | 's6' | 'details' | 'discrepancy' | 'supplied' | 'archives'>('general');
   const [viewMode, setViewMode] = useState<'lookup' | 'operations_log'>('lookup');
   const [todayOpsCount, setTodayOpsCount] = useState<number>(0);
+
+  // Hassan (2026-11-28): once a search is open, the hero collapses into ONE sticky toolbar row
+  // (search box + month + purpose + operations log) so the employee cards are visible without
+  // scrolling. Nothing is removed: every month, every purpose and the operations log stay
+  // reachable from the compact toolbar, and the full results card can be re-opened.
+  const [showResultsCardBody, setShowResultsCardBody] = useState<boolean>(false);
+  const heroRef = useRef<HTMLDivElement | null>(null);
+  const [heroH, setHeroH] = useState<number>(0);
+  const compactSearch = !loadingDetails && (candidates.length > 0 || !!details);
+
+  useEffect(() => {
+    if (!compactSearch) { setHeroH(0); return; }
+    const el = heroRef.current;
+    if (!el) return;
+    const measure = () => setHeroH(el.offsetHeight);
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(el);
+    return () => { if (ro) ro.disconnect(); };
+  }, [compactSearch, candidates.length, details, searchPurpose, searchTargetPeriod]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
@@ -661,7 +762,10 @@ export default function LookupPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
               className="glass-card"
-              style={{ borderRadius: 24, padding: '2rem 2.5rem', marginBottom: 20, position: 'relative', zIndex: 40 }}
+              ref={heroRef}
+              style={compactSearch
+                ? { borderRadius: 16, padding: '10px 14px', marginBottom: 12, position: 'sticky', top: 66, zIndex: 45, backdropFilter: 'blur(14px)' }
+                : { borderRadius: 24, padding: '2rem 2.5rem', marginBottom: 20, position: 'relative', zIndex: 40 }}
             >
               {/* corner glow contained */}
               <div style={{ position: 'absolute', inset: 0, borderRadius: 24, overflow: 'hidden', pointerEvents: 'none' }}>
@@ -669,12 +773,12 @@ export default function LookupPage() {
               </div>
 
               <div style={{ position: 'relative', zIndex: 1 }}>
-                <span className="badge-brand" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '4px 14px', borderRadius: 9999, marginBottom: 14 }}>
+                <span className="badge-brand" style={{ display: compactSearch ? 'none' : 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '4px 14px', borderRadius: 9999, marginBottom: 14 }}>
                   <Sparkles style={{ width: 12, height: 12 }} />
                   محرك الاستعلام والتدقيق الفوري
                 </span>
 
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
                   <div>
                     <h1 style={{ fontSize: 28, fontWeight: 900, color: '#fff', letterSpacing: '-0.3px', margin: '0 0 8px' }}>
                       استدعاء وفحص ملف الموظف
@@ -745,7 +849,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* Target Month Mode Filter */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#cbd5e1' }}>
                     <Calendar style={{ width: 15, height: 15, color: '#818cf8' }} />
                     <span>نطاق شهر الفحص:</span>
@@ -838,7 +942,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* ─── Search Purpose Selector ─── */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
                     <FileText style={{ width: 14, height: 14, color: '#818cf8' }} />
                     <span>غرض البحث:</span>
@@ -900,7 +1004,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* National ID Exclusive Search Banner & Live Digit Counter */}
-                <div style={{ maxWidth: 780, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', maxWidth: 780, alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{
                       fontSize: 12,
@@ -983,11 +1087,20 @@ export default function LookupPage() {
                   })()}
                 </div>
 
+                {/* --- Toolbar row: search box + compact month / purpose / log controls --- */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
+                  {compactSearch && (
+                    <div style={{ fontSize: 13, fontWeight: 800, color: '#e2e8f0', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <Search style={{ width: 15, height: 15, color: '#818cf8' }} />
+                      <span>استدعاء الموظف</span>
+                    </div>
+                  )}
+
                 {/* Search Input Container */}
                 <div
                   ref={searchContainerRef}
                   className="search-glow"
-                  style={{ position: 'relative', maxWidth: 780, borderRadius: 18 }}
+                  style={{ position: 'relative', maxWidth: compactSearch ? 'none' : 780, flex: compactSearch ? '1 1 auto' : undefined, minWidth: 0, borderRadius: 18 }}
                 >
                   <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                     <Search
@@ -1025,8 +1138,8 @@ export default function LookupPage() {
                       style={{
                         paddingRight: 52,
                         paddingLeft: 125,
-                        paddingTop: 18,
-                        paddingBottom: 18,
+                        paddingTop: compactSearch ? 11 : 18,
+                        paddingBottom: compactSearch ? 11 : 18,
                         borderRadius: 18,
                         fontSize: 15,
                         fontWeight: 600,
@@ -1207,6 +1320,49 @@ export default function LookupPage() {
                     )}
                   </AnimatePresence>
                 </div>
+
+                  {compactSearch && (
+                    <>
+                      <select
+                        value={effS1Ov ? effS1Ov.year + '-' + effS1Ov.month : searchTargetPeriod}
+                        onChange={(e) => handleTargetPeriodChange(e.target.value)}
+                        title="نطاق شهر الفحص"
+                        className="font-mono-pro"
+                        style={{ fontSize: 12, fontWeight: 800, padding: '9px 10px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.16)', color: '#e2e8f0', cursor: 'pointer', flexShrink: 0, maxWidth: 190 }}
+                      >
+                        <option value="auto">أول شهر ظهور مشترك (تلقائي)</option>
+                        {availablePeriods.map((p) => (
+                          <option key={'cp_' + p.year + '_' + p.month} value={p.year + '-' + p.month}>
+                            شهر {p.month}/{p.year}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={searchPurpose}
+                        onChange={(e) => setSearchPurpose(e.target.value as typeof searchPurpose)}
+                        title="غرض البحث"
+                        style={{ fontSize: 12, fontWeight: 800, padding: '9px 10px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.16)', color: '#e2e8f0', cursor: 'pointer', flexShrink: 0, maxWidth: 190 }}
+                      >
+                        <option value="general">بحث عام</option>
+                        <option value="s1">س1 — تسجيل تأمين جديد</option>
+                        <option value="s6">س6 — إنهاء اشتراك</option>
+                        <option value="discrepancy">شيت المناقضات</option>
+                        <option value="supplied">تم التوريد</option>
+                        <option value="archives">الأرشيف والمستندات</option>
+                        <option value="details">تفاصيل موظف كاملة</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('operations_log')}
+                        title="سجل العمليات والبحث اليومي"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 12px', borderRadius: 12, fontSize: 12, fontWeight: 700, background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', color: '#38bdf8', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}
+                      >
+                        <History style={{ width: 15, height: 15 }} />
+                        <span>السجل</span>
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </motion.div>
 
@@ -1250,7 +1406,7 @@ export default function LookupPage() {
                         <h3 style={{ fontSize: 17, fontWeight: 800, color: '#ffffff', margin: '0 0 4px' }}>
                           نتائج البحث الموحدة ({candidates.length} موظف)
                         </h3>
-                        <p style={{ fontSize: 12, color: '#cbd5e1', margin: 0 }}>
+                        <p style={{ fontSize: 12, color: '#cbd5e1', margin: 0, display: compactSearch ? 'none' : 'block' }}>
                           أول شهر ظهور مشترك، وأيام الحضور، والشركة، وحالة التأمين، وموقف الاستقالات • اضغط على الكارت لفتح الملف الكامل
                           {candidates.length > 1 && (
                             <span style={{ color: '#818cf8' }}> • لاختيار شهر موظف معين: اضغط الدائرة على كارته ثم اضغط الشهر من الأعلى</span>
@@ -1259,6 +1415,16 @@ export default function LookupPage() {
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      {compactSearch && details && (
+                        <button
+                          type="button"
+                          onClick={() => setShowResultsCardBody((v) => !v)}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 800, padding: '7px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.12)', cursor: 'pointer' }}
+                          title="إظهار أو إخفاء كارت نتيجة البحث (الملف مفتوح تحت)"
+                        >
+                          {showResultsCardBody ? 'إخفاء الكارت' : 'عرض الكارت'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={handleExportCurrentSearchResults}
@@ -1311,7 +1477,7 @@ export default function LookupPage() {
                   </div>
 
                   {/* ─── Results: responsive label+value cards (no wide table, no horizontal scroll) ─── */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 16 }}>
+                  <div style={{ display: (compactSearch && details && !showResultsCardBody) ? 'none' : 'flex', flexDirection: 'column', gap: 14, padding: 16 }}>
                     {candidates.map((c, idx) => {
                       const hasJoint = c.first_both_month && !c.first_both_month.includes('لم يظهر') && !c.first_both_month.includes('غير متوفر');
                       const isTargetMode = searchTargetPeriod !== 'auto' && c.target_month_status;
@@ -1394,7 +1560,7 @@ export default function LookupPage() {
                             <FieldCard label="كود الموظف">
                               <CopyableCellNumber value={c.employee_code} label="كود الموظف" />
                             </FieldCard>
-                            <FieldCard label="الرقم القومي">
+                            <FieldCard label="الرقم القومي" span={2} nowrap>
                               <CopyableCellNumber value={c.national_id} label="الرقم القومي" />
                             </FieldCard>
                             <FieldCard label="رقم التأمين">
@@ -1408,6 +1574,54 @@ export default function LookupPage() {
                               {c.insurance_job_title && c.insurance_job_title !== c.job_title && (
                                 <div style={{ fontSize: 10, color: '#cbd5e1', marginTop: 2 }}>تأمين: {c.insurance_job_title}</div>
                               )}
+                            </FieldCard>
+                            <FieldCard label="مهنة التأمينات" accent="#fbbf24">
+                              {(() => {
+                                const nid0 = c.national_id || '';
+                                if (nid0 && insJobEditing === nid0) {
+                                  const commitEdit = () => { if (!insJobSaving) saveInsJobEdit(c.id, nid0, insJobDraft); };
+                                  return (
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                      <input
+                                        value={insJobDraft}
+                                        onChange={(e) => setInsJobDraft(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
+                                          if (e.key === 'Escape') setInsJobEditing(null);
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                        autoFocus
+                                        disabled={insJobSaving}
+                                        placeholder="اكتب مهنة التأمينات…"
+                                        style={{ flex: 1, minWidth: 0, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(251,191,36,0.45)', borderRadius: 8, padding: '5px 8px', fontSize: 12, color: '#ffffff', outline: 'none' }}
+                                      />
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); commitEdit(); }}
+                                        disabled={insJobSaving}
+                                        style={{ background: 'rgba(52,211,153,0.2)', border: '1px solid rgba(52,211,153,0.5)', color: '#34d399', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 800, cursor: insJobSaving ? 'wait' : 'pointer', whiteSpace: 'nowrap', opacity: insJobSaving ? 0.6 : 1 }}
+                                      >{insJobSaving ? 'بيحفظ…' : 'حفظ'}</button>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setInsJobEditing(null); }}
+                                        style={{ background: 'none', border: '1px solid rgba(255,255,255,0.15)', color: '#94a3b8', borderRadius: 8, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                                      >✕</button>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <div style={{ fontSize: 12, fontWeight: 700, color: '#ffffff', overflowWrap: 'anywhere', flex: 1, minWidth: 0 }}>
+                                      {c.insurance_job_title || '—'}
+                                    </div>
+                                    {nid0 && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setInsJobEditing(nid0); setInsJobDraft(c.insurance_job_title || ''); }}
+                                        title="تعديل مهنة التأمينات للموظف ده — بتتحفظ في ملف الموظف الأساسي"
+                                        style={{ background: 'none', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 8, cursor: 'pointer', fontSize: 11, padding: '3px 7px', color: '#fbbf24', flexShrink: 0 }}
+                                      >✏️ تعديل</button>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </FieldCard>
                             <FieldCard label="الشركة (Account)">
                               {c.account_display?.status === 'conflict' ? (
@@ -1605,7 +1819,7 @@ export default function LookupPage() {
                     {/* ═══ STICKY QUICK-ID BANNER ═══ */}
                     <div className="quick-id-banner" style={{
                       position: 'sticky',
-                      top: 0,
+                      top: compactSearch ? 66 + heroH + 8 : 0,
                       zIndex: 30,
                       borderRadius: 18,
                       overflow: 'hidden',
@@ -1636,7 +1850,7 @@ export default function LookupPage() {
                               <span className="badge-brand font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
                                 كود: {details.identifiers.employee_code || '—'}
                               </span>
-                              <span className="badge-slate font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
+                              <span className="badge-slate font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800, whiteSpace: 'nowrap' }}>
                                 ق.ق: {details.identifiers.national_id || '—'}
                               </span>
                               {details.accountDisplay?.status === 'conflict' ? (
@@ -1762,6 +1976,18 @@ export default function LookupPage() {
                             )}
                           </div>
                         ))}
+                        {/* Insurance profession, editable straight on the card and saved in employees_master */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.35)', gridColumn: 'span 2' }} title="مهنة التأمينات — بتتحفظ في الماستر (ملف الموظف)">
+                          <span style={{ fontSize: 13 }}>✏️</span>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 700, marginBottom: 1 }}>مهنة التأمينات (تعديل مباشر)</div>
+                            <InsJobEditField
+                              value={selectedCandidate?.insurance_job_title || (details.incomingInsurance.record?.insurance_job_title as string | null | undefined) || (details.incomingInsurance.record?.job_title as string | null | undefined)}
+                              saving={insJobSaving}
+                              onSave={(v) => saveInsJobEdit(selectedCandidate?.id || '', selectedCandidate?.national_id || details.identifiers.national_id || '', v)}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
 
