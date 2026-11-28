@@ -162,12 +162,17 @@ export async function PATCH(
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
     }
 
-    const { error } = await supabaseService
-      .from('employees_master')
-      .update(updates as any)
-      .eq('id', id);
-
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data: res, error } = await (supabaseService as any).rpc('edit_employee_profile', {
+      p_employee_id: id,
+      p_fields: updates,
+      p_by: String(body?.confirmed_by || 'بطاقة الموظف'),
+      p_reason: body?.reason || null,
+    });
     if (error) throw new Error(error.message);
+    if (!res || res.success !== true) {
+      return NextResponse.json({ error: res?.error || 'update_failed', detail: res?.detail ?? null }, { status: 400 });
+    }
 
     return NextResponse.json({ success: true, updated_fields: Object.keys(updates) });
   } catch (err) {
