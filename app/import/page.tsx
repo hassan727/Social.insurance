@@ -86,7 +86,9 @@ export default function ImportPage() {
   const [importing,       setImporting]       = useState(false);
   const [uploadProgress,  setUploadProgress]  = useState(0);
   const [uploadStage,     setUploadStage]     = useState('');
-  const [confirmOverwrite,setConfirmOverwrite]= useState(false);
+  type ImportCounts = { new: number; updated: number; unchanged: number; skipped_national_id_only: number; repeats_in_same_file: number; review: Record<string, number> };
+  const [previewState,    setPreviewState]    = useState<{ key: string; counts: ImportCounts } | null>(null);
+  const [previewing,      setPreviewing]      = useState(false);
   const [importResult,    setImportResult]    = useState<{
     success: boolean; message: string;
     totalRowsRead?: number; rowsAccepted?: number;
@@ -164,6 +166,35 @@ export default function ImportPage() {
     } finally { setLoadingPreview(false); }
   };
 
+  // The preview is only valid for exactly this file + sheet + mapping + period + account.
+  const importKey = [selectedFile?.name, selectedFile?.size, selectedFile?.lastModified, selectedSheet, JSON.stringify(columnMapping), periodYear, periodMonth, selectedAccount, sourceType].join('|');
+  const previewCounts = previewState && previewState.key === importKey ? previewState.counts : null;
+
+  /* ── Preview counts (writes nothing) ── */
+  const buildImportForm = (preview: boolean) => {
+    const fd = new FormData();
+    fd.append('file', selectedFile as File);
+    fd.append('source_type', sourceType);
+    fd.append('sheet_name', selectedSheet);
+    fd.append('column_mapping', JSON.stringify(columnMapping));
+    if (preview) fd.append('preview', 'true');
+    if (isMonthly) { fd.append('period_year', String(periodYear)); fd.append('period_month', String(periodMonth)); fd.append('company_account', selectedAccount); }
+    return fd;
+  };
+  const handlePreviewCounts = async () => {
+    if (!selectedFile || !selectedSheet) { toast.error('يرجى معاينة الملف أولاً'); return; }
+    if (!requireMonthlyContext()) return;
+    setPreviewing(true); setPreviewState(null);
+    try {
+      const res = await fetch('/api/import/execute', { method: 'POST', body: buildImportForm(true) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'فشل حساب الأرقام');
+      setPreviewState({ key: importKey, counts: data.counts });
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'خطأ أثناء حساب الأرقام');
+    } finally { setPreviewing(false); }
+  };
+
   /* ── Execute import ── */
   const handleExecuteImport = async () => {
     if (!selectedFile || !selectedSheet) { toast.error('يرجى معاينة الملف أولاً'); return; }
@@ -178,27 +209,13 @@ export default function ImportPage() {
         return p;
       });
     }, 400);
-    const fd = new FormData();
-    fd.append('file', selectedFile);
-    fd.append('source_type', sourceType);
-    fd.append('sheet_name', selectedSheet);
-    fd.append('column_mapping', JSON.stringify(columnMapping));
-    fd.append('confirm_overwrite', confirmOverwrite ? 'true' : 'false');
-    if (isMonthly) { fd.append('period_year', String(periodYear)); fd.append('period_month', String(periodMonth)); fd.append('company_account', selectedAccount); }
+    const fd = buildImportForm(false);
     try {
       const res  = await fetch('/api/import/execute', { method: 'POST', body: fd });
       const data = await res.json();
       clearInterval(interval);
       if (!res.ok) {
         setUploadProgress(0); setUploadStage('');
-        if (res.status === 409 && data.requiresConfirmation) {
-          if (data.existingImport) {
-            setExistingImport(data.existingImport);
-          } else {
-            setExistingImport({ id: 'exists', file_name: selectedFile.name, created_at: '', rows_accepted: 0 });
-          }
-          toast.warning(data.error, { duration: 7000 }); return;
-        }
         throw new Error(data.error || 'فشل الاستيراد');
       }
       setUploadProgress(100); setUploadStage('اكتملت العملية بنجاح!');
@@ -534,32 +551,39 @@ export default function ImportPage() {
               style={{ display: 'flex', flexDirection: 'column', gap: 20 }}
             >
 
-              {/* Overwrite Warning */}
-              {existingImport && (
-                <div className="status-warning" style={{ borderRadius: 18, padding: '1.25rem 1.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
-                    <ShieldAlert style={{ width: 22, height: 22, color: '#fbbf24', flexShrink: 0, marginTop: 2 }} />
-                    <div>
-                      <p style={{ fontSize: 14, fontWeight: 800, color: '#fbbf24', margin: '0 0 6px' }}>تنبيه: يوجد استيراد سابق لنفس الفترة / المصدر</p>
-                      <p style={{ fontSize: 12, color: '#fde68a', margin: 0, lineHeight: 1.7 }}>
-                        تم استيراد ملف باسم <strong style={{ fontFamily: 'monospace' }}>{existingImport.file_name}</strong> يحتوي على {existingImport.rows_accepted} سجل.
-                        الاستبدال يتطلب موافقتك الصريحة.
-                      </p>
-                    </div>
-                  </div>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderRadius: 14, background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(245,158,11,0.3)', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={confirmOverwrite}
-                      onChange={(e) => setConfirmOverwrite(e.target.checked)}
-                      style={{ width: 16, height: 16, accentColor: '#6366f1', cursor: 'pointer' }}
-                    />
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#fde68a' }}>
-                      أؤكد موافقتي على استبدال بيانات هذه الفترة بالبيانات الجديدة
-                    </span>
-                  </label>
+              {/* Preview of counts before any write */}
+              <div className="glass-card" style={{ borderRadius: 18, padding: '1.25rem 1.5rem' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <p style={{ fontSize: 13, color: '#cbd5e1', margin: 0, lineHeight: 1.7 }}>
+                    الرفع تحديث فقط: لا تكرار ولا حذف. اضغط لعرض الأرقام قبل أي حفظ.
+                    {existingImport ? ` (يوجد استيراد سابق: ${existingImport.file_name})` : ''}
+                  </p>
+                  <button type="button" onClick={handlePreviewCounts} disabled={previewing || importing}
+                    style={{ padding: '10px 20px', borderRadius: 12, fontWeight: 800, fontSize: 13, cursor: 'pointer', background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(99,102,241,0.4)', color: '#c7d2fe' }}>
+                    {previewing ? 'جارٍ الحساب...' : 'اعرض الأرقام قبل الحفظ'}
+                  </button>
                 </div>
-              )}
+                {previewCounts && (
+                  <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+                    {[
+                      { label: 'سجلات جديدة', value: previewCounts.new, color: '#34d399' },
+                      { label: 'سجلات ستتحدث', value: previewCounts.updated, color: '#fbbf24' },
+                      { label: 'بدون تغيير', value: previewCounts.unchanged, color: '#94a3b8' },
+                      { label: 'صفوف فيها الرقم القومي فقط (تُتجاهل)', value: previewCounts.skipped_national_id_only, color: '#94a3b8' },
+                      { label: 'مكرر داخل نفس الملف', value: previewCounts.repeats_in_same_file, color: '#94a3b8' },
+                      { label: 'غير موجود في الماستر (مراجعة)', value: previewCounts.review.import_unmatched_person || 0, color: '#f87171' },
+                      { label: 'اسم يختلف عن الماستر (مراجعة)', value: previewCounts.review.import_name_differs || 0, color: '#f87171' },
+                      { label: 'تعارض كود (مراجعة)', value: previewCounts.review.import_code_conflict || 0, color: '#f87171' },
+                      { label: 'بدون رقم قومي (مراجعة)', value: previewCounts.review.import_no_national_id || 0, color: '#f87171' },
+                    ].map((c) => (
+                      <div key={c.label} style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 12, padding: '10px 12px' }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: c.color }}>{c.value}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8' }}>{c.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Column Mapping + Preview */}
               <div className="glass-card" style={{ borderRadius: 24, padding: '1.75rem 2rem' }}>
@@ -700,15 +724,15 @@ export default function ImportPage() {
                   <button
                     type="button"
                     onClick={handleExecuteImport}
-                    disabled={importing || (Boolean(existingImport) && !confirmOverwrite)}
+                    disabled={importing || !previewCounts}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 10, padding: '13px 28px', borderRadius: 14, fontSize: 14, fontWeight: 800, cursor: (importing || (Boolean(existingImport) && !confirmOverwrite)) ? 'not-allowed' : 'pointer',
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '13px 28px', borderRadius: 14, fontSize: 14, fontWeight: 800, cursor: (importing || !previewCounts) ? 'not-allowed' : 'pointer',
                       background: 'linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%)',
                       border: '1px solid rgba(16,185,129,0.4)',
                       color: '#fff',
                       boxShadow: '0 4px 20px rgba(16,185,129,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
                       transition: 'all 0.25s ease',
-                      opacity: (importing || (Boolean(existingImport) && !confirmOverwrite)) ? 0.45 : 1,
+                      opacity: (importing || !previewCounts) ? 0.45 : 1,
                     }}
                     onMouseEnter={(e) => { if (!importing) e.currentTarget.style.boxShadow = '0 8px 32px rgba(16,185,129,0.45)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '0 4px 20px rgba(16,185,129,0.3), inset 0 1px 0 rgba(255,255,255,0.1)'; }}

@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     const yearStr = formData.get('period_year') as string | null;
     const monthStr = formData.get('period_month') as string | null;
     const accountRaw = formData.get('company_account') as string | null;
-    const confirmOverwrite = formData.get('confirm_overwrite') === 'true';
+    const previewOnly = formData.get('preview') === 'true';
 
     if (!file || !sourceType || !mappingJson) {
       return NextResponse.json({ error: 'البيانات المرسلة غير مكتملة' }, { status: 400 });
@@ -96,50 +96,6 @@ export async function POST(request: Request) {
 
     // Check for previous import — scoped to the SAME account + period, so one
     // company's re-import never touches another company's data.
-    let hasExisting = false;
-    if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
-      const { count } = await supabaseService
-        .from('import_logs')
-        .select('*', { count: 'exact', head: true })
-        .eq('source_type', sourceType)
-        .eq('period_year', periodYear!)
-        .eq('period_month', periodMonth!)
-        .eq('account_id', accountId!);
-      hasExisting = (count || 0) > 0;
-    } else {
-      const { count } = await supabaseService
-        .from('import_logs')
-        .select('*', { count: 'exact', head: true })
-        .eq('source_type', sourceType);
-      hasExisting = (count || 0) > 0;
-    }
-
-    if (hasExisting && !confirmOverwrite) {
-      let existingQuery = supabaseService
-        .from('import_logs')
-        .select('id, file_name, created_at, rows_accepted')
-        .eq('source_type', sourceType);
-
-      if (sourceType === 'monthly_payroll' || sourceType === 'monthly_insurance') {
-        existingQuery = existingQuery
-          .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!)
-          .eq('account_id', accountId!);
-      }
-
-      const { data: existingLog } = await existingQuery
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      return NextResponse.json({
-        error: 'توجد بيانات مستوردة مسبقاً لهذه الفترة/المصدر. يتطلب استبدالها تأكيدك الصريح لمنع تكرار السجلات.',
-        requiresConfirmation: true,
-        existingImport: existingLog || null,
-      }, { status: 409 });
-    }
-
-    // Read Excel
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, cellText: true, raw: false });
@@ -177,150 +133,33 @@ export async function POST(request: Request) {
     const dataRows = rawData.slice(headerRowIndex + 1);
     const totalRowsRead = dataRows.length;
 
-    // ── Destructive-overwrite guard (user NID-only rule): never replace stored
-    // rows with partial invalid input. Validate BEFORE any delete runs.
-    const scanCell = (row: unknown[], field: string): string => {
-      const h = columnMapping[field];
-      if (!h) return '';
-      const idx = headerIndexMap[h];
-      if (idx === undefined || idx < 0 || idx >= row.length) return '';
-      const v = row[idx];
-      return v !== null && v !== undefined ? String(v).trim() : '';
-    };
-    let preScanRejected = 0;
-    let preScanInvalidNid = 0;
+    // Uploads are updates: the database keeps one row per person per period/request
+    // (unique locks) and import_source_records() upserts. Nothing is deleted or replaced.
     const overwriteNotes: string[] = [];
-    for (const row of dataRows) {
-      if (!row || row.length === 0 || row.every((c) => c === '' || c === null || c === undefined)) continue;
-      const nidVal = cleanNationalId(scanCell(row, 'national_id')) || '';
-      const hasIdentifier = !!(scanCell(row, 'employee_code') || scanCell(row, 'employee_name') || nidVal);
-      if (!hasIdentifier) preScanRejected++;
-      else if (nidVal.length !== 14) preScanInvalidNid++;
-    }
-    if (confirmOverwrite && hasExisting && (preScanRejected > 0 || preScanInvalidNid > 0)) {
-      return NextResponse.json({
-        error: `الملف يحتوي على ${preScanInvalidNid} صف بدون رقم قومي صحيح من 14 رقمًا و ${preScanRejected} صف بدون أي معرّف. لا يمكن استبدال البيانات الحالية بملف غير مكتمل — صحّح الملف أولاً (المطابقة بالرقم القومي فقط)؛ لم تُحذف أي بيانات.`,
-        blockedOverwrite: true,
-        invalidNidRows: preScanInvalidNid,
-        rejectedRows: preScanRejected,
-      }, { status: 422 });
-    }
 
-    // Handle overwrite cleanup if confirmed
-    if (confirmOverwrite && hasExisting) {
-      if (sourceType === 'monthly_payroll') {
-        await supabaseService
-          .from('monthly_payroll_records')
-          .delete()
-          .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!)
-          .eq('account_id', accountId!);
-        await supabaseService
-          .from('import_logs')
-          .delete()
-          .eq('source_type', sourceType)
-          .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!)
-          .eq('account_id', accountId!);
-      } else if (sourceType === 'monthly_insurance') {
-        await supabaseService
-          .from('monthly_insurance_records')
-          .delete()
-          .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!)
-          .eq('account_id', accountId!);
-        await supabaseService
-          .from('import_logs')
-          .delete()
-          .eq('source_type', sourceType)
-          .eq('period_year', periodYear!)
-          .eq('period_month', periodMonth!)
-          .eq('account_id', accountId!);
-      } else if (sourceType === 'incoming_insurance' || (sourceType as string) === 'official_insurance_print') {
-        // Row-company partition (confirmed mixed-source model): an overwrite
-        // of a mixed source may only replace records whose company resolves
-        // to an account present in the NEW file. Other accounts' rows and
-        // unattributed (NULL/unknown-company) rows are preserved. Old import
-        // logs are kept so their ON DELETE CASCADE cannot wipe records
-        // outside the partition.
-        const isPrintOverwrite = (sourceType as string) === 'official_insurance_print';
-        const accCache = new Map<string, number | null>();
-        const resolveCached = async (txt: string): Promise<number | null> => {
-          const key = txt.trim().toLowerCase();
-          if (!key) return null;
-          if (accCache.has(key)) return accCache.get(key) ?? null;
-          const ra = await resolveAccount(txt);
-          accCache.set(key, ra ? ra.id : null);
-          return ra ? ra.id : null;
-        };
-        const newFileAccounts = new Set<number>();
-        for (const row of dataRows) {
-          if (!row || row.length === 0 || row.every((c) => c === '' || c === null || c === undefined)) continue;
-          const accIdx = headers.findIndex((h) => h === 'الشركة' || h === 'الشركه');
-          const cell = accIdx >= 0 && row[accIdx] !== null && row[accIdx] !== undefined ? String(row[accIdx]).trim() : '';
-          const rid = cell ? await resolveCached(cell) : accountId;
-          if (rid !== null) newFileAccounts.add(rid);
-        }
-        const deletableIds: string[] = [];
-        let preservedCount = 0;
-        let fromIdx = 0;
-        for (;;) {
-          const { data: page } = await supabaseService
-            .from('incoming_insurance_records')
-            .select('id, company_account, form_type')
-            .range(fromIdx, fromIdx + 999);
-          if (!page || page.length === 0) break;
-          for (const rec of page as Array<{ id: string; company_account: string | null; form_type: string | null }>) {
-            const formMatch = isPrintOverwrite
-              ? String(rec.form_type || '').includes('برنت')
-              : !String(rec.form_type || '').includes('برنت');
-            if (!formMatch) continue;
-            const recAccId = rec.company_account ? await resolveCached(String(rec.company_account)) : null;
-            if (recAccId !== null && newFileAccounts.has(recAccId)) deletableIds.push(rec.id);
-            else preservedCount++;
-          }
-          if (page.length < 1000) break;
-          fromIdx += 1000;
-        }
-        for (let i = 0; i < deletableIds.length; i += 500) {
-          await supabaseService.from('incoming_insurance_records').delete().in('id', deletableIds.slice(i, i + 500));
-        }
-        if (preservedCount > 0) {
-          overwriteNotes.push(`تم الاحتفاظ بـ ${preservedCount} سجل يخص حسابات أخرى أو غير منسوب — لم يمسّه الاستبدال`);
-        }
-      } else if (sourceType === 'res') {
-        await supabaseService
-          .from('resignation_records')
-          .delete()
-          .neq('id', '00000000-0000-0000-0000-000000000000');
-        await supabaseService
-          .from('import_logs')
-          .delete()
-          .eq('source_type', sourceType);
+    // Create import log record first (a preview writes nothing, so no log)
+    let importId: string | null = null;
+    if (!previewOnly) {
+      const { data: logEntry, error: logError } = await supabaseService
+        .from('import_logs')
+        .insert({
+          source_type: sourceType,
+          file_name: file.name,
+          sheet_name: targetSheetName,
+          period_year: periodYear,
+          period_month: periodMonth,
+          account_id: accountId,
+          total_rows_read: totalRowsRead,
+          column_mapping: columnMapping,
+        })
+        .select('id')
+        .single();
+
+      if (logError || !logEntry) {
+        return NextResponse.json({ error: 'فشل إنشاء سجل عملية الاستيراد: ' + (logError?.message || '') }, { status: 500 });
       }
+      importId = logEntry.id;
     }
-
-    // Create import log record first
-    const { data: logEntry, error: logError } = await supabaseService
-      .from('import_logs')
-      .insert({
-        source_type: sourceType,
-        file_name: file.name,
-        sheet_name: targetSheetName,
-        period_year: periodYear,
-        period_month: periodMonth,
-        account_id: accountId,
-        total_rows_read: totalRowsRead,
-        column_mapping: columnMapping,
-      })
-      .select('id')
-      .single();
-
-    if (logError || !logEntry) {
-      return NextResponse.json({ error: 'فشل إنشاء سجل عملية الاستيراد: ' + (logError?.message || '') }, { status: 500 });
-    }
-
-    const importId = logEntry.id;
     let rowsAccepted = 0;
     let rowsRejected = 0;
     let rowsNeedingReview = 0;
@@ -402,7 +241,7 @@ export async function POST(request: Request) {
         if (rowCompanyUnresolved) {
           rowAccountId = null;
           rowsNeedingReview++;
-          await supabaseService.from('matching_conflicts').insert({
+          if (!previewOnly) await supabaseService.from('matching_conflicts').insert({
             conflict_type: 'unknown_row_company',
             conflict_data: {
               source_type: sourceType,
@@ -494,8 +333,10 @@ export async function POST(request: Request) {
       rowsAccepted++;
     }
 
-    // Insert in batches of 400
-    const BATCH_SIZE = 400;
+    // Write through the database's single write path: one row per person per
+    // period/request (unique locks), re-uploads update, rows that carry only a
+    // national ID are skipped, unmatched people / name or code differences go to
+    // the review list (matching_conflicts). previewOnly returns the counts and writes nothing.
     const targetTable =
       sourceType === 'incoming_insurance' || (sourceType as string) === 'official_insurance_print'
         ? 'incoming_insurance_records'
@@ -505,13 +346,37 @@ export async function POST(request: Request) {
         ? 'monthly_payroll_records'
         : 'monthly_insurance_records';
 
-    for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
-      const chunk = recordsToInsert.slice(i, i + BATCH_SIZE);
+    const importCounts = {
+      new: 0, updated: 0, unchanged: 0, skipped_national_id_only: 0, repeats_in_same_file: 0,
+      review: {} as Record<string, number>,
+    };
+    const RPC_CHUNK = 2000;
+    for (let i = 0; i < recordsToInsert.length; i += RPC_CHUNK) {
+      const chunk = recordsToInsert.slice(i, i + RPC_CHUNK);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { error: insertErr } = await (supabaseService.from(targetTable as any) as any).insert(chunk);
-      if (insertErr) {
-        throw new Error(`خطأ أثناء إدخال الدفعة (${i + 1} إلى ${i + chunk.length}): ${insertErr.message}`);
+      const { data: res, error: rpcErr } = await (supabaseService as any).rpc('import_source_records', {
+        p_table: targetTable, p_import_id: importId, p_rows: chunk, p_preview: previewOnly,
+      });
+      if (rpcErr) {
+        throw new Error(`خطأ أثناء حفظ الدفعة (${i + 1} إلى ${i + chunk.length}): ${rpcErr.message}`);
       }
+      importCounts.new += res.new || 0;
+      importCounts.updated += res.updated || 0;
+      importCounts.unchanged += res.unchanged || 0;
+      importCounts.skipped_national_id_only += res.skipped_national_id_only || 0;
+      importCounts.repeats_in_same_file += res.repeats_in_same_file || 0;
+      for (const [k, v] of Object.entries((res.review || {}) as Record<string, number>)) {
+        importCounts.review[k] = (importCounts.review[k] || 0) + v;
+      }
+    }
+
+    if (previewOnly) {
+      return NextResponse.json({
+        preview: true,
+        totalRowsRead,
+        counts: importCounts,
+        rejectedReasons,
+      });
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -849,6 +714,10 @@ export async function POST(request: Request) {
       console.error('Error synchronizing import with employees_master:', syncErr);
     }
 
+    // Link rows of people who were just added to the master (identity = national ID)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabaseService as any).rpc('link_source_person_ids');
+
     // Update import_logs with final metrics
     const reviewNote = rowsNeedingReview > 0 ? `${rowsNeedingReview} صف بدون رقم قومي صحيح يحتاج مراجعة (المطابقة بالرقم القومي فقط)` : '';
     await supabaseService
@@ -858,7 +727,7 @@ export async function POST(request: Request) {
         rows_rejected: rowsRejected,
         notes: [rejectedReasons.length > 0 ? rejectedReasons.join(' | ') : 'تم الاستيراد بنجاح دون أخطاء', reviewNote].filter(Boolean).join(' | '),
       })
-      .eq('id', importId);
+      .eq('id', importId as string);
 
     return NextResponse.json({
       success: true,
@@ -868,6 +737,7 @@ export async function POST(request: Request) {
       rowsRejected,
       rowsNeedingReview,
       rejectedReasons,
+      counts: importCounts,
       message: `تم استيراد ${rowsAccepted} سجل بنجاح. ${rowsRejected > 0 ? `(تم رفض ${rowsRejected} سجل غير صالح)` : ''}${rowsNeedingReview > 0 ? ` (${rowsNeedingReview} سجل بدون رقم قومي صحيح يحتاج مراجعة)` : ''}`,
     });
   } catch (err: unknown) {
