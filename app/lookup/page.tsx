@@ -137,6 +137,30 @@ export default function LookupPage() {
   // In-memory only: no override = default (first joint month).
   const [s1EmpMonths, setS1EmpMonths] = useState<Record<string, { year: number; month: number }>>({});
   const [s1EmpSel, setS1EmpSel] = useState<string | null>(null);
+  // Editable insurance profession per employee (Hassan, 2026-11-28). Preview build
+  // persists locally only; production saves to employees_master.insurance_job_title
+  // after his approval. Payroll profession, sheets and the search log are never touched.
+  const [insJobEdits, setInsJobEdits] = useState<Record<string, string>>({});
+  const [insJobEditing, setInsJobEditing] = useState<string | null>(null);
+  const [insJobDraft, setInsJobDraft] = useState('');
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('s1-ins-job-edits');
+      if (raw) setInsJobEdits(JSON.parse(raw));
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveInsJobEdit = (nid: string, value: string) => {
+    if (!nid) return;
+    setInsJobEdits((prev) => {
+      const next = { ...prev };
+      const v = value.trim();
+      if (v) next[nid] = v; else delete next[nid];
+      try { localStorage.setItem('s1-ins-job-edits', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchTargetPeriod, setSearchTargetPeriod] = useState<string>('auto'); // 'auto' or 'YYYY-M'
@@ -464,7 +488,7 @@ export default function LookupPage() {
         'الرقم القومي': c.national_id || '—',
         'الرقم التأميني': c.insurance_number || '—',
         'الوظيفة الحالية': c.job_title || '—',
-        'الوظيفة في التأمينات': c.insurance_job_title || '—',
+        'الوظيفة في التأمينات': (c.national_id ? insJobEdits[c.national_id] : undefined) || c.insurance_job_title || '—',
         'الشركة (Account)': c.account_display?.status === 'conflict'
           ? `غير محسوم (دليل: ${c.account_display.masterCode || '—'} / وارد: ${c.account_display.waradCode || '—'})`
           : (c.company_account && c.company_account !== '—' ? c.company_account : '—'),
@@ -1408,6 +1432,59 @@ export default function LookupPage() {
                               {c.insurance_job_title && c.insurance_job_title !== c.job_title && (
                                 <div style={{ fontSize: 10, color: '#cbd5e1', marginTop: 2 }}>تأمين: {c.insurance_job_title}</div>
                               )}
+                            </FieldCard>
+                            <FieldCard label="مهنة التأمينات" accent="#fbbf24">
+                              {(() => {
+                                const nid0 = c.national_id || '';
+                                const editedJob = nid0 ? insJobEdits[nid0] : undefined;
+                                const effectiveJob = editedJob || c.insurance_job_title || '—';
+                                if (nid0 && insJobEditing === nid0) {
+                                  const commitEdit = () => {
+                                    saveInsJobEdit(nid0, insJobDraft);
+                                    setInsJobEditing(null);
+                                    toast.success(insJobDraft.trim() ? 'اتحفظت مهنة التأمينات للموظف ده ✓' : 'اتشال التعديل ورجعت مهنة التأمينات الأصلية ✓');
+                                  };
+                                  return (
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                      <input
+                                        value={insJobDraft}
+                                        onChange={(e) => setInsJobDraft(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') { e.preventDefault(); commitEdit(); }
+                                          if (e.key === 'Escape') setInsJobEditing(null);
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                        autoFocus
+                                        placeholder="اكتب مهنة التأمينات…"
+                                        style={{ flex: 1, minWidth: 0, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(251,191,36,0.45)', borderRadius: 8, padding: '5px 8px', fontSize: 12, color: '#ffffff', outline: 'none' }}
+                                      />
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); commitEdit(); }}
+                                        style={{ background: 'rgba(52,211,153,0.2)', border: '1px solid rgba(52,211,153,0.5)', color: '#34d399', borderRadius: 8, padding: '4px 10px', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                                      >حفظ</button>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setInsJobEditing(null); }}
+                                        style={{ background: 'none', border: '1px solid rgba(255,255,255,0.15)', color: '#94a3b8', borderRadius: 8, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}
+                                      >✕</button>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <div style={{ fontSize: 12, fontWeight: 700, color: '#ffffff', overflowWrap: 'anywhere', flex: 1, minWidth: 0 }}>
+                                      {effectiveJob}
+                                      {editedJob && <span style={{ fontSize: 9, color: '#fbbf24', fontWeight: 700, marginRight: 6 }}>(معدّلة ✓)</span>}
+                                    </div>
+                                    {nid0 && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setInsJobEditing(nid0); setInsJobDraft(editedJob || c.insurance_job_title || ''); }}
+                                        title="تعديل مهنة التأمينات للموظف ده"
+                                        style={{ background: 'none', border: '1px solid rgba(251,191,36,0.35)', borderRadius: 8, cursor: 'pointer', fontSize: 11, padding: '3px 7px', color: '#fbbf24', flexShrink: 0 }}
+                                      >✏️ تعديل</button>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </FieldCard>
                             <FieldCard label="الشركة (Account)">
                               {c.account_display?.status === 'conflict' ? (
