@@ -4,6 +4,7 @@
  */
 
 import { supabaseService } from './supabaseServer';
+import { fetchAllRows } from './pagedSelect';
 import * as XLSX from 'xlsx';
 import { invalidateReportsCache } from './reportsEngine';
 import type { Json, Database } from '@/types/supabase';
@@ -26,6 +27,9 @@ interface EmployeeLookup {
   national_id: string | null;
   employee_name: string;
   consolidated_data: Json;
+  person_uid?: string | null;
+  operating_no?: string | null;
+  account_employee_uid?: string | null;
   [key: string]: unknown; // allow extra fields from new inserts
 }
 
@@ -637,11 +641,21 @@ export async function importSheet(
         };
       }
       // Grounding check: who actually uses this legacy sheet?
-      const { data: usageRows } = await supabaseService
-        .from('sheet_data')
-        .select('employees_master!inner(account_id)')
-        .eq('sheet_id', legacyShared.id)
-        .limit(5000);
+      const usageRows = await fetchAllRows<unknown>((from, to) =>
+        supabaseService
+          .from('sheet_data')
+          .select('id, employees_master!inner(account_id)')
+          .eq('sheet_id', legacyShared.id)
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>
+      ).catch(() => null);
+      if (usageRows === null) {
+        return {
+          success: false, total_rows: 0, new_employees: 0, updated_employees: 0, skipped_rows: 0,
+          errors: [`تعذّرت قراءة استخدام ورقة "${sheetName}" كاملة — لم تُستورد حتى لا يُنسب مصدر مشترك بالغلط.`],
+          import_id: importLogId,
+        };
+      }
       const usageAccs = new Set(
         (usageRows || [])
           .map((r) => (r as unknown as { employees_master: { account_id: number | null } }).employees_master?.account_id)
@@ -855,8 +869,10 @@ export async function importSheet(
     {
       const mappedIdx = new Set(Object.values(mapping));
       const unmappedHeaders: string[] = [];
+      const personNoHeaderNorms = ['الرقم الموحد', 'رقم موحد', 'الرقم الموحد للموظف', 'رقم الشخص', 'person_uid', 'operating_no'].map((h) => normalizeText(h));
       rawHeaders.forEach((h, idx) => {
-        if (h && !mappedIdx.has(idx)) unmappedHeaders.push(h);
+        // The permanent-number column is read directly by the matcher below.
+        if (h && !mappedIdx.has(idx) && !personNoHeaderNorms.includes(normalizeText(h))) unmappedHeaders.push(h);
       });
       const withData = unmappedHeaders.filter((h) => {
         const idx = rawHeaders.indexOf(h);
@@ -872,9 +888,30 @@ export async function importSheet(
     }
 
     // 5. Pre-load existing employees into memory for high-speed matching (1 single query instead of thousands)
-    const { data: existingEmps } = await supabaseService
-      .from('employees_master')
-      .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data, account_employee_uid');
+    // Paged read of ALL employees (the API caps one request at 1000 rows; a
+    // single select silently saw only the first 1000 of 6322). Any read error
+    // aborts the import: matching against a partial list would create
+    // duplicates, so we never continue on a partial view.
+    let existingEmps: EmployeeLookup[];
+    try {
+      existingEmps = await fetchAllRows<EmployeeLookup>((from, to) =>
+        supabaseService
+          .from('employees_master')
+          .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data, account_employee_uid, person_uid, operating_no')
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<{ data: EmployeeLookup[] | null; error: { message: string } | null }>
+      );
+    } catch (e) {
+      return {
+        success: false,
+        total_rows: 0,
+        new_employees: 0,
+        updated_employees: 0,
+        skipped_rows: 0,
+        errors: [`تعذّرت قراءة قائمة الموظفين الحالية كاملة (${e instanceof Error ? e.message : String(e)}) — لم يُستورد شيء. المطابقة على قائمة ناقصة ممنوعة.`],
+        import_id: importLogId,
+      };
+    }
 
     // Row-account resolution (shared with the bridge phase below).
     const { data: rowAccounts } = await supabaseService
@@ -902,11 +939,20 @@ export async function importSheet(
     // insurance-number / employee-code / name fallback maps.
     const byNatIdMap = new Map<string, EmployeeLookup>();
 
-    for (const emp of (existingEmps || []) as EmployeeLookup[]) {
+    // Permanent identity lookups (person number P-xxxxxxx or this account's
+    // operating number EG-xxxxxx), used only when a sheet carries that column.
+    const byPersonNoMap = new Map<string, EmployeeLookup>();
+    const byUidMap = new Map<string, EmployeeLookup>();
+    for (const emp of existingEmps) {
       if (emp.national_id && String(emp.national_id).trim().length === 14) {
         byNatIdMap.set(String(emp.national_id).trim(), emp);
       }
+      if (emp.person_uid) byPersonNoMap.set(String(emp.person_uid).trim().toUpperCase(), emp);
+      if (emp.operating_no) byPersonNoMap.set(String(emp.operating_no).trim().toUpperCase(), emp);
+      if (emp.account_employee_uid) byUidMap.set(String(emp.account_employee_uid), emp);
     }
+    const PERSON_NO_HEADERS = ['الرقم الموحد', 'رقم موحد', 'الرقم الموحد للموظف', 'رقم الشخص', 'person_uid', 'operating_no'].map((h) => normalizeText(h));
+    const personNoColIdx = rawHeaders.findIndex((h) => PERSON_NO_HEADERS.includes(normalizeText(h)));
 
     // UID collision tracking (mirror of the resolve_employee_account_uid
     // trigger): a new row whose account-code+employee-code uid already
@@ -1142,6 +1188,35 @@ export async function importSheet(
           if (found) matchedEmp = found;
         }
 
+        // Permanent number in the sheet (P-xxxxxxx / EG-xxxxxx): second key,
+        // after the national ID. It is what lets a CORRECTED national ID stay
+        // the same person instead of becoming a new one. Never guessed: an
+        // unknown number, or a number that points to a different person than
+        // the national ID does, stops the row and is reported.
+        if (personNoColIdx >= 0) {
+          const cell = (row as unknown[])[personNoColIdx];
+          const rowPersonNo = cell === null || cell === undefined ? '' : String(cell).trim().toUpperCase();
+          if (rowPersonNo) {
+            const byNo = byPersonNoMap.get(rowPersonNo);
+            if (!byNo) {
+              errors.push(`صف ${rowNumber}: الرقم الموحد ${rowPersonNo} غير موجود في النظام — لم يُستورد؛ يحتاج مراجعة`);
+              processingFailures++;
+              skippedRows++;
+              continue;
+            }
+            if (matchedEmp && matchedEmp.id !== byNo.id) {
+              errors.push(`صف ${rowNumber}: الرقم القومي يخص موظفًا (${matchedEmp.person_uid || matchedEmp.employee_name}) والرقم الموحد ${rowPersonNo} يخص موظفًا آخر — لم يُستورد؛ يحتاج مراجعة`);
+              processingFailures++;
+              skippedRows++;
+              continue;
+            }
+            if (!matchedEmp) {
+              matchedEmp = byNo; // same person, national ID corrected (recorded in identity history)
+              warnings.push(`صف ${rowNumber}: تصحيح رقم قومي لنفس الشخص ${rowPersonNo} (${byNo.employee_name}): ${byNo.national_id || '—'} ← ${rawNatId}. اتسجل في سجل الهوية.`);
+            }
+          }
+        }
+
         // CROSS-ACCOUNT GUARD (fail closed). The match maps above are global
         // by identity; an import for account X must never silently re-attribute
         // a master row that already belongs to a DIFFERENT resolved account.
@@ -1283,7 +1358,8 @@ export async function importSheet(
               ? `${accCodeForUid}-${cleanCodeForUid}`
               : `${accCodeForUid}-NID${cleanNidForUid}`;
             if (existingUids.has(rowUid) || queuedUids.has(rowUid)) {
-              errors.push(`صف ${rowNumber}: الكود ${rawCode || '—'} مستخدم بالفعل لموظف آخر برقم قومي مختلف في نفس الحساب — لم يُستورد؛ تعارض هوية يحتاج مراجعة صريحة (لا مطابقة بالكود ولا نقل تلقائي)`);
+              const holder = byUidMap.get(rowUid);
+              errors.push(`صف ${rowNumber}: الكود ${rawCode || '—'} مستخدم بالفعل${holder ? ` للموظف ${holder.employee_name} (${holder.person_uid || '—'}، رقم قومي ${holder.national_id || '—'})` : ' لموظف آخر'} برقم قومي مختلف في نفس الحساب — لم يُستورد. لو ده تصحيح لرقمه القومي: ضيف عمود "الرقم الموحد" بقيمة ${holder?.person_uid || 'رقمه'} أو اعتمد التصحيح صراحةً؛ مفيش مطابقة بالكود ولا نقل تلقائي`);
               processingFailures++;
               skippedRows++;
               continue;
@@ -1538,12 +1614,15 @@ export async function importSheet(
           const acct = cat.account_id;
           const acctSheetId = cat.id;
           const importedEmpIds = empIdsBySheet.get(acctSheetId) || new Set<string>();
-          const { data: accEmps, error: accErr } = await supabaseService
-            .from('employees_master')
-            .select('id')
-            .eq('account_id', acct);
-          if (accErr) {
-            warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr.message}`);
+          let accEmps: Array<{ id: string }>;
+          try {
+            // Paged: a plain select returns at most 1000 rows, which would
+            // make most of the account look "present" and skip the snapshot.
+            accEmps = await fetchAllRows<{ id: string }>((from, to) =>
+              supabaseService.from('employees_master').select('id').eq('account_id', acct).order('id').range(from, to) as unknown as PromiseLike<{ data: Array<{ id: string }> | null; error: { message: string } | null }>
+            );
+          } catch (accErr) {
+            warnings.push(`تعذر تحديد موظفي الحساب لتطبيق لقطة الورقة: ${accErr instanceof Error ? accErr.message : String(accErr)}`);
             continue;
           }
           const staleEmpIds = (accEmps || [])
