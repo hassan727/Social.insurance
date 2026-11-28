@@ -113,7 +113,7 @@ function CopyableCellNumber({ value, label }: { value?: string | number | null; 
   );
 }
 
-function FieldCard({ label, children, accent }: { label: string; children: React.ReactNode; accent?: string }) {
+function FieldCard({ label, children, accent, span, nowrap }: { label: string; children: React.ReactNode; accent?: string; span?: number; nowrap?: boolean }) {
   return (
     <div style={{
       background: 'rgba(255,255,255,0.02)',
@@ -121,9 +121,53 @@ function FieldCard({ label, children, accent }: { label: string; children: React
       borderRadius: 12,
       padding: '8px 12px',
       minWidth: 0,
+      gridColumn: span ? ('span ' + span) : undefined,
     }}>
       <div style={{ fontSize: 10, color: accent || '#94a3b8', marginBottom: 4, fontWeight: 700 }}>{label}</div>
-      <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{children}</div>
+      <div style={{ minWidth: 0, overflowWrap: nowrap ? 'normal' : 'anywhere', whiteSpace: nowrap ? 'nowrap' : undefined }}>{children}</div>
+    </div>
+  );
+}
+
+/* Insurance profession you can edit straight on the employee card (Hassan 2026-11-28).
+   Saves to employees_master.insurance_job_title through /api/lookup/update-ins-job. */
+function InsJobEditField({ value, saving, onSave }: { value?: string | null; saving: boolean; onSave: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const save = () => {
+    const v = draft.trim();
+    if (!v) { toast.warning('اكتب مهنة التأمينات الأول'); return; }
+    onSave(v);
+    setEditing(false);
+  };
+  if (!editing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 800, color: value ? '#ffffff' : '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || '—'}</span>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setDraft(value || ''); setEditing(true); }}
+          title="تعديل مهنة التأمينات — بتتحفظ في الماستر (ملف الموظف)"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 8, fontSize: 10, fontWeight: 800, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24', cursor: 'pointer', flexShrink: 0 }}
+        >
+          ✏️ تعديل
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }} onClick={(e) => e.stopPropagation()}>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } if (e.key === 'Escape') setEditing(false); }}
+        autoFocus
+        placeholder="اكتب مهنة التأمينات…"
+        className="input-dark"
+        style={{ fontSize: 11, padding: '4px 8px', borderRadius: 8, minWidth: 130, flex: 1 }}
+      />
+      <button type="button" disabled={saving} onClick={save} style={{ padding: '4px 10px', borderRadius: 8, fontSize: 10, fontWeight: 800, background: '#10b981', color: '#fff', border: 'none', cursor: 'pointer', flexShrink: 0 }}>{saving ? '…' : 'حفظ'}</button>
+      <button type="button" onClick={() => setEditing(false)} style={{ padding: '4px 8px', borderRadius: 8, fontSize: 10, fontWeight: 800, background: 'rgba(255,255,255,0.08)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.15)', cursor: 'pointer', flexShrink: 0 }}>إلغاء</button>
     </div>
   );
 }
@@ -165,6 +209,7 @@ export default function LookupPage() {
         return;
       }
       setCandidates((prev) => prev.map((x) => (x.id === candId ? { ...x, insurance_job_title: v } : x)));
+      setSelectedCandidate((prev) => (prev && (prev.id === candId || prev.national_id === nid) ? { ...prev, insurance_job_title: v } : prev));
       setInsJobEditing(null);
       toast.success('اتحفظت مهنة التأمينات في ملف الموظف ✓');
     } catch {
@@ -1515,7 +1560,7 @@ export default function LookupPage() {
                             <FieldCard label="كود الموظف">
                               <CopyableCellNumber value={c.employee_code} label="كود الموظف" />
                             </FieldCard>
-                            <FieldCard label="الرقم القومي">
+                            <FieldCard label="الرقم القومي" span={2} nowrap>
                               <CopyableCellNumber value={c.national_id} label="الرقم القومي" />
                             </FieldCard>
                             <FieldCard label="رقم التأمين">
@@ -1805,7 +1850,7 @@ export default function LookupPage() {
                               <span className="badge-brand font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
                                 كود: {details.identifiers.employee_code || '—'}
                               </span>
-                              <span className="badge-slate font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800 }}>
+                              <span className="badge-slate font-mono-pro" style={{ fontSize: 11, padding: '2px 9px', borderRadius: 7, fontWeight: 800, whiteSpace: 'nowrap' }}>
                                 ق.ق: {details.identifiers.national_id || '—'}
                               </span>
                               {details.accountDisplay?.status === 'conflict' ? (
@@ -1931,6 +1976,18 @@ export default function LookupPage() {
                             )}
                           </div>
                         ))}
+                        {/* Insurance profession, editable straight on the card and saved in employees_master */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.35)' }} title="مهنة التأمينات — بتتحفظ في الماستر (ملف الموظف)">
+                          <span style={{ fontSize: 13 }}>✏️</span>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 700, marginBottom: 1 }}>مهنة التأمينات (تعديل مباشر)</div>
+                            <InsJobEditField
+                              value={selectedCandidate?.insurance_job_title || details.incomingInsurance.record?.job_title}
+                              saving={insJobSaving}
+                              onSave={(v) => saveInsJobEdit(selectedCandidate?.id || '', selectedCandidate?.national_id || details.identifiers.national_id || '', v)}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
 
