@@ -188,6 +188,26 @@ export default function LookupPage() {
   const [searchPurpose, setSearchPurpose] = useState<'general' | 's1' | 's6' | 'details' | 'discrepancy' | 'supplied' | 'archives'>('general');
   const [viewMode, setViewMode] = useState<'lookup' | 'operations_log'>('lookup');
   const [todayOpsCount, setTodayOpsCount] = useState<number>(0);
+
+  // Hassan (2026-11-28): once a search is open, the hero collapses into ONE sticky toolbar row
+  // (search box + month + purpose + operations log) so the employee cards are visible without
+  // scrolling. Nothing is removed: every month, every purpose and the operations log stay
+  // reachable from the compact toolbar, and the full results card can be re-opened.
+  const [showResultsCardBody, setShowResultsCardBody] = useState<boolean>(false);
+  const heroRef = useRef<HTMLDivElement | null>(null);
+  const [heroH, setHeroH] = useState<number>(0);
+  const compactSearch = !loadingDetails && (candidates.length > 0 || !!details);
+
+  useEffect(() => {
+    if (!compactSearch) { setHeroH(0); return; }
+    const el = heroRef.current;
+    if (!el) return;
+    const measure = () => setHeroH(el.offsetHeight);
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(el);
+    return () => { if (ro) ro.disconnect(); };
+  }, [compactSearch, candidates.length, details, searchPurpose, searchTargetPeriod]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
@@ -697,7 +717,10 @@ export default function LookupPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
               className="glass-card"
-              style={{ borderRadius: 24, padding: '2rem 2.5rem', marginBottom: 20, position: 'relative', zIndex: 40 }}
+              ref={heroRef}
+              style={compactSearch
+                ? { borderRadius: 16, padding: '10px 14px', marginBottom: 12, position: 'sticky', top: 66, zIndex: 45, backdropFilter: 'blur(14px)' }
+                : { borderRadius: 24, padding: '2rem 2.5rem', marginBottom: 20, position: 'relative', zIndex: 40 }}
             >
               {/* corner glow contained */}
               <div style={{ position: 'absolute', inset: 0, borderRadius: 24, overflow: 'hidden', pointerEvents: 'none' }}>
@@ -705,12 +728,12 @@ export default function LookupPage() {
               </div>
 
               <div style={{ position: 'relative', zIndex: 1 }}>
-                <span className="badge-brand" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '4px 14px', borderRadius: 9999, marginBottom: 14 }}>
+                <span className="badge-brand" style={{ display: compactSearch ? 'none' : 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, padding: '4px 14px', borderRadius: 9999, marginBottom: 14 }}>
                   <Sparkles style={{ width: 12, height: 12 }} />
                   محرك الاستعلام والتدقيق الفوري
                 </span>
 
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
                   <div>
                     <h1 style={{ fontSize: 28, fontWeight: 900, color: '#fff', letterSpacing: '-0.3px', margin: '0 0 8px' }}>
                       استدعاء وفحص ملف الموظف
@@ -781,7 +804,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* Target Month Mode Filter */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18 }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#cbd5e1' }}>
                     <Calendar style={{ width: 15, height: 15, color: '#818cf8' }} />
                     <span>نطاق شهر الفحص:</span>
@@ -874,7 +897,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* ─── Search Purpose Selector ─── */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px', borderRadius: 14, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: '#94a3b8', flexShrink: 0 }}>
                     <FileText style={{ width: 14, height: 14, color: '#818cf8' }} />
                     <span>غرض البحث:</span>
@@ -936,7 +959,7 @@ export default function LookupPage() {
                 </div>
 
                 {/* National ID Exclusive Search Banner & Live Digit Counter */}
-                <div style={{ maxWidth: 780, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: compactSearch ? 'none' : 'flex', maxWidth: 780, alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{
                       fontSize: 12,
@@ -1019,11 +1042,20 @@ export default function LookupPage() {
                   })()}
                 </div>
 
+                {/* --- Toolbar row: search box + compact month / purpose / log controls --- */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
+                  {compactSearch && (
+                    <div style={{ fontSize: 13, fontWeight: 800, color: '#e2e8f0', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <Search style={{ width: 15, height: 15, color: '#818cf8' }} />
+                      <span>استدعاء الموظف</span>
+                    </div>
+                  )}
+
                 {/* Search Input Container */}
                 <div
                   ref={searchContainerRef}
                   className="search-glow"
-                  style={{ position: 'relative', maxWidth: 780, borderRadius: 18 }}
+                  style={{ position: 'relative', maxWidth: compactSearch ? 'none' : 780, flex: compactSearch ? '1 1 auto' : undefined, minWidth: 0, borderRadius: 18 }}
                 >
                   <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                     <Search
@@ -1061,8 +1093,8 @@ export default function LookupPage() {
                       style={{
                         paddingRight: 52,
                         paddingLeft: 125,
-                        paddingTop: 18,
-                        paddingBottom: 18,
+                        paddingTop: compactSearch ? 11 : 18,
+                        paddingBottom: compactSearch ? 11 : 18,
                         borderRadius: 18,
                         fontSize: 15,
                         fontWeight: 600,
@@ -1243,6 +1275,49 @@ export default function LookupPage() {
                     )}
                   </AnimatePresence>
                 </div>
+
+                  {compactSearch && (
+                    <>
+                      <select
+                        value={effS1Ov ? effS1Ov.year + '-' + effS1Ov.month : searchTargetPeriod}
+                        onChange={(e) => handleTargetPeriodChange(e.target.value)}
+                        title="نطاق شهر الفحص"
+                        className="font-mono-pro"
+                        style={{ fontSize: 12, fontWeight: 800, padding: '9px 10px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.16)', color: '#e2e8f0', cursor: 'pointer', flexShrink: 0, maxWidth: 190 }}
+                      >
+                        <option value="auto">أول شهر ظهور مشترك (تلقائي)</option>
+                        {availablePeriods.map((p) => (
+                          <option key={'cp_' + p.year + '_' + p.month} value={p.year + '-' + p.month}>
+                            شهر {p.month}/{p.year}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={searchPurpose}
+                        onChange={(e) => setSearchPurpose(e.target.value as typeof searchPurpose)}
+                        title="غرض البحث"
+                        style={{ fontSize: 12, fontWeight: 800, padding: '9px 10px', borderRadius: 12, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.16)', color: '#e2e8f0', cursor: 'pointer', flexShrink: 0, maxWidth: 190 }}
+                      >
+                        <option value="general">بحث عام</option>
+                        <option value="s1">س1 — تسجيل تأمين جديد</option>
+                        <option value="s6">س6 — إنهاء اشتراك</option>
+                        <option value="discrepancy">شيت المناقضات</option>
+                        <option value="supplied">تم التوريد</option>
+                        <option value="archives">الأرشيف والمستندات</option>
+                        <option value="details">تفاصيل موظف كاملة</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setViewMode('operations_log')}
+                        title="سجل العمليات والبحث اليومي"
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 12px', borderRadius: 12, fontSize: 12, fontWeight: 700, background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', color: '#38bdf8', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}
+                      >
+                        <History style={{ width: 15, height: 15 }} />
+                        <span>السجل</span>
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             </motion.div>
 
@@ -1286,7 +1361,7 @@ export default function LookupPage() {
                         <h3 style={{ fontSize: 17, fontWeight: 800, color: '#ffffff', margin: '0 0 4px' }}>
                           نتائج البحث الموحدة ({candidates.length} موظف)
                         </h3>
-                        <p style={{ fontSize: 12, color: '#cbd5e1', margin: 0 }}>
+                        <p style={{ fontSize: 12, color: '#cbd5e1', margin: 0, display: compactSearch ? 'none' : 'block' }}>
                           أول شهر ظهور مشترك، وأيام الحضور، والشركة، وحالة التأمين، وموقف الاستقالات • اضغط على الكارت لفتح الملف الكامل
                           {candidates.length > 1 && (
                             <span style={{ color: '#818cf8' }}> • لاختيار شهر موظف معين: اضغط الدائرة على كارته ثم اضغط الشهر من الأعلى</span>
@@ -1295,6 +1370,16 @@ export default function LookupPage() {
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      {compactSearch && details && (
+                        <button
+                          type="button"
+                          onClick={() => setShowResultsCardBody((v) => !v)}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 800, padding: '7px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.06)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.12)', cursor: 'pointer' }}
+                          title="إظهار أو إخفاء كارت نتيجة البحث (الملف مفتوح تحت)"
+                        >
+                          {showResultsCardBody ? 'إخفاء الكارت' : 'عرض الكارت'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={handleExportCurrentSearchResults}
@@ -1347,7 +1432,7 @@ export default function LookupPage() {
                   </div>
 
                   {/* ─── Results: responsive label+value cards (no wide table, no horizontal scroll) ─── */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 16 }}>
+                  <div style={{ display: (compactSearch && details && !showResultsCardBody) ? 'none' : 'flex', flexDirection: 'column', gap: 14, padding: 16 }}>
                     {candidates.map((c, idx) => {
                       const hasJoint = c.first_both_month && !c.first_both_month.includes('لم يظهر') && !c.first_both_month.includes('غير متوفر');
                       const isTargetMode = searchTargetPeriod !== 'auto' && c.target_month_status;
@@ -1689,7 +1774,7 @@ export default function LookupPage() {
                     {/* ═══ STICKY QUICK-ID BANNER ═══ */}
                     <div className="quick-id-banner" style={{
                       position: 'sticky',
-                      top: 0,
+                      top: compactSearch ? 66 + heroH + 8 : 0,
                       zIndex: 30,
                       borderRadius: 18,
                       overflow: 'hidden',
