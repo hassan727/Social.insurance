@@ -65,7 +65,7 @@ export async function GET(request: Request) {
 
     const { data: incomingRows } = await db
       .from('incoming_insurance_records')
-      .select('insurance_job_title,subscription_start_date,raw_data')
+      .select('insurance_job_title,subscription_start_date,form_type,raw_data')
       .eq('national_id', nid)
       .limit(5);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -93,9 +93,36 @@ export async function GET(request: Request) {
     const insJob = String(master?.insurance_job_title || incoming?.insurance_job_title || '').trim();
     const insWage = parseAmount(master?.insurance_salary) ||
       parseAmount((incoming?.raw_data as Record<string, unknown> | undefined)?.['insurance_salary']);
-    const startIso = String(master?.hire_date || master?.insurance_start_date || incoming?.subscription_start_date || '').slice(0, 10);
-
     const isGov = sector === 'gov';
+
+    // Period start (Hassan's rules, 2026-11-28):
+    //  gov letters  -> insurance subscription start from official insurance data (برنت row preferred)
+    //  other letters -> hire date
+    function parseInsDate(v: unknown): string {
+      const t = String(v || '').trim();
+      if (!t) return '';
+      const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (iso) return iso[0];
+      // JS date string e.g. "Wed May 01 2024 00:00:00 GMT+0100 (...)" — take the calendar date as written, no timezone shift
+      const js = t.match(/^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{4})/);
+      if (js) {
+        const mm: Record<string, string> = { Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06', Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12' };
+        const m = mm[js[1]];
+        if (m) return `${js[3]}-${m}-${js[2].padStart(2, '0')}`;
+      }
+      return '';
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const isBrint = (r: any) => /برنت/.test(String(r?.form_type || ''));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const insStart =
+      parseInsDate((incomingRows || []).find((r: any) => isBrint(r) && r?.subscription_start_date)?.subscription_start_date) ||
+      parseInsDate((incomingRows || []).find((r: any) => r?.subscription_start_date)?.subscription_start_date) ||
+      parseInsDate(master?.insurance_start_date);
+    const startIso = isGov
+      ? insStart
+      : String(master?.hire_date || master?.insurance_start_date || incoming?.subscription_start_date || '').slice(0, 10);
+    const startMissing = isGov && !startIso;
     const job = isGov ? (insJob || payrollJob || String(master?.current_job_title || '')) : (payrollJob || String(master?.current_job_title || ''));
     const amount = isGov ? insWage : average;
 
@@ -134,6 +161,7 @@ export async function GET(request: Request) {
         account: fields.accountName,
       },
       quarter, sector, entity,
+      warning: startMissing ? 'مفيش تاريخ بداية اشتراك تأميني مسجل للموظف ده — الخطاب اتطبع من غير تاريخ بداية الفترة' : undefined,
       months: monthDetails,
       workedMonths: worked.length,
       average,
