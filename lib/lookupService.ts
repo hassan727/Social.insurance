@@ -248,6 +248,7 @@ export interface SearchCandidate {
   } | null;
   s1_info?: S1CalculationInfo;
   s6_info?: S6CalculationInfo;
+  s1_months?: { year: number; month: number; attendance_days: string | null; inBoth: boolean }[];
 }
 
 type PersonDraft = {
@@ -588,6 +589,32 @@ async function enrichPersonDrafts(
           };
         }
 
+        // Months with payroll presence, for interactive S1 recalculation (Hassan, 2026-11-28).
+        // Duplicate month rows (same period imported twice) collapse to one entry, keeping the row that has attendance.
+        const s1MonthsMap = new Map<string, { year: number; month: number; attendance_days: string | null; inBoth: boolean }>();
+        for (const pr of payrolls) {
+          const y = pr.period_year as number;
+          const m = pr.period_month as number;
+          if (!y || !m) continue;
+          const key = `${y}-${m}`;
+          const inBoth = insurances.some((mi) => mi.period_year === y && mi.period_month === m);
+          const att = pr.attendance_days !== null && pr.attendance_days !== undefined && String(pr.attendance_days).trim() !== ''
+            ? String(pr.attendance_days).trim()
+            : null;
+          const existing = s1MonthsMap.get(key);
+          if (!existing) {
+            s1MonthsMap.set(key, { year: y, month: m, attendance_days: att, inBoth });
+          } else {
+            s1MonthsMap.set(key, {
+              year: y,
+              month: m,
+              attendance_days: existing.attendance_days || att,
+              inBoth: existing.inBoth || inBoth,
+            });
+          }
+        }
+        const s1Months = Array.from(s1MonthsMap.values()).sort((a, b) => a.year - b.year || a.month - b.month);
+
         // ── S1 Calculation (بداية الاشتراك) ──
         const s1Year = firstBothYear || payrolls[0]?.period_year || (insurances[0]?.period_year as number) || null;
         const s1Month = firstBothM || payrolls[0]?.period_month || (insurances[0]?.period_month as number) || null;
@@ -649,6 +676,7 @@ async function enrichPersonDrafts(
           target_month_status: withhold ? null : targetMonthStatus,
           s1_info: withhold ? undefined : s1_info,
           s6_info: withhold ? withheldS6 : s6_info,
+          s1_months: withhold ? [] : s1Months,
         };
       }
 
