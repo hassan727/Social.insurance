@@ -1410,9 +1410,44 @@ export default function LookupPage() {
                                   </span>
                                 )}
                               </td>
-                              {/* S1: بداية الاشتراك */}
+                              {/* S1: بداية الاشتراك — with interactive month chips (new hires; pick the month to recompute from) */}
                               <td>
                                 <CopyableCellNumber value={s1Date} label="تاريخ بداية الاشتراك (س1)" />
+                                {c.s1_months && c.s1_months.some((mm) => mm.attendance_days) && (
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 4, maxWidth: 180 }} onClick={(e) => e.stopPropagation()}>
+                                    {c.s1_months.filter((mm) => mm.attendance_days).map((mm) => {
+                                      const active = s1MonthSel[c.id]?.year === mm.year && s1MonthSel[c.id]?.month === mm.month;
+                                      return (
+                                        <button
+                                          key={`${mm.year}-${mm.month}`}
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setS1MonthSel((prev) => {
+                                              const next = { ...prev };
+                                              if (active) delete next[c.id];
+                                              else next[c.id] = { year: mm.year, month: mm.month };
+                                              return next;
+                                            });
+                                          }}
+                                          title={`شهر ${mm.month}/${mm.year} — ${mm.inBoth ? 'مرتبات وتأمينات معاً' : 'مرتبات فقط'} — حضور ${mm.attendance_days} يوم`}
+                                          style={{
+                                            fontSize: 10,
+                                            fontWeight: 800,
+                                            padding: '2px 6px',
+                                            borderRadius: 6,
+                                            cursor: 'pointer',
+                                            border: active ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.14)',
+                                            background: active ? 'rgba(56,189,248,0.3)' : 'rgba(255,255,255,0.04)',
+                                            color: active ? '#7dd3fc' : '#94a3b8',
+                                          }}
+                                        >
+                                          {mm.month}/{String(mm.year).slice(2)}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
                               </td>
                               {/* S6: نهاية الاشتراك */}
                               <td>
