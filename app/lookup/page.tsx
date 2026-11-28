@@ -132,9 +132,8 @@ function FieldCard({ label, children, accent }: { label: string; children: React
 export default function LookupPage() {
   const [query, setQuery] = useState('');
   const [candidates, setCandidates] = useState<SearchCandidate[]>([]);
-  // Interactive S1: per-employee chosen month for recomputing the S1 start date.
-  // In-memory only: reopening the page resets every employee to the default (first joint month).
-  const [s1MonthSel, setS1MonthSel] = useState<Record<string, { year: number; month: number }>>({});
+  // Interactive S1: the S1 start date follows the green month button picked at the top
+  // (searchTargetPeriod). In-memory only: 'auto' (default) = first joint month.
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchTargetPeriod, setSearchTargetPeriod] = useState<string>('auto'); // 'auto' or 'YYYY-M'
@@ -403,14 +402,17 @@ export default function LookupPage() {
     toast.info('تم تفريغ الشاشة والعودة للوضع الافتراضي (أول ظهور تلقائي)');
   };
 
-  // Recompute the S1 start date for the employee's chosen month with the
-  // existing rule: (days in month - attendance days + 1). Returns null when no
-  // month is chosen (default behavior stays) or the chosen month cannot yield
+  // Recompute the S1 start date from the month picked in the top month bar with the
+  // existing rule: (days in month - attendance days + 1). Returns null on 'auto'
+  // (default behavior stays) or when the chosen month cannot yield
   // a date (missing/zero/overflow attendance), in which case the existing
   // calculated/recorded value remains displayed.
-  const s1OverrideFor = (c: SearchCandidate): { date: string; formula: string } | null => {
-    const sel = s1MonthSel[c.id];
-    if (!sel || !c.s1_months) return null;
+  const s1OverrideFor = (c: SearchCandidate): { date: string; formula: string; monthLabel?: string } | null => {
+    if (searchTargetPeriod === 'auto' || !c.s1_months) return null;
+    const [y, m] = searchTargetPeriod.split('-');
+    if (!y || !m) return null;
+    const sel = { year: parseInt(y, 10), month: parseInt(m, 10) };
+    if (isNaN(sel.year) || isNaN(sel.month)) return null;
     const rec = c.s1_months.find((mm) => mm.year === sel.year && mm.month === sel.month);
     if (!rec || !rec.attendance_days) return null;
     const att = parseFloat(String(rec.attendance_days).replace(/[^\d.]/g, ''));
@@ -419,7 +421,7 @@ export default function LookupPage() {
     const day = Math.round(dim - att + 1);
     const ds = String(day).padStart(2, '0');
     const ms = String(sel.month).padStart(2, '0');
-    return { date: `${ds}/${ms}/${sel.year}`, formula: `${dim} - ${att} + 1 = ${day} (${ds}/${ms}/${sel.year})` };
+    return { date: `${ds}/${ms}/${sel.year}`, formula: `${dim} - ${att} + 1 = ${day} (${ds}/${ms}/${sel.year})`, monthLabel: `${sel.month}/${sel.year}` };
   };
 
   const handleExportCurrentSearchResults = () => {
@@ -1298,7 +1300,6 @@ export default function LookupPage() {
                         (selectedCandidate.national_id && selectedCandidate.national_id === c.national_id) ||
                         (selectedCandidate.employee_code && selectedCandidate.employee_code === c.employee_code)
                       );
-                      const s1Chips = (c.s1_months || []).filter((mm) => mm.attendance_days);
 
                       return (
                         <div
@@ -1412,49 +1413,13 @@ export default function LookupPage() {
                               </span>
                             </FieldCard>
 
-                            {/* S1 card: date + interactive month chips (new hires; pick the month to recompute from) */}
+                            {/* S1 card: date; recomputes from the green month button picked at the top of the page */}
                             <div style={{ gridColumn: '1 / -1', background: 'rgba(56,189,248,0.04)', border: '1px solid rgba(56,189,248,0.18)', borderRadius: 12, padding: '8px 12px', minWidth: 0 }}>
                               <div style={{ fontSize: 10, color: '#38bdf8', marginBottom: 4, fontWeight: 700 }}>بداية الاشتراك (س1)</div>
                               <div className="font-mono-pro" style={{ fontSize: 13, fontWeight: 800, color: '#ffffff' }} title={s1Ov?.formula || c.s1_info?.formula}>
                                 <CopyableCellNumber value={s1Date} label="تاريخ بداية الاشتراك (س1)" />
-                                {s1Ov && <span style={{ fontSize: 9, color: '#38bdf8', marginRight: 6, fontWeight: 700 }}>(شهر مختار)</span>}
+                                {s1Ov && <span style={{ fontSize: 9, color: '#38bdf8', marginRight: 6, fontWeight: 700 }}>(محسوب من شهر {s1Ov.monthLabel})</span>}
                               </div>
-                              {s1Chips.length > 0 && (
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-                                  {s1Chips.map((mm) => {
-                                    const active = s1MonthSel[c.id]?.year === mm.year && s1MonthSel[c.id]?.month === mm.month;
-                                    return (
-                                      <button
-                                        key={`${mm.year}-${mm.month}`}
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setS1MonthSel((prev) => {
-                                            const next = { ...prev };
-                                            if (active) delete next[c.id];
-                                            else next[c.id] = { year: mm.year, month: mm.month };
-                                            return next;
-                                          });
-                                        }}
-                                        title={`${mm.inBoth ? 'ظهر في المرتبات والتأمينات معاً' : 'ظهر في المرتبات فقط'} — حضور ${mm.attendance_days} يوم`}
-                                        style={{
-                                          fontSize: 11,
-                                          fontWeight: 800,
-                                          padding: '4px 10px',
-                                          borderRadius: 8,
-                                          cursor: 'pointer',
-                                          border: active ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.12)',
-                                          background: active ? 'rgba(56,189,248,0.25)' : 'rgba(255,255,255,0.03)',
-                                          color: active ? '#7dd3fc' : '#cbd5e1',
-                                          boxShadow: active ? '0 0 0 1px rgba(56,189,248,0.4)' : undefined,
-                                        }}
-                                      >
-                                        شهر {mm.month}/{mm.year}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
                             </div>
 
                             <FieldCard label="نهاية الاشتراك (س6)" accent="#fda4af">
