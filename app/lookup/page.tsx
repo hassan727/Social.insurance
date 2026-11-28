@@ -1982,7 +1982,7 @@ export default function LookupPage() {
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 700, marginBottom: 1 }}>مهنة التأمينات (تعديل مباشر)</div>
                             <InsJobEditField
-                              value={selectedCandidate?.insurance_job_title || details.incomingInsurance.record?.job_title}
+                              value={selectedCandidate?.insurance_job_title || (details.incomingInsurance.record?.insurance_job_title as string | null | undefined) || (details.incomingInsurance.record?.job_title as string | null | undefined)}
                               saving={insJobSaving}
                               onSave={(v) => saveInsJobEdit(selectedCandidate?.id || '', selectedCandidate?.national_id || details.identifiers.national_id || '', v)}
                             />
