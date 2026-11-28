@@ -12,6 +12,7 @@ type Preview = {
   };
   quarter: string; sector: string; entity: string;
   months: MonthDetail[]; workedMonths: number; average: number; words: string; amount: number; startIso: string;
+  warning?: string;
 };
 
 const SECTORS = [
@@ -280,6 +281,11 @@ export default function HrLetterPage() {
             )}
             <br />التفقيط: <b style={{ color: '#f1f5f9' }}>فقط {preview.words} جنيها مصري لا غير</b>
           </div>
+          {preview.warning && (
+            <div style={{ marginTop: 10, borderRadius: 12, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.08)', padding: '10px 14px', fontSize: 13, color: '#fca5a5' }}>
+              {preview.warning}
+            </div>
+          )}
           <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             <button onClick={printWord} disabled={!effectiveEntity} style={primaryBtn(!effectiveEntity)}>
               <Printer style={{ width: 14, height: 14 }} />
