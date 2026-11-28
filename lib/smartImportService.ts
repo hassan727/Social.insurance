@@ -873,10 +873,37 @@ export async function importSheet(
       }
     }
 
-    // 5. Pre-load existing employees into memory for high-speed matching (1 single query instead of thousands)
-    const { data: existingEmps } = await supabaseService
-      .from('employees_master')
-      .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data, account_employee_uid');
+    // 5. Pre-load ALL existing employees into memory for high-speed matching.
+    // PostgREST silently caps every response at the server's max-rows (default
+    // 1000): one unbounded select returns a TRUNCATED employee set, every
+    // employee past the cap then looks "not found" and would be re-inserted as
+    // a duplicate. Page through the whole table so matching sees everyone,
+    // however large the company grows. A failed page fails the import loudly —
+    // never match against a partial employee list.
+    const existingEmps: EmployeeLookup[] = [];
+    {
+      const PAGE = 1000;
+      for (let from = 0; ; from += PAGE) {
+        const { data: pageData, error: pageErr } = await supabaseService
+          .from('employees_master')
+          .select('id, company_account, account_id, employee_code, national_id, employee_name, insurance_number, consolidated_data, account_employee_uid')
+          .range(from, from + PAGE - 1);
+        if (pageErr) {
+          return {
+            success: false,
+            total_rows: 0,
+            new_employees: 0,
+            updated_employees: 0,
+            skipped_rows: 0,
+            errors: [`تعذّر تحميل قائمة الموظفين الحالية كاملة (صفحة ${Math.floor(from / PAGE) + 1}) — أُلغي الاستيراد كاملًا ولم يتغير أي شيء؛ المطابقة على قائمة ناقصة كانت ستكرر الموظفين. ${pageErr.message}`],
+            import_id: importLogId,
+          };
+        }
+        if (!pageData || pageData.length === 0) break;
+        existingEmps.push(...(pageData as EmployeeLookup[]));
+        if (pageData.length < PAGE) break;
+      }
+    }
 
     // Row-account resolution (shared with the bridge phase below).
     const { data: rowAccounts } = await supabaseService
