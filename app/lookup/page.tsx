@@ -143,7 +143,7 @@ function InsJobEditField({ value, saving, onSave }: { value?: string | null; sav
   if (!editing) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 11, fontWeight: 800, color: value ? '#ffffff' : '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || '—'}</span>
+        <span style={{ fontSize: 11, fontWeight: 800, color: value ? '#ffffff' : '#94a3b8', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{value || '—'}</span>
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setDraft(value || ''); setEditing(true); }}
@@ -1977,7 +1977,7 @@ export default function LookupPage() {
                           </div>
                         ))}
                         {/* Insurance profession, editable straight on the card and saved in employees_master */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.35)' }} title="مهنة التأمينات — بتتحفظ في الماستر (ملف الموظف)">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px', borderRadius: 10, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.35)', gridColumn: 'span 2' }} title="مهنة التأمينات — بتتحفظ في الماستر (ملف الموظف)">
                           <span style={{ fontSize: 13 }}>✏️</span>
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontSize: 9, color: '#fbbf24', fontWeight: 700, marginBottom: 1 }}>مهنة التأمينات (تعديل مباشر)</div>
