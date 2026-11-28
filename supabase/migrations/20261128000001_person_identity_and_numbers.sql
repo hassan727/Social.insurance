@@ -201,6 +201,9 @@ CREATE TRIGGER zz_employees_master_identity
     FOR EACH ROW EXECUTE FUNCTION public.assign_employee_identity();
 
 -- ── Accounts: GASCO and DMC (names to be confirmed by the owner) ─────────
+-- The accounts sequence can be behind the existing rows (rows were inserted with explicit ids);
+-- bring it up to the highest id so the new accounts get fresh ids instead of a duplicate-key error.
+SELECT setval('public.company_accounts_id_seq', (SELECT COALESCE(MAX(id), 1) FROM public.company_accounts));
 INSERT INTO public.company_accounts(account_code, account_name, aliases, description)
 VALUES ('GASCO', 'GASCO', ARRAY['GASCO','gasco','Gasco'], 'account added 2026-11-28; display name to be confirmed'),
        ('DMC',   'DMC',   ARRAY['DMC','dmc','Dmc'],       'account added 2026-11-28; display name to be confirmed')
