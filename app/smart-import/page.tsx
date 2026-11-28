@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { WorkBook } from 'xlsx';
 import {
   Upload, FileSpreadsheet, CheckCircle2, AlertTriangle, Database,
   Sparkles, Building2, RefreshCw, FileText, History, Download, Clock,
@@ -155,6 +156,11 @@ function CrossAccountConflictItem({ sheet, c }: { sheet: string; c: { national_i
 
 export default function SmartImportPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // The workbook is parsed IN THE BROWSER: big files never upload whole.
+  // Each selected sheet is sent as its own small workbook (server limit is
+  // ~4.5MB per request, and a single sheet stays well under it).
+  const workbookRef = useRef<WorkBook | null>(null);
+  const [resultIsDryRun, setResultIsDryRun] = useState(false);
   // Accounts come from the same source the API validates against
   // (/api/company-accounts). Nothing is pre-selected: the operator must
   // choose explicitly, and the code is validated server-side.
@@ -188,9 +194,11 @@ export default function SmartImportPage() {
       return;
     }
     setSelectedFile(file);
+    workbookRef.current = null;
     setPreviewData(null);
     setSelectedSheets([]);
     setImportResult(null);
+    setResultIsDryRun(false);
     toast.success(`تم اختيار: ${file.name}`);
   };
 
@@ -212,23 +220,69 @@ export default function SmartImportPage() {
     }
 
     setLoadingPreview(true);
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    formData.append('company_account', companyAccount);
-
     try {
-      const res = await fetch('/api/smart-import/preview', {
-        method: 'POST',
-        body: formData,
+      // Parse the whole workbook locally — the file itself is NOT uploaded
+      // for analysis, so its size no longer matters.
+      const XLSX = await import('xlsx');
+      const buf = await selectedFile.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true, cellText: true, raw: false });
+      workbookRef.current = wb;
+
+      // Registered sheet definitions (names/display only — no file upload)
+      const regRes = await fetch('/api/smart-import/sheets');
+      const regData = await regRes.json().catch(() => ({}));
+      const registeredSheets: Array<{ sheet_name: string; display_name?: string; description?: string; column_definitions?: unknown[] }> =
+        regData.sheets || [];
+
+      const sheetNames = wb.SheetNames;
+      if (!sheetNames || sheetNames.length === 0) throw new Error('الملف لا يحتوي على أي صفحات عمل (Sheets)');
+
+      const availableSheets: SheetInfo[] = sheetNames.map((name) => {
+        const registered = registeredSheets.find((rs) => rs.sheet_name === name);
+        const ws = wb.Sheets[name];
+        const range = XLSX.utils.decode_range(ws?.['!ref'] || 'A1');
+        return {
+          excel_name: name,
+          is_registered: !!registered,
+          display_name: registered?.display_name || name,
+          description: registered?.description || `ورقة "${name}" - سيتم استيراد جميع الأعمدة الموجودة`,
+          column_definitions: registered?.column_definitions || [],
+          row_count: Math.max(0, range.e.r - 1),
+        };
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'فشلت المعاينة');
+      // Preview of the first sheet (same shape the server preview returned)
+      let previewSheet: PreviewData['preview_sheet'] = null;
+      if (availableSheets.length > 0) {
+        const first = availableSheets[0];
+        const ws = wb.Sheets[first.excel_name];
+        const rawData = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '', blankrows: false });
+        let hri = 0;
+        while (hri < rawData.length && (!rawData[hri] || (rawData[hri] as unknown[]).length === 0)) hri++;
+        const headers = ((rawData[hri] as unknown[]) || []).map((h) => String(h || '').trim()).filter(Boolean);
+        const previewRows = rawData.slice(hri + 1, hri + 6).map((row) => {
+          const obj: Record<string, string> = {};
+          headers.forEach((h, idx) => {
+            const val = (row as unknown[])[idx];
+            obj[h] = val !== null && val !== undefined ? String(val).trim() : '';
+          });
+          return obj;
+        });
+        previewSheet = { sheet_name: first.excel_name, display_name: first.display_name, headers, preview_rows: previewRows };
+      }
 
-      setPreviewData(data);
+      setPreviewData({
+        file_name: selectedFile.name,
+        company_account: companyAccount,
+        total_sheets: sheetNames.length,
+        registered_sheets_count: availableSheets.filter((sh) => sh.is_registered).length,
+        unregistered_sheets_count: availableSheets.filter((sh) => !sh.is_registered).length,
+        available_sheets: availableSheets,
+        preview_sheet: previewSheet,
+      });
       // Auto-select all available sheets
-      setSelectedSheets(data.available_sheets.map((s: SheetInfo) => s.excel_name));
-      toast.success(`تم تحليل ${data.registered_sheets_count} ورقة من ${data.total_sheets}`);
+      setSelectedSheets(availableSheets.map((sh) => sh.excel_name));
+      toast.success(`تم تحليل ${availableSheets.filter((sh) => sh.is_registered).length} ورقة مسجلة من ${sheetNames.length} — الملف اتقرأ على جهازك ولم يُرفع`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'حدث خطأ أثناء المعاينة');
     } finally {
@@ -236,14 +290,19 @@ export default function SmartImportPage() {
     }
   };
 
-  const handleImport = async () => {
+  const handleImport = async (dryRun: boolean) => {
     if (!selectedFile || selectedSheets.length === 0) {
       toast.error('يرجى اختيار ملف وورقة واحدة على الأقل');
+      return;
+    }
+    if (!workbookRef.current) {
+      toast.error('حلّل الملف أولاً بزر «تحليل الملف»');
       return;
     }
 
     setImporting(true);
     setImportResult(null);
+    setResultIsDryRun(dryRun);
 
     const startTime = Date.now();
     const combinedSummary = {
@@ -275,10 +334,20 @@ export default function SmartImportPage() {
           message: `جاري استيراد: ${displayName} (${sIdx + 1} من ${selectedSheets.length})...`,
         });
 
+        // Send ONLY this sheet as a small workbook built in the browser —
+        // the original big file never crosses the network.
+        const XLSX = await import('xlsx');
+        const sourceWb = workbookRef.current!;
+        const singleWb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(singleWb, sourceWb.Sheets[sheetName], sheetName);
+        const sheetBytes = XLSX.write(singleWb, { type: 'array', bookType: 'xlsx', compression: true }) as ArrayBuffer;
+        const sheetBlob = new Blob([sheetBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
         const formData = new FormData();
-        formData.append('file', selectedFile);
+        formData.append('file', sheetBlob, selectedFile.name);
         formData.append('company_account', companyAccount);
         formData.append('selected_sheets', JSON.stringify([sheetName]));
+        if (dryRun) formData.append('dry_run', 'true');
 
         const res = await fetch('/api/smart-import/execute', {
           method: 'POST',
@@ -330,11 +399,12 @@ export default function SmartImportPage() {
       const issueCount = (combinedSummary.total_errors || 0) + (combinedSummary.total_cross_account_conflicts || 0);
       const failedSheets = combinedSummary.sheets_failed || 0;
       const hasIssues = issueCount > 0 || failedSheets > 0;
-      const finalMessage = failedSheets > 0
+      const baseMessage = failedSheets > 0
         ? `فشل استيراد ${failedSheets} من ${selectedSheets.length} ورقة — راجع الأخطاء بالأسفل`
         : hasIssues
           ? `اكتمل الاستيراد جزئيًا في ${elapsedTime} ثانية: ${issueCount} صف/تعارض يحتاج مراجعة — لم تُعتمد اللقطة كاملة`
           : `تم استيراد ${selectedSheets.length} ورقة بنجاح في ${elapsedTime} ثانية`;
+      const finalMessage = dryRun ? `معاينة بدون حفظ — لم يتغير أي شيء في البيانات. ${baseMessage}` : baseMessage;
       setImportProgress({
         currentSheet: hasIssues ? 'اكتمل مع مراجعة' : 'اكتمل بنجاح',
         currentSheetIndex: selectedSheets.length,
@@ -468,7 +538,7 @@ export default function SmartImportPage() {
               {selectedFile ? selectedFile.name : 'اسحب ملف Excel هنا أو اضغط للاختيار'}
             </h3>
             <p style={{ fontSize: 14, color: '#94a3b8', margin: '0 0 24px', lineHeight: 1.5 }}>
-              يدعم .xlsx و .xls - حتى 50 ميجابايت
+              يدعم .xlsx و .xls — الملف الكبير يُقرأ على جهازك ويُرفع ورقة ورقة تلقائيًا، بدون حد فعلي للحجم
             </p>
 
             <input
@@ -669,7 +739,25 @@ export default function SmartImportPage() {
               </button>
               <div style={{ flex: 1 }} />
               <button
-                onClick={handleImport}
+                onClick={() => handleImport(true)}
+                disabled={importing || selectedSheets.length === 0}
+                className="btn-ghost"
+                style={{
+                  padding: '12px 20px',
+                  borderRadius: 12,
+                  fontSize: 14,
+                  fontWeight: 700,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  opacity: importing || selectedSheets.length === 0 ? 0.5 : 1
+                }}
+              >
+                <FileText style={{ width: 18, height: 18 }} />
+                <span>معاينة بدون حفظ</span>
+              </button>
+              <button
+                onClick={() => handleImport(false)}
                 disabled={importing || selectedSheets.length === 0}
                 className="btn-primary"
                 style={{ 
@@ -714,9 +802,15 @@ export default function SmartImportPage() {
                 <AlertTriangle style={{ width: 28, height: 28, color: '#fb7185' }} />
               )}
               <h2 style={{ fontSize: 20, fontWeight: 800, color: '#fff', margin: 0, letterSpacing: '-0.01em' }}>
-                نتيجة الاستيراد
+                {resultIsDryRun ? 'نتيجة المعاينة (بدون حفظ)' : 'نتيجة الاستيراد'}
               </h2>
             </div>
+
+            {resultIsDryRun && (
+              <div style={{ marginBottom: 20, padding: '12px 16px', borderRadius: 12, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.4)', fontSize: 13, color: '#fde68a', fontWeight: 700, lineHeight: 1.6 }}>
+                هذه معاينة فقط — لم يُحفظ أي تغيير في البيانات. الأرقام بالأسفل هي ما سيحدث لو ضغطت «استيراد».
+              </div>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 24 }}>
               <div className="glass-card" style={{ padding: '18px', borderRadius: 14, background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)' }}>
