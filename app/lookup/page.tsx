@@ -113,9 +113,30 @@ function CopyableCellNumber({ value, label }: { value?: string | number | null; 
   );
 }
 
+function FieldCard({ label, children, accent }: { label: string; children: React.ReactNode; accent?: string }) {
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.02)',
+      border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 12,
+      padding: '8px 12px',
+      minWidth: 0,
+    }}>
+      <div style={{ fontSize: 10, color: accent || '#94a3b8', marginBottom: 4, fontWeight: 700 }}>{label}</div>
+      <div style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{children}</div>
+    </div>
+  );
+}
+
+
 export default function LookupPage() {
   const [query, setQuery] = useState('');
   const [candidates, setCandidates] = useState<SearchCandidate[]>([]);
+  // Interactive S1: per-employee month for the S1 start date. Pick an employee card
+  // (circle on the card), then a green month at the top applies to that employee only.
+  // In-memory only: no override = default (first joint month).
+  const [s1EmpMonths, setS1EmpMonths] = useState<Record<string, { year: number; month: number }>>({});
+  const [s1EmpSel, setS1EmpSel] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchTargetPeriod, setSearchTargetPeriod] = useState<string>('auto'); // 'auto' or 'YYYY-M'
@@ -312,6 +333,25 @@ export default function LookupPage() {
       toast.info('تم ضبط شهر الفحص على: أول شهر ظهور تلقائي');
     }
 
+    // Per-employee S1 month: the clicked month belongs to the picked employee only.
+    const effSelId = s1EmpSel || (candidates.length === 1 ? candidates[0].id : null);
+    if (newPeriod !== 'auto') {
+      const [yy, mm] = newPeriod.split('-');
+      const yNum = parseInt(yy, 10);
+      const mNum = parseInt(mm, 10);
+      if (effSelId && !isNaN(yNum) && !isNaN(mNum)) {
+        setS1EmpMonths((prev) => ({ ...prev, [effSelId]: { year: yNum, month: mNum } }));
+      } else if (!effSelId) {
+        toast.warning('لتخصيص شهر لموظف: اضغط الدائرة على كارته الأول ثم اضغط الشهر');
+      }
+    } else {
+      if (effSelId) {
+        setS1EmpMonths((prev) => { const n = { ...prev }; delete n[effSelId]; return n; });
+      } else {
+        setS1EmpMonths({});
+      }
+    }
+
     const q = query.trim() || (candidates.length > 0 ? (candidates[0].national_id || '') : '');
     if (q.replace(/\D/g, '').length === 14) {
       handleSearchImmediate(q, newPeriod, true);
@@ -384,6 +424,29 @@ export default function LookupPage() {
     toast.info('تم تفريغ الشاشة والعودة للوضع الافتراضي (أول ظهور تلقائي)');
   };
 
+  // Recompute the S1 start date from the month picked in the top month bar with the
+  // existing rule: (days in month - attendance days + 1). Returns null on 'auto'
+  // (default behavior stays) or when the chosen month cannot yield
+  // a date (missing/zero/overflow attendance), in which case the existing
+  // calculated/recorded value remains displayed.
+  const s1OverrideFor = (c: SearchCandidate): { date: string; formula: string; monthLabel?: string } | null => {
+    const sel = s1EmpMonths[c.id];
+    if (!sel || !c.s1_months) return null;
+    const rec = c.s1_months.find((mm) => mm.year === sel.year && mm.month === sel.month);
+    if (!rec || !rec.attendance_days) return null;
+    const att = parseFloat(String(rec.attendance_days).replace(/[^\d.]/g, ''));
+    const dim = new Date(sel.year, sel.month, 0).getDate();
+    if (isNaN(att) || att <= 0 || att > dim) return null;
+    const day = Math.round(dim - att + 1);
+    const ds = String(day).padStart(2, '0');
+    const ms = String(sel.month).padStart(2, '0');
+    return { date: `${ds}/${ms}/${sel.year}`, formula: `${dim} - ${att} + 1 = ${day} (${ds}/${ms}/${sel.year})`, monthLabel: `${sel.month}/${sel.year}` };
+  };
+
+  // Effective picked employee for the top month bar: explicit pick, or the only result.
+  const effS1SelId = s1EmpSel || (candidates.length === 1 && candidates[0] ? candidates[0].id : null);
+  const effS1Ov = effS1SelId ? s1EmpMonths[effS1SelId] : undefined;
+
   const handleExportCurrentSearchResults = () => {
     if (!candidates || candidates.length === 0) {
       toast.warning('لا توجد نتائج بحث لتصديرها');
@@ -391,7 +454,7 @@ export default function LookupPage() {
     }
 
     const exportRows = candidates.map((c, idx) => {
-      const s1Date = c.s1_info?.calculatedDate || c.s1_info?.recordedDate || '—';
+      const s1Date = s1OverrideFor(c)?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate || '—';
       const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر' : '—');
 
       return {
@@ -410,7 +473,7 @@ export default function LookupPage() {
         'تاريخ بداية الاشتراك (س1)': s1Date,
         'تاريخ نهاية الاشتراك (س6)': s6Date,
         'رقم الهاتف': c.phone_number || '—',
-        'جاهزية س1': (c.s1_info?.status === 'calculated' || Boolean(c.s1_info?.recordedDate)) ? `جاهز ✓ (${c.s1_info?.calculatedDate || c.s1_info?.recordedDate || ''})` : 'غير جاهز',
+        'جاهزية س1': (s1OverrideFor(c) || c.s1_info?.status === 'calculated' || Boolean(c.s1_info?.recordedDate)) ? `جاهز ✓ (${s1OverrideFor(c)?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate || ''})` : 'غير جاهز',
         'جاهزية س6': c.s6_info?.status === 'calculated' || c.s6_info?.status === 'recorded' ? `جاهز س6 (${c.s6_info?.calculatedDate || ''})` : (c.s6_info?.status === 'active' ? 'مستمر' : '—'),
         'حالة التأمين': c.insurance_status || '—',
         'الحالة الوظيفية': c.status || 'Active',
@@ -698,15 +761,15 @@ export default function LookupPage() {
                         padding: '5px 12px',
                         borderRadius: 10,
                         fontSize: 11,
-                        fontWeight: searchTargetPeriod === 'auto' ? 800 : 600,
-                        background: searchTargetPeriod === 'auto' ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.03)',
-                        border: searchTargetPeriod === 'auto' ? '1.5px solid #818cf8' : '1px solid rgba(255,255,255,0.08)',
-                        color: searchTargetPeriod === 'auto' ? '#ffffff' : '#94a3b8',
+                        fontWeight: (effS1Ov ? false : searchTargetPeriod === 'auto') ? 800 : 600,
+                        background: (effS1Ov ? false : searchTargetPeriod === 'auto') ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.03)',
+                        border: (effS1Ov ? false : searchTargetPeriod === 'auto') ? '1.5px solid #818cf8' : '1px solid rgba(255,255,255,0.08)',
+                        color: (effS1Ov ? false : searchTargetPeriod === 'auto') ? '#ffffff' : '#94a3b8',
                         cursor: 'pointer',
                         transition: 'all 0.15s ease',
                       }}
                     >
-                      <Sparkles style={{ width: 12, height: 12, color: searchTargetPeriod === 'auto' ? '#818cf8' : 'inherit' }} />
+                      <Sparkles style={{ width: 12, height: 12, color: (effS1Ov ? false : searchTargetPeriod === 'auto') ? '#818cf8' : 'inherit' }} />
                       أول شهر ظهور مشترك (تلقائي)
                       {hasAnyJointPeriod() && (
                         <span
@@ -722,7 +785,7 @@ export default function LookupPage() {
 
                     {availablePeriods.map((p) => {
                       const val = `${p.year}-${p.month}`;
-                      const isActive = searchTargetPeriod === val;
+                      const isActive = effS1Ov ? (effS1Ov.year === p.year && effS1Ov.month === p.month) : searchTargetPeriod === val;
                       const isBoth = isPeriodBothAvailable(p.year, p.month);
                       return (
                         <button
@@ -1188,7 +1251,10 @@ export default function LookupPage() {
                           نتائج البحث الموحدة ({candidates.length} موظف)
                         </h3>
                         <p style={{ fontSize: 12, color: '#cbd5e1', margin: 0 }}>
-                          أول شهر ظهور مشترك، وأيام الحضور، والشركة، وحالة التأمين، وموقف الاستقالات • اضغط على أي سطر لفتح الملف الكامل
+                          أول شهر ظهور مشترك، وأيام الحضور، والشركة، وحالة التأمين، وموقف الاستقالات • اضغط على الكارت لفتح الملف الكامل
+                          {candidates.length > 1 && (
+                            <span style={{ color: '#818cf8' }}> • لاختيار شهر موظف معين: اضغط الدائرة على كارته ثم اضغط الشهر من الأعلى</span>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -1244,312 +1310,76 @@ export default function LookupPage() {
                     </div>
                   </div>
 
-                  {/* ─── Desktop Table (Screens >= 768px) ─── */}
-                  <div className="table-scroll hide-mobile">
-                    <table className="table-dark">
-                      <thead>
-                        <tr>
-                          <th style={{ color: '#ffffff', width: 40, textAlign: 'center' }}>#</th>
-                          <th style={{ color: '#ffffff' }}>اسم الموظف</th>
-                          <th style={{ color: '#ffffff' }}>كود الموظف</th>
-                          <th style={{ color: '#ffffff' }}>الرقم القومي</th>
-                          <th style={{ color: '#ffffff' }}>رقم التأمين</th>
-                          <th style={{ color: '#ffffff' }}>الوظيفة</th>
-                          <th style={{ color: '#ffffff' }}>الشركة (Account)</th>
-                          <th style={{ color: '#ffffff' }}>
-                            {searchTargetPeriod !== 'auto'
-                              ? 'حالة الشهر المستهدف'
-                              : 'أول ظهور (مرتبات + تأمينات)'}
-                          </th>
-                          <th style={{ color: '#ffffff', textAlign: 'center' }}>أيام الحضور</th>
-                          <th style={{ color: '#38bdf8' }}>بداية الاشتراك (س1)</th>
-                          <th style={{ color: '#fda4af' }}>نهاية الاشتراك (س6)</th>
-                          <th style={{ color: '#a3e635' }}>رقم الهاتف</th>
-                          {searchPurpose === 's1' && (
-                            <th style={{ color: '#38bdf8', whiteSpace: 'nowrap' }}>جاهزية س1 ✓</th>
-                          )}
-                          {searchPurpose === 's6' && (
-                            <th style={{ color: '#fda4af', whiteSpace: 'nowrap' }}>جاهزية س6 ✓</th>
-                          )}
-                          {searchPurpose === 'discrepancy' && (
-                            <th style={{ color: '#fbbf24', whiteSpace: 'nowrap' }}>موقف المناقضة ⚠️</th>
-                          )}
-                          {searchPurpose === 'supplied' && (
-                            <th style={{ color: '#818cf8', whiteSpace: 'nowrap' }}>موقف التوريد 📤</th>
-                          )}
-                          {searchPurpose === 'archives' && (
-                            <th style={{ color: '#34d399', whiteSpace: 'nowrap' }}>الأرشيف والمستندات 📁</th>
-                          )}
-                          <th style={{ color: '#ffffff' }}>حالة التأمين</th>
-                          <th style={{ color: '#ffffff' }}>الحالة</th>
-                          <th style={{ color: '#ffffff' }}>الاستقالات (RES)</th>
-                          <th style={{ width: 40, textAlign: 'center' }}></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {candidates.map((c, idx) => {
-                          const hasJoint = c.first_both_month && !c.first_both_month.includes('لم يظهر') && !c.first_both_month.includes('غير متوفر');
-                          const isTargetMode = searchTargetPeriod !== 'auto' && c.target_month_status;
-                          const targetMonthLabel = searchTargetPeriod !== 'auto'
-                            ? `حالة شهر (${searchTargetPeriod.split('-')[1]}/${searchTargetPeriod.split('-')[0]})`
-                            : '';
-                          const s1Date = c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
-                          const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر' : null);
-
-                          const isRowSelected = selectedCandidate && (
-                            selectedCandidate.id === c.id ||
-                            (selectedCandidate.national_id && selectedCandidate.national_id === c.national_id) ||
-                            (selectedCandidate.employee_code && selectedCandidate.employee_code === c.employee_code)
-                          );
-
-                          return (
-                            <tr
-                              key={`${c.id}_${idx}`}
-                              onClick={() => loadEmployeeDetails(c)}
-                              style={{
-                                cursor: 'pointer',
-                                transition: 'background 0.15s',
-                                background: isRowSelected ? 'rgba(99,102,241,0.22)' : undefined,
-                                boxShadow: isRowSelected ? 'inset 3px 0 0 #818cf8' : undefined,
-                              }}
-                              title="اضغط لفتح الملف الكامل لهذا الموظف"
-                            >
-                              <td className="font-mono-pro" style={{ color: '#ffffff', fontSize: 12, textAlign: 'center' }}>{idx + 1}</td>
-                              <td style={{ fontWeight: 800, color: '#ffffff', fontSize: 14 }}>
-                                {c.employee_name || 'بدون اسم'}
-                              </td>
-                              <td style={{ padding: '10px 12px' }}>
-                                <CopyableCellNumber value={c.employee_code} label="كود الموظف" />
-                              </td>
-                              <td style={{ padding: '10px 12px' }}>
-                                <CopyableCellNumber value={c.national_id} label="الرقم القومي" />
-                              </td>
-                              <td style={{ padding: '10px 12px' }}>
-                                <CopyableCellNumber value={c.insurance_number} label="الرقم التأميني" />
-                              </td>
-                              <td style={{ fontSize: 12, color: '#ffffff', fontWeight: 700 }}>
-                                <div style={{ color: '#ffffff' }}>{c.job_title || '—'}</div>
-                                {c.insurance_job_title && c.insurance_job_title !== c.job_title && (
-                                  <div style={{ fontSize: 10, color: '#cbd5e1' }}>تأمين: {c.insurance_job_title}</div>
-                                )}
-                              </td>
-                              <td>
-                                {c.account_display?.status === 'conflict' ? (
-                                  <span style={{ display: 'inline-block', maxWidth: '100%', fontSize: 11, padding: '3px 8px', borderRadius: 8, fontWeight: 800, lineHeight: 1.5, whiteSpace: 'normal', wordBreak: 'break-word', textAlign: 'center', background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
-                                    غير محسوم: {c.account_display.masterCode || '—'}/{c.account_display.waradCode || '—'}
-                                  </span>
-                                ) : c.company_account && c.company_account !== '—' ? (
-                                  <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 8, fontWeight: 800, color: '#ffffff' }}>
-                                    {c.company_account}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: '#ffffff', opacity: 0.5 }}>—</span>
-                                )}
-                              </td>
-                              <td>
-                                {isTargetMode ? (
-                                  c.target_month_status!.inBoth ? (
-                                    <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
-                                      <CheckCircle2 style={{ width: 13, height: 13, color: '#34d399' }} />
-                                      {targetMonthLabel}
-                                    </span>
-                                  ) : c.target_month_status!.inPayroll ? (
-                                    <span className="badge-brand font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
-                                      {targetMonthLabel} (مرتبات فقط)
-                                    </span>
-                                  ) : c.target_month_status!.inInsurance ? (
-                                    <span className="badge-amber font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
-                                      {targetMonthLabel} (تأمينات فقط)
-                                    </span>
-                                  ) : (
-                                    <span className="badge-rose" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, color: '#ffffff' }}>
-                                      {targetMonthLabel} (غير مسجل ✗)
-                                    </span>
-                                  )
-                                ) : hasJoint ? (
-                                  <span className="badge-brand font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
-                                    <Sparkles style={{ width: 13, height: 13, color: '#818cf8' }} />
-                                    شهر {c.first_both_month}
-                                  </span>
-                                ) : (
-                                  <span className="badge-slate" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, opacity: 0.7, color: '#ffffff' }}>
-                                    {c.first_both_month || 'غير متوفر'}
-                                  </span>
-                                )}
-                              </td>
-                              <td style={{ textAlign: 'center' }}>
-                                {isTargetMode ? (
-                                  <span className="font-mono-pro" style={{ fontSize: 14, fontWeight: 900, color: '#ffffff' }}>
-                                    {c.target_month_status!.attendance_days ? <CopyableCellNumber value={`${c.target_month_status!.attendance_days} يوم`} label="أيام الحضور" /> : '—'}
-                                  </span>
-                                ) : (
-                                  <span className="font-mono-pro" style={{ fontSize: 14, fontWeight: 900, color: '#ffffff' }}>
-                                    {c.attendance_days && c.attendance_days !== '—' ? <CopyableCellNumber value={`${c.attendance_days} يوم`} label="أيام الحضور" /> : '—'}
-                                  </span>
-                                )}
-                              </td>
-                              {/* S1: بداية الاشتراك */}
-                              <td>
-                                <CopyableCellNumber value={s1Date} label="تاريخ بداية الاشتراك (س1)" />
-                              </td>
-                              {/* S6: نهاية الاشتراك */}
-                              <td>
-                                <CopyableCellNumber value={s6Date} label="تاريخ نهاية الاشتراك (س6)" />
-                              </td>
-                              {/* Phone Number */}
-                              <td style={{ padding: '10px 12px' }}>
-                                <CopyableCellNumber value={c.phone_number} label="رقم الهاتف" />
-                              </td>
-                              {/* Purpose-based Indicator Column */}
-                              {searchPurpose === 's1' && (
-                                <td>
-                                  {(() => {
-                                    const st = c.s1_info?.status;
-                                    const dt = c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
-                                    if (st === 'calculated' || c.s1_info?.recordedDate) return (
-                                      <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(56,189,248,0.15)', border: '1px solid rgba(56,189,248,0.4)', color: '#38bdf8', whiteSpace: 'nowrap' }}>
-                                        ✅ جاهز ({dt})
-                                      </span>
-                                    );
-                                    return (
-                                      <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24', whiteSpace: 'nowrap' }}>
-                                        ⚠ يراجع
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                              )}
-                              {searchPurpose === 's6' && (
-                                <td>
-                                  {(() => {
-                                    const st = c.s6_info?.status;
-                                    const dt = c.s6_info?.calculatedDate;
-                                    if (st === 'active') return (
-                                      <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.4)', color: '#34d399', whiteSpace: 'nowrap' }}>
-                                        🟢 مستمر
-                                      </span>
-                                    );
-                                    if (st === 'calculated' || st === 'recorded') return (
-                                      <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(253,164,175,0.15)', border: '1px solid rgba(253,164,175,0.4)', color: '#fda4af', whiteSpace: 'nowrap' }}>
-                                        ✅ جاهز ({dt})
-                                      </span>
-                                    );
-                                    return (
-                                      <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24', whiteSpace: 'nowrap' }}>
-                                        ⚠ يراجع
-                                      </span>
-                                    );
-                                  })()}
-                                </td>
-                              )}
-                              {searchPurpose === 'discrepancy' && (
-                                <td>
-                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#fbbf24', whiteSpace: 'nowrap' }}>
-                                    ⚠️ {c.insurance_status === 'مناقضة' ? 'مناقضة مسجلة' : 'فحص مناقضة'}
-                                  </span>
-                                </td>
-                              )}
-                              {searchPurpose === 'supplied' && (
-                                <td>
-                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(129,140,248,0.15)', border: '1px solid rgba(129,140,248,0.4)', color: '#818cf8', whiteSpace: 'nowrap' }}>
-                                    {c.insurance_status === 'تم التوريد' ? '📤 تم التوريد' : 'جاهز للتوريد'}
-                                  </span>
-                                </td>
-                              )}
-                              {searchPurpose === 'archives' && (
-                                <td>
-                                  <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.4)', color: '#34d399', whiteSpace: 'nowrap' }}>
-                                    📁 فحص الأرشيف
-                                  </span>
-                                </td>
-                              )}
-                              <td>
-                                {(() => {
-                                  const ins = c.insurance_status || '';
-                                  const isInsured = /مؤمن|active|مشترك/i.test(ins) && !/غير|ملغ|منته/i.test(ins);
-                                  const isUninsured = /غير مؤمن|ملغ|منته|not/i.test(ins);
-                                  return (
-                                    <span style={{
-                                      fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700,
-                                      color: '#ffffff',
-                                      background: isInsured ? 'rgba(139,92,246,0.18)' : isUninsured ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.06)',
-                                      border: `1px solid ${isInsured ? 'rgba(139,92,246,0.4)' : isUninsured ? 'rgba(244,63,94,0.35)' : 'rgba(255,255,255,0.1)'}`,
-                                    }}>{ins || '—'}</span>
-                                  );
-                                })()}
-                              </td>
-                              <td>
-                                {(() => {
-                                  const st = c.status || '—'; // unknown stays unknown — never defaulted to مستمر
-                                  const isActive = /مستمر|active|نشط/i.test(st) && !/غير|not/i.test(st);
-                                  const isInactive = /غير|not active|منته|ملغ/i.test(st);
-                                  return (
-                                    <span style={{
-                                      fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700,
-                                      color: '#ffffff',
-                                      background: isInactive ? 'rgba(244,63,94,0.15)' : isActive ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.06)',
-                                      border: `1px solid ${isInactive ? 'rgba(244,63,94,0.35)' : isActive ? 'rgba(16,185,129,0.35)' : 'rgba(255,255,255,0.1)'}`,
-                                    }}>{st}</span>
-                                  );
-                                })()}
-                              </td>
-                              <td>
-                                {c.has_resignation ? (
-                                  <span className="badge-rose" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, color: '#ffffff' }}>
-                                    {c.resignation_summary}
-                                  </span>
-                                ) : (
-                                  <span className="badge-emerald" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, color: '#ffffff' }}>
-                                    لا توجد استقالة (مستمر)
-                                  </span>
-                                )}
-                              </td>
-                              <td style={{ textAlign: 'center' }}>
-                                <ChevronLeft style={{ width: 18, height: 18, color: '#818cf8', opacity: 0.8 }} />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* ─── Mobile Cards View (Screens < 768px - No Horizontal Scroll!) ─── */}
-                  <div className="show-mobile-flex" style={{ flexDirection: 'column', gap: 12, padding: '12px' }}>
+                  {/* ─── Results: responsive label+value cards (no wide table, no horizontal scroll) ─── */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 16 }}>
                     {candidates.map((c, idx) => {
                       const hasJoint = c.first_both_month && !c.first_both_month.includes('لم يظهر') && !c.first_both_month.includes('غير متوفر');
                       const isTargetMode = searchTargetPeriod !== 'auto' && c.target_month_status;
-                      const targetM = searchTargetPeriod !== 'auto' ? searchTargetPeriod.split('-')[1] : '';
-                      const targetY = searchTargetPeriod !== 'auto' ? searchTargetPeriod.split('-')[0] : '';
+                      const targetMonthLabel = searchTargetPeriod !== 'auto'
+                        ? `حالة شهر (${searchTargetPeriod.split('-')[1]}/${searchTargetPeriod.split('-')[0]})`
+                        : '';
+                      const s1Ov = s1OverrideFor(c);
+                      const s1Date = s1Ov?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
+                      const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر' : null);
+                      const isRowSelected = selectedCandidate && (
+                        selectedCandidate.id === c.id ||
+                        (selectedCandidate.national_id && selectedCandidate.national_id === c.national_id) ||
+                        (selectedCandidate.employee_code && selectedCandidate.employee_code === c.employee_code)
+                      );
+                      const isEmpPicked = s1EmpSel === c.id || (!s1EmpSel && candidates.length === 1);
+
                       return (
                         <div
-                          key={`card_${c.id}_${idx}`}
+                          key={`res_${c.id}_${idx}`}
                           onClick={() => loadEmployeeDetails(c)}
                           className="glass-card-hover"
                           style={{
-                            background: 'rgba(255, 255, 255, 0.03)',
-                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            background: isRowSelected ? 'rgba(99,102,241,0.22)' : 'rgba(255, 255, 255, 0.03)',
+                            border: isEmpPicked ? '1.5px solid rgba(129,140,248,0.7)' : '1px solid rgba(255, 255, 255, 0.12)',
                             borderRadius: 16,
                             padding: '14px 16px',
                             display: 'flex',
                             flexDirection: 'column',
-                            gap: 12,
+                            gap: 10,
                             cursor: 'pointer',
                             transition: 'all 0.2s ease',
+                            boxShadow: isRowSelected ? 'inset 3px 0 0 #818cf8' : undefined,
                           }}
+                          title="اضغط لفتح الملف الكامل لهذا الموظف"
                         >
-                          {/* Card Header: Name + Company */}
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-                              <span className="font-mono-pro" style={{ fontSize: 11, color: '#94a3b8', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 6, fontWeight: 800 }}>
+                          {/* Card Header: # + Name + Company */}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setS1EmpSel(s1EmpSel === c.id ? null : c.id); }}
+                                title={isEmpPicked ? 'الموظف محدد — الشهر اللي تضغطه من الشهور بالأعلى هيتحسب له' : 'اضغط لتحديد الموظف لاختيار شهر س1 من الشهور بالأعلى'}
+                                style={{
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: '50%',
+                                  flexShrink: 0,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  padding: 0,
+                                  border: isEmpPicked ? '2px solid #818cf8' : '2px solid rgba(255,255,255,0.25)',
+                                  background: isEmpPicked ? 'rgba(129,140,248,0.35)' : 'transparent',
+                                  transition: 'all 0.15s ease',
+                                }}
+                              >
+                                {isEmpPicked && <Check style={{ width: 11, height: 11, color: '#ffffff' }} />}
+                              </button>
+                              <span className="font-mono-pro" style={{ fontSize: 11, color: '#94a3b8', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 6, fontWeight: 800, flexShrink: 0 }}>
                                 #{idx + 1}
                               </span>
-                              <span style={{ fontSize: 15, fontWeight: 800, color: '#ffffff', lineHeight: 1.3 }}>
+                              <span style={{ fontSize: 15, fontWeight: 800, color: '#ffffff', lineHeight: 1.3, overflowWrap: 'anywhere' }}>
                                 {c.employee_name || 'بدون اسم'}
                               </span>
                             </div>
                             {c.account_display?.status === 'conflict' ? (
-                              <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, fontWeight: 800, whiteSpace: 'nowrap', background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                              <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 6, fontWeight: 800, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
                                 غير محسوم: {c.account_display.masterCode || '—'} / {c.account_display.waradCode || '—'}
                               </span>
                             ) : c.company_account && c.company_account !== '—' ? (
@@ -1559,241 +1389,196 @@ export default function LookupPage() {
                             ) : null}
                           </div>
 
-                          {/* Identifiers: Code, National ID & Insurance Number */}
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
-                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
-                              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4 }}>كود الموظف</div>
+                          {/* Fields grid: every label+value is its own card; wraps responsively, never scrolls sideways */}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                            <FieldCard label="كود الموظف">
                               <CopyableCellNumber value={c.employee_code} label="كود الموظف" />
-                            </div>
-                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
-                              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4 }}>الرقم القومي</div>
+                            </FieldCard>
+                            <FieldCard label="الرقم القومي">
                               <CopyableCellNumber value={c.national_id} label="الرقم القومي" />
-                            </div>
-                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
-                              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 4 }}>الرقم التأميني</div>
+                            </FieldCard>
+                            <FieldCard label="رقم التأمين">
                               <CopyableCellNumber value={c.insurance_number} label="الرقم التأميني" />
-                            </div>
-                            {/* Phone Number */}
-                            {c.phone_number && (
-                              <div style={{ background: 'rgba(163,230,53,0.05)', border: '1px solid rgba(163,230,53,0.2)', borderRadius: 10, padding: '8px 10px' }}>
-                                <div style={{ fontSize: 10, color: '#a3e635', marginBottom: 4 }}>رقم الهاتف 📞</div>
-                                <CopyableCellNumber value={c.phone_number} label="رقم الهاتف" />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Job Title */}
-                          {(c.job_title || c.insurance_job_title) && (
-                            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '8px 10px' }}>
-                              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 2 }}>الوظيفة</div>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: '#ffffff' }}>
-                                {c.job_title || '—'}
-                              </div>
+                            </FieldCard>
+                            <FieldCard label="رقم الهاتف" accent="#a3e635">
+                              <CopyableCellNumber value={c.phone_number} label="رقم الهاتف" />
+                            </FieldCard>
+                            <FieldCard label="الوظيفة">
+                              <div style={{ fontSize: 12, fontWeight: 700, color: '#ffffff', overflowWrap: 'anywhere' }}>{c.job_title || '—'}</div>
                               {c.insurance_job_title && c.insurance_job_title !== c.job_title && (
-                                <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>تأمينياً: {c.insurance_job_title}</div>
+                                <div style={{ fontSize: 10, color: '#cbd5e1', marginTop: 2 }}>تأمين: {c.insurance_job_title}</div>
                               )}
-                            </div>
-                          )}
-
-                          {/* Insurance Forms Dates (S1 & S6) Reference */}
-                          {(() => {
-                            const s1Date = c.s1_info?.calculatedDate || c.subscription_start_date || (c.s1_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
-                            const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر (Active)' : c.subscription_end_date) || (c.s6_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
-                            return (
-                              <div style={{
-                                display: 'grid',
-                                gridTemplateColumns: '1fr 1fr',
-                                gap: 8,
-                                background: 'rgba(56, 189, 248, 0.04)',
-                                border: '1px solid rgba(56, 189, 248, 0.2)',
-                                borderRadius: 12,
-                                padding: '10px 12px'
-                              }}>
-                                <div>
-                                  <div style={{ fontSize: 10, color: '#38bdf8', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <span>بداية الاشتراك (س1)</span>
-                                    {c.s1_info?.calculatedDate && (
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          navigator.clipboard.writeText(c.s1_info!.calculatedDate!);
-                                          toast.success(`تم نسخ تاريخ س1: ${c.s1_info!.calculatedDate!}`);
-                                        }}
-                                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#38bdf8' }}
-                                        title="نسخ"
-                                      >
-                                        <Copy style={{ width: 11, height: 11 }} />
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: '#ffffff' }} title={c.s1_info?.formula}>
-                                    {s1Date || '—'}
-                                  </div>
-                                </div>
-
-                                <div>
-                                  <div style={{ fontSize: 10, color: '#fda4af', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <span>نهاية الاشتراك (س6)</span>
-                                    {c.s6_info?.calculatedDate && (
-                                      <button
-                                        type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          navigator.clipboard.writeText(c.s6_info!.calculatedDate!);
-                                          toast.success(`تم نسخ تاريخ س6: ${c.s6_info!.calculatedDate!}`);
-                                        }}
-                                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#fda4af' }}
-                                        title="نسخ"
-                                      >
-                                        <Copy style={{ width: 11, height: 11 }} />
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div
-                                    className="font-mono-pro"
-                                    style={{
-                                      fontSize: 12,
-                                      fontWeight: 800,
-                                      color: c.s6_info?.calculatedDate ? '#fda4af' : c.s6_info?.status === 'active' ? '#34d399' : '#ffffff'
-                                    }}
-                                    title={c.s6_info?.formula || c.s6_info?.message}
-                                  >
-                                    {s6Date || '—'}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })()}
-
-                          {/* Appearance Status: Target Month or First Joint */}
-                          {isTargetMode ? (
-                            <div style={{
-                              background: c.target_month_status!.inBoth ? 'rgba(16, 185, 129, 0.08)' : 'rgba(99, 102, 241, 0.08)',
-                              border: `1px solid ${c.target_month_status!.inBoth ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.25)'}`,
-                              borderRadius: 12,
-                              padding: '10px 12px',
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                            }}>
-                              <div>
-                                <div style={{ fontSize: 10, color: '#cbd5e1', marginBottom: 4 }}>مسجل في كلا الشيتين ✓</div>
-                                {c.target_month_status!.inBoth ? (
-                                  <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 6, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
-                                    <CheckCircle2 style={{ width: 12, height: 12, color: '#34d399' }} />
-                                    حالة شهر ({targetM}/{targetY})
+                            </FieldCard>
+                            <FieldCard label="الشركة (Account)">
+                              {c.account_display?.status === 'conflict' ? (
+                                <span style={{ display: 'inline-block', fontSize: 11, padding: '3px 8px', borderRadius: 8, fontWeight: 800, lineHeight: 1.5, whiteSpace: 'normal', wordBreak: 'break-word', textAlign: 'center', background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.5)', color: '#fbbf24' }}>
+                                  غير محسوم: {c.account_display.masterCode || '—'}/{c.account_display.waradCode || '—'}
+                                </span>
+                              ) : c.company_account && c.company_account !== '—' ? (
+                                <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 8, fontWeight: 800, color: '#ffffff' }}>
+                                  {c.company_account}
+                                </span>
+                              ) : (
+                                <span style={{ color: '#ffffff', opacity: 0.5 }}>—</span>
+                              )}
+                            </FieldCard>
+                            <FieldCard label={isTargetMode ? 'حالة الشهر المستهدف' : 'أول ظهور (مرتبات + تأمينات)'}>
+                              {isTargetMode ? (
+                                c.target_month_status!.inBoth ? (
+                                  <span className="badge-emerald font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
+                                    <CheckCircle2 style={{ width: 13, height: 13, color: '#34d399' }} />
+                                    {targetMonthLabel}
                                   </span>
                                 ) : c.target_month_status!.inPayroll ? (
-                                  <span className="badge-brand font-mono-pro" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, fontWeight: 800, color: '#ffffff' }}>
-                                    حالة شهر ({targetM}/{targetY}) (مرتبات فقط)
+                                  <span className="badge-brand font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
+                                    {targetMonthLabel} (مرتبات فقط)
                                   </span>
                                 ) : c.target_month_status!.inInsurance ? (
-                                  <span className="badge-amber font-mono-pro" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, fontWeight: 800, color: '#ffffff' }}>
-                                    حالة شهر ({targetM}/{targetY}) (تأمينات فقط)
+                                  <span className="badge-amber font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
+                                    {targetMonthLabel} (تأمينات فقط)
                                   </span>
                                 ) : (
-                                  <span className="badge-rose" style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, color: '#ffffff' }}>
-                                    حالة شهر ({targetM}/{targetY}) (غير مسجل ✗)
+                                  <span className="badge-rose" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, color: '#ffffff' }}>
+                                    {targetMonthLabel} (غير مسجل ✗)
                                   </span>
-                                )}
-                              </div>
-                              <div style={{ textAlign: 'left' }}>
-                                <div style={{ fontSize: 10, color: '#cbd5e1', marginBottom: 4 }}>حضور الشهر</div>
-                                <span className="font-mono-pro" style={{ fontSize: 14, fontWeight: 900, color: c.target_month_status!.attendance_days ? '#34d399' : '#94a3b8' }}>
-                                  {c.target_month_status!.attendance_days ? `${c.target_month_status!.attendance_days} يوم` : '—'}
+                                )
+                              ) : hasJoint ? (
+                                <span className="badge-brand font-mono-pro" style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
+                                  <Sparkles style={{ width: 13, height: 13, color: '#818cf8' }} />
+                                  شهر {c.first_both_month}
                                 </span>
-                              </div>
-                            </div>
-                          ) : (
-                            <div style={{
-                              background: hasJoint ? 'rgba(99, 102, 241, 0.08)' : 'rgba(255,255,255,0.02)',
-                              border: `1px solid ${hasJoint ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255,255,255,0.06)'}`,
-                              borderRadius: 12,
-                              padding: '10px 12px',
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                            }}>
-                              <div>
-                                <div style={{ fontSize: 10, color: '#cbd5e1', marginBottom: 4 }}>أول ظهور مشترك (مرتبات + تأمينات)</div>
-                                {hasJoint ? (
-                                  <span className="badge-brand font-mono-pro" style={{ fontSize: 12, padding: '3px 10px', borderRadius: 6, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff' }}>
-                                    <Sparkles style={{ width: 12, height: 12, color: '#818cf8' }} />
-                                    شهر {c.first_both_month}
-                                  </span>
-                                ) : (
-                                  <span className="badge-slate" style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6 }}>
-                                    {c.first_both_month || 'غير متوفر'}
-                                  </span>
-                                )}
-                              </div>
-                              <div style={{ textAlign: 'left' }}>
-                                <div style={{ fontSize: 10, color: '#cbd5e1', marginBottom: 4 }}>أيام الحضور</div>
-                                <span className="font-mono-pro" style={{ fontSize: 14, fontWeight: 900, color: c.attendance_days && c.attendance_days !== '—' ? '#34d399' : '#94a3b8' }}>
-                                  {c.attendance_days && c.attendance_days !== '—' ? `${c.attendance_days} يوم` : '—'}
+                              ) : (
+                                <span className="badge-slate" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, opacity: 0.7, color: '#ffffff' }}>
+                                  {c.first_both_month || 'غير متوفر'}
                                 </span>
+                              )}
+                            </FieldCard>
+                            <FieldCard label="أيام الحضور">
+                              <span className="font-mono-pro" style={{ fontSize: 14, fontWeight: 900, color: '#ffffff' }}>
+                                {isTargetMode
+                                  ? (c.target_month_status!.attendance_days ? <CopyableCellNumber value={`${c.target_month_status!.attendance_days} يوم`} label="أيام الحضور" /> : '—')
+                                  : (c.attendance_days && c.attendance_days !== '—' ? <CopyableCellNumber value={`${c.attendance_days} يوم`} label="أيام الحضور" /> : '—')}
+                              </span>
+                            </FieldCard>
+
+                            {/* S1 card: date; recomputes from the green month button picked at the top of the page */}
+                            <div style={{ gridColumn: '1 / -1', background: 'rgba(56,189,248,0.04)', border: '1px solid rgba(56,189,248,0.18)', borderRadius: 12, padding: '8px 12px', minWidth: 0 }}>
+                              <div style={{ fontSize: 10, color: '#38bdf8', marginBottom: 4, fontWeight: 700 }}>بداية الاشتراك (س1)</div>
+                              <div className="font-mono-pro" style={{ fontSize: 13, fontWeight: 800, color: '#ffffff' }} title={s1Ov?.formula || c.s1_info?.formula}>
+                                <CopyableCellNumber value={s1Date} label="تاريخ بداية الاشتراك (س1)" />
+                                {s1Ov && <span style={{ fontSize: 9, color: '#38bdf8', marginRight: 6, fontWeight: 700 }}>(محسوب من شهر {s1Ov.monthLabel})</span>}
                               </div>
                             </div>
-                          )}
 
-                          {/* Status Badges */}
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                            {(() => {
-                              const ins = c.insurance_status || '';
-                              const isInsured = /مؤمن|active|مشترك/i.test(ins) && !/غير|ملغ|منته/i.test(ins);
-                              const isUninsured = /غير مؤمن|ملغ|منته|not/i.test(ins);
-                              return (
-                                <span style={{
-                                  fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
-                                  color: isInsured ? '#c4b5fd' : isUninsured ? '#fda4af' : '#94a3b8',
-                                  background: isInsured ? 'rgba(139,92,246,0.18)' : isUninsured ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.06)',
-                                  border: `1px solid ${isInsured ? 'rgba(139,92,246,0.4)' : isUninsured ? 'rgba(244,63,94,0.35)' : 'rgba(255,255,255,0.1)'}`,
-                                }}>{ins || 'تأمين: —'}</span>
-                              );
-                            })()}
-                            {(() => {
-                              const st = c.status || 'مستمر';
-                              const isActive = /مستمر|active|نشط/i.test(st) && !/غير|not/i.test(st);
-                              const isInactive = /غير|not active|منته|ملغ/i.test(st);
-                              return (
-                                <span style={{
-                                  fontSize: 11, padding: '3px 8px', borderRadius: 6, fontWeight: 700,
-                                  color: isInactive ? '#fda4af' : isActive ? '#6ee7b7' : '#e2e8f0',
-                                  background: isInactive ? 'rgba(244,63,94,0.15)' : isActive ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.06)',
-                                  border: `1px solid ${isInactive ? 'rgba(244,63,94,0.35)' : isActive ? 'rgba(16,185,129,0.35)' : 'rgba(255,255,255,0.1)'}`,
-                                }}>{st}</span>
-                              );
-                            })()}
-                          </div>
+                            <FieldCard label="نهاية الاشتراك (س6)" accent="#fda4af">
+                              <CopyableCellNumber value={s6Date} label="تاريخ نهاية الاشتراك (س6)" />
+                            </FieldCard>
 
-                          {/* ═══ شيت الرزاين ═══ */}
-                          <div style={{
-                            borderRadius: 12,
-                            padding: '10px 14px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: 10,
-                            background: c.has_resignation
-                              ? 'rgba(244, 63, 94, 0.12)'
-                              : 'rgba(16, 185, 129, 0.08)',
-                            border: `1.5px solid ${c.has_resignation ? 'rgba(244,63,94,0.45)' : 'rgba(16,185,129,0.3)'}`,
-                          }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                              <span style={{ fontSize: 16 }}>{c.has_resignation ? '⚠️' : '✅'}</span>
-                              <span style={{ fontSize: 11, fontWeight: 800, color: '#e2e8f0', letterSpacing: '0.02em' }}>فحص شيت الرزاين</span>
-                            </div>
-                            <span style={{
-                              fontSize: 11,
-                              fontWeight: 800,
-                              padding: '3px 10px',
-                              borderRadius: 8,
-                              color: c.has_resignation ? '#fda4af' : '#6ee7b7',
-                              background: c.has_resignation ? 'rgba(244,63,94,0.18)' : 'rgba(16,185,129,0.15)',
-                            }}>
-                              {c.has_resignation ? (c.resignation_summary || 'مسجل في الاستقالات ⚠') : 'تم الفحص — لا توجد استقالة ✓'}
-                            </span>
+                            {/* Purpose-based indicator */}
+                            {searchPurpose === 's1' && (
+                              <FieldCard label="جاهزية س1 ✓" accent="#38bdf8">
+                                {(() => {
+                                  const st = c.s1_info?.status;
+                                  const dt = s1Ov?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
+                                  if (s1Ov || st === 'calculated' || c.s1_info?.recordedDate) return (
+                                    <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(56,189,248,0.15)', border: '1px solid rgba(56,189,248,0.4)', color: '#38bdf8' }}>
+                                      ✅ جاهز ({dt})
+                                    </span>
+                                  );
+                                  return (
+                                    <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24' }}>
+                                      ⚠ يراجع
+                                    </span>
+                                  );
+                                })()}
+                              </FieldCard>
+                            )}
+                            {searchPurpose === 's6' && (
+                              <FieldCard label="جاهزية س6 ✓" accent="#fda4af">
+                                {(() => {
+                                  const st = c.s6_info?.status;
+                                  const dt = c.s6_info?.calculatedDate;
+                                  if (st === 'active') return (
+                                    <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(16,185,129,0.15)', border: '1px solid rgba(16,185,129,0.4)', color: '#34d399' }}>
+                                      🟢 مستمر
+                                    </span>
+                                  );
+                                  if (st === 'calculated' || st === 'recorded') return (
+                                    <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(253,164,175,0.15)', border: '1px solid rgba(253,164,175,0.4)', color: '#fda4af' }}>
+                                      ✅ جاهز ({dt})
+                                    </span>
+                                  );
+                                  return (
+                                    <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.4)', color: '#fbbf24' }}>
+                                      ⚠ يراجع
+                                    </span>
+                                  );
+                                })()}
+                              </FieldCard>
+                            )}
+                            {searchPurpose === 'discrepancy' && (
+                              <FieldCard label="موقف المناقضة ⚠️" accent="#fbbf24">
+                                <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#fbbf24' }}>
+                                  ⚠️ {c.insurance_status === 'مناقضة' ? 'مناقضة مسجلة' : 'فحص مناقضة'}
+                                </span>
+                              </FieldCard>
+                            )}
+                            {searchPurpose === 'supplied' && (
+                              <FieldCard label="موقف التوريد 📤" accent="#818cf8">
+                                <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(129,140,248,0.15)', border: '1px solid rgba(129,140,248,0.4)', color: '#818cf8' }}>
+                                  {c.insurance_status === 'تم التوريد' ? '📤 تم التوريد' : 'جاهز للتوريد'}
+                                </span>
+                              </FieldCard>
+                            )}
+                            {searchPurpose === 'archives' && (
+                              <FieldCard label="الأرشيف والمستندات 📁" accent="#34d399">
+                                <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(52,211,153,0.15)', border: '1px solid rgba(52,211,153,0.4)', color: '#34d399' }}>
+                                  📁 فحص الأرشيف
+                                </span>
+                              </FieldCard>
+                            )}
+
+                            <FieldCard label="حالة التأمين">
+                              {(() => {
+                                const ins = c.insurance_status || '';
+                                const isInsured = /مؤمن|active|مشترك/i.test(ins) && !/غير|ملغ|منته/i.test(ins);
+                                const isUninsured = /غير مؤمن|ملغ|منته|not/i.test(ins);
+                                return (
+                                  <span style={{
+                                    fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700,
+                                    color: '#ffffff',
+                                    background: isInsured ? 'rgba(139,92,246,0.18)' : isUninsured ? 'rgba(244,63,94,0.15)' : 'rgba(255,255,255,0.06)',
+                                    border: `1px solid ${isInsured ? 'rgba(139,92,246,0.4)' : isUninsured ? 'rgba(244,63,94,0.35)' : 'rgba(255,255,255,0.1)'}`,
+                                  }}>{ins || '—'}</span>
+                                );
+                              })()}
+                            </FieldCard>
+                            <FieldCard label="الحالة">
+                              {(() => {
+                                const st = c.status || '—'; // unknown stays unknown — never defaulted to مستمر
+                                const isActive = /مستمر|active|نشط/i.test(st) && !/غير|not/i.test(st);
+                                const isInactive = /غير|not active|منته|ملغ/i.test(st);
+                                return (
+                                  <span style={{
+                                    fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700,
+                                    color: '#ffffff',
+                                    background: isInactive ? 'rgba(244,63,94,0.15)' : isActive ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.06)',
+                                    border: `1px solid ${isInactive ? 'rgba(244,63,94,0.35)' : isActive ? 'rgba(16,185,129,0.35)' : 'rgba(255,255,255,0.1)'}`,
+                                  }}>{st}</span>
+                                );
+                              })()}
+                            </FieldCard>
+                            <FieldCard label="الاستقالات (RES)">
+                              {c.has_resignation ? (
+                                <span className="badge-rose" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, color: '#ffffff' }}>
+                                  {c.resignation_summary}
+                                </span>
+                              ) : (
+                                <span className="badge-emerald" style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, color: '#ffffff' }}>
+                                  لا توجد استقالة (مستمر)
+                                </span>
+                              )}
+                            </FieldCard>
                           </div>
 
                           {/* Action footer */}
