@@ -116,6 +116,9 @@ function CopyableCellNumber({ value, label }: { value?: string | number | null; 
 export default function LookupPage() {
   const [query, setQuery] = useState('');
   const [candidates, setCandidates] = useState<SearchCandidate[]>([]);
+  // Interactive S1: per-employee chosen month for recomputing the S1 start date.
+  // In-memory only: reopening the page resets every employee to the default (first joint month).
+  const [s1MonthSel, setS1MonthSel] = useState<Record<string, { year: number; month: number }>>({});
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchTargetPeriod, setSearchTargetPeriod] = useState<string>('auto'); // 'auto' or 'YYYY-M'
@@ -384,6 +387,25 @@ export default function LookupPage() {
     toast.info('تم تفريغ الشاشة والعودة للوضع الافتراضي (أول ظهور تلقائي)');
   };
 
+  // Recompute the S1 start date for the employee's chosen month with the
+  // existing rule: (days in month - attendance days + 1). Returns null when no
+  // month is chosen (default behavior stays) or the chosen month cannot yield
+  // a date (missing/zero/overflow attendance), in which case the existing
+  // calculated/recorded value remains displayed.
+  const s1OverrideFor = (c: SearchCandidate): { date: string; formula: string } | null => {
+    const sel = s1MonthSel[c.id];
+    if (!sel || !c.s1_months) return null;
+    const rec = c.s1_months.find((mm) => mm.year === sel.year && mm.month === sel.month);
+    if (!rec || !rec.attendance_days) return null;
+    const att = parseFloat(String(rec.attendance_days).replace(/[^\d.]/g, ''));
+    const dim = new Date(sel.year, sel.month, 0).getDate();
+    if (isNaN(att) || att <= 0 || att > dim) return null;
+    const day = Math.round(dim - att + 1);
+    const ds = String(day).padStart(2, '0');
+    const ms = String(sel.month).padStart(2, '0');
+    return { date: `${ds}/${ms}/${sel.year}`, formula: `${dim} - ${att} + 1 = ${day} (${ds}/${ms}/${sel.year})` };
+  };
+
   const handleExportCurrentSearchResults = () => {
     if (!candidates || candidates.length === 0) {
       toast.warning('لا توجد نتائج بحث لتصديرها');
@@ -391,7 +413,7 @@ export default function LookupPage() {
     }
 
     const exportRows = candidates.map((c, idx) => {
-      const s1Date = c.s1_info?.calculatedDate || c.s1_info?.recordedDate || '—';
+      const s1Date = s1OverrideFor(c)?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate || '—';
       const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر' : '—');
 
       return {
@@ -410,7 +432,7 @@ export default function LookupPage() {
         'تاريخ بداية الاشتراك (س1)': s1Date,
         'تاريخ نهاية الاشتراك (س6)': s6Date,
         'رقم الهاتف': c.phone_number || '—',
-        'جاهزية س1': (c.s1_info?.status === 'calculated' || Boolean(c.s1_info?.recordedDate)) ? `جاهز ✓ (${c.s1_info?.calculatedDate || c.s1_info?.recordedDate || ''})` : 'غير جاهز',
+        'جاهزية س1': (s1OverrideFor(c) || c.s1_info?.status === 'calculated' || Boolean(c.s1_info?.recordedDate)) ? `جاهز ✓ (${s1OverrideFor(c)?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate || ''})` : 'غير جاهز',
         'جاهزية س6': c.s6_info?.status === 'calculated' || c.s6_info?.status === 'recorded' ? `جاهز س6 (${c.s6_info?.calculatedDate || ''})` : (c.s6_info?.status === 'active' ? 'مستمر' : '—'),
         'حالة التأمين': c.insurance_status || '—',
         'الحالة الوظيفية': c.status || 'Active',
@@ -1293,7 +1315,7 @@ export default function LookupPage() {
                           const targetMonthLabel = searchTargetPeriod !== 'auto'
                             ? `حالة شهر (${searchTargetPeriod.split('-')[1]}/${searchTargetPeriod.split('-')[0]})`
                             : '';
-                          const s1Date = c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
+                          const s1Date = s1OverrideFor(c)?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
                           const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر' : null);
 
                           const isRowSelected = selectedCandidate && (
@@ -1405,8 +1427,8 @@ export default function LookupPage() {
                                 <td>
                                   {(() => {
                                     const st = c.s1_info?.status;
-                                    const dt = c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
-                                    if (st === 'calculated' || c.s1_info?.recordedDate) return (
+                                    const dt = s1OverrideFor(c)?.date || c.s1_info?.calculatedDate || c.s1_info?.recordedDate;
+                                    if (s1OverrideFor(c) || st === 'calculated' || c.s1_info?.recordedDate) return (
                                       <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 8, fontWeight: 700, background: 'rgba(56,189,248,0.15)', border: '1px solid rgba(56,189,248,0.4)', color: '#38bdf8', whiteSpace: 'nowrap' }}>
                                         ✅ جاهز ({dt})
                                       </span>
@@ -1597,7 +1619,8 @@ export default function LookupPage() {
 
                           {/* Insurance Forms Dates (S1 & S6) Reference */}
                           {(() => {
-                            const s1Date = c.s1_info?.calculatedDate || c.subscription_start_date || (c.s1_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
+                            const s1Ov = s1OverrideFor(c);
+                            const s1Date = s1Ov?.date || c.s1_info?.calculatedDate || c.subscription_start_date || (c.s1_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
                             const s6Date = c.s6_info?.calculatedDate || (c.s6_info?.status === 'active' ? 'مستمر (Active)' : c.subscription_end_date) || (c.s6_info?.status === 'insufficient_data' ? 'يحتاج مراجعة' : null);
                             return (
                               <div style={{
@@ -1612,13 +1635,14 @@ export default function LookupPage() {
                                 <div>
                                   <div style={{ fontSize: 10, color: '#38bdf8', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <span>بداية الاشتراك (س1)</span>
-                                    {c.s1_info?.calculatedDate && (
+                                    {(s1OverrideFor(c)?.date || c.s1_info?.calculatedDate) && (
                                       <button
                                         type="button"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          navigator.clipboard.writeText(c.s1_info!.calculatedDate!);
-                                          toast.success(`تم نسخ تاريخ س1: ${c.s1_info!.calculatedDate!}`);
+                                          const d = s1OverrideFor(c)?.date || c.s1_info!.calculatedDate!;
+                                          navigator.clipboard.writeText(d);
+                                          toast.success(`تم نسخ تاريخ س1: ${d}`);
                                         }}
                                         style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, color: '#38bdf8' }}
                                         title="نسخ"
@@ -1627,8 +1651,9 @@ export default function LookupPage() {
                                       </button>
                                     )}
                                   </div>
-                                  <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: '#ffffff' }} title={c.s1_info?.formula}>
+                                  <div className="font-mono-pro" style={{ fontSize: 12, fontWeight: 800, color: '#ffffff' }} title={s1Ov?.formula || c.s1_info?.formula}>
                                     {s1Date || '—'}
+                                    {s1Ov && <span style={{ fontSize: 9, color: '#38bdf8', marginRight: 6, fontWeight: 700 }}>(شهر مختار)</span>}
                                   </div>
                                 </div>
 
@@ -1665,6 +1690,49 @@ export default function LookupPage() {
                               </div>
                             );
                           })()}
+
+                          {/* Interactive S1 month picker: choose the month the S1 start is computed from (new hires). Not persisted. */}
+                          {c.s1_months && c.s1_months.some((mm) => mm.attendance_days) && (
+                            <div style={{ background: 'rgba(56, 189, 248, 0.03)', border: '1px solid rgba(56, 189, 248, 0.12)', borderRadius: 12, padding: '8px 12px' }}>
+                              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 6 }}>
+                                احسب بداية الاشتراك (س١) من شهر تاني — اضغط على الشهر، واضغط تاني للرجوع للوضع الافتراضي (أول شهر مشترك):
+                              </div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                {c.s1_months.filter((mm) => mm.attendance_days).map((mm) => {
+                                  const active = s1MonthSel[c.id]?.year === mm.year && s1MonthSel[c.id]?.month === mm.month;
+                                  return (
+                                    <button
+                                      key={`${mm.year}-${mm.month}`}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setS1MonthSel((prev) => {
+                                          const next = { ...prev };
+                                          if (active) delete next[c.id];
+                                          else next[c.id] = { year: mm.year, month: mm.month };
+                                          return next;
+                                        });
+                                      }}
+                                      title={`${mm.inBoth ? 'ظهر في المرتبات والتأمينات معاً' : 'ظهر في المرتبات فقط'} — حضور ${mm.attendance_days} يوم`}
+                                      style={{
+                                        fontSize: 11,
+                                        fontWeight: 800,
+                                        padding: '4px 10px',
+                                        borderRadius: 8,
+                                        cursor: 'pointer',
+                                        border: active ? '1px solid #38bdf8' : '1px solid rgba(255,255,255,0.12)',
+                                        background: active ? 'rgba(56,189,248,0.25)' : 'rgba(255,255,255,0.03)',
+                                        color: active ? '#7dd3fc' : '#cbd5e1',
+                                        boxShadow: active ? '0 0 0 1px rgba(56,189,248,0.4)' : undefined,
+                                      }}
+                                    >
+                                      شهر {mm.month}/{mm.year}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
 
                           {/* Appearance Status: Target Month or First Joint */}
                           {isTargetMode ? (
