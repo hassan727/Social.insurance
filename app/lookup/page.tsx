@@ -132,8 +132,11 @@ function FieldCard({ label, children, accent }: { label: string; children: React
 export default function LookupPage() {
   const [query, setQuery] = useState('');
   const [candidates, setCandidates] = useState<SearchCandidate[]>([]);
-  // Interactive S1: the S1 start date follows the green month button picked at the top
-  // (searchTargetPeriod). In-memory only: 'auto' (default) = first joint month.
+  // Interactive S1: per-employee month for the S1 start date. Pick an employee card
+  // (circle on the card), then a green month at the top applies to that employee only.
+  // In-memory only: no override = default (first joint month).
+  const [s1EmpMonths, setS1EmpMonths] = useState<Record<string, { year: number; month: number }>>({});
+  const [s1EmpSel, setS1EmpSel] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchTargetPeriod, setSearchTargetPeriod] = useState<string>('auto'); // 'auto' or 'YYYY-M'
@@ -330,6 +333,25 @@ export default function LookupPage() {
       toast.info('تم ضبط شهر الفحص على: أول شهر ظهور تلقائي');
     }
 
+    // Per-employee S1 month: the clicked month belongs to the picked employee only.
+    const effSelId = s1EmpSel || (candidates.length === 1 ? candidates[0].id : null);
+    if (newPeriod !== 'auto') {
+      const [yy, mm] = newPeriod.split('-');
+      const yNum = parseInt(yy, 10);
+      const mNum = parseInt(mm, 10);
+      if (effSelId && !isNaN(yNum) && !isNaN(mNum)) {
+        setS1EmpMonths((prev) => ({ ...prev, [effSelId]: { year: yNum, month: mNum } }));
+      } else if (!effSelId) {
+        toast.warning('لتخصيص شهر لموظف: اضغط الدائرة على كارته الأول ثم اضغط الشهر');
+      }
+    } else {
+      if (effSelId) {
+        setS1EmpMonths((prev) => { const n = { ...prev }; delete n[effSelId]; return n; });
+      } else {
+        setS1EmpMonths({});
+      }
+    }
+
     const q = query.trim() || (candidates.length > 0 ? (candidates[0].national_id || '') : '');
     if (q.replace(/\D/g, '').length === 14) {
       handleSearchImmediate(q, newPeriod, true);
@@ -408,11 +430,8 @@ export default function LookupPage() {
   // a date (missing/zero/overflow attendance), in which case the existing
   // calculated/recorded value remains displayed.
   const s1OverrideFor = (c: SearchCandidate): { date: string; formula: string; monthLabel?: string } | null => {
-    if (searchTargetPeriod === 'auto' || !c.s1_months) return null;
-    const [y, m] = searchTargetPeriod.split('-');
-    if (!y || !m) return null;
-    const sel = { year: parseInt(y, 10), month: parseInt(m, 10) };
-    if (isNaN(sel.year) || isNaN(sel.month)) return null;
+    const sel = s1EmpMonths[c.id];
+    if (!sel || !c.s1_months) return null;
     const rec = c.s1_months.find((mm) => mm.year === sel.year && mm.month === sel.month);
     if (!rec || !rec.attendance_days) return null;
     const att = parseFloat(String(rec.attendance_days).replace(/[^\d.]/g, ''));
@@ -423,6 +442,10 @@ export default function LookupPage() {
     const ms = String(sel.month).padStart(2, '0');
     return { date: `${ds}/${ms}/${sel.year}`, formula: `${dim} - ${att} + 1 = ${day} (${ds}/${ms}/${sel.year})`, monthLabel: `${sel.month}/${sel.year}` };
   };
+
+  // Effective picked employee for the top month bar: explicit pick, or the only result.
+  const effS1SelId = s1EmpSel || (candidates.length === 1 && candidates[0] ? candidates[0].id : null);
+  const effS1Ov = effS1SelId ? s1EmpMonths[effS1SelId] : undefined;
 
   const handleExportCurrentSearchResults = () => {
     if (!candidates || candidates.length === 0) {
@@ -738,15 +761,15 @@ export default function LookupPage() {
                         padding: '5px 12px',
                         borderRadius: 10,
                         fontSize: 11,
-                        fontWeight: searchTargetPeriod === 'auto' ? 800 : 600,
-                        background: searchTargetPeriod === 'auto' ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.03)',
-                        border: searchTargetPeriod === 'auto' ? '1.5px solid #818cf8' : '1px solid rgba(255,255,255,0.08)',
-                        color: searchTargetPeriod === 'auto' ? '#ffffff' : '#94a3b8',
+                        fontWeight: (effS1Ov ? false : searchTargetPeriod === 'auto') ? 800 : 600,
+                        background: (effS1Ov ? false : searchTargetPeriod === 'auto') ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.03)',
+                        border: (effS1Ov ? false : searchTargetPeriod === 'auto') ? '1.5px solid #818cf8' : '1px solid rgba(255,255,255,0.08)',
+                        color: (effS1Ov ? false : searchTargetPeriod === 'auto') ? '#ffffff' : '#94a3b8',
                         cursor: 'pointer',
                         transition: 'all 0.15s ease',
                       }}
                     >
-                      <Sparkles style={{ width: 12, height: 12, color: searchTargetPeriod === 'auto' ? '#818cf8' : 'inherit' }} />
+                      <Sparkles style={{ width: 12, height: 12, color: (effS1Ov ? false : searchTargetPeriod === 'auto') ? '#818cf8' : 'inherit' }} />
                       أول شهر ظهور مشترك (تلقائي)
                       {hasAnyJointPeriod() && (
                         <span
@@ -762,7 +785,7 @@ export default function LookupPage() {
 
                     {availablePeriods.map((p) => {
                       const val = `${p.year}-${p.month}`;
-                      const isActive = searchTargetPeriod === val;
+                      const isActive = effS1Ov ? (effS1Ov.year === p.year && effS1Ov.month === p.month) : searchTargetPeriod === val;
                       const isBoth = isPeriodBothAvailable(p.year, p.month);
                       return (
                         <button
@@ -1228,7 +1251,10 @@ export default function LookupPage() {
                           نتائج البحث الموحدة ({candidates.length} موظف)
                         </h3>
                         <p style={{ fontSize: 12, color: '#cbd5e1', margin: 0 }}>
-                          أول شهر ظهور مشترك، وأيام الحضور، والشركة، وحالة التأمين، وموقف الاستقالات • اضغط على أي سطر لفتح الملف الكامل
+                          أول شهر ظهور مشترك، وأيام الحضور، والشركة، وحالة التأمين، وموقف الاستقالات • اضغط على الكارت لفتح الملف الكامل
+                          {candidates.length > 1 && (
+                            <span style={{ color: '#818cf8' }}> • لاختيار شهر موظف معين: اضغط الدائرة على كارته ثم اضغط الشهر من الأعلى</span>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -1300,6 +1326,7 @@ export default function LookupPage() {
                         (selectedCandidate.national_id && selectedCandidate.national_id === c.national_id) ||
                         (selectedCandidate.employee_code && selectedCandidate.employee_code === c.employee_code)
                       );
+                      const isEmpPicked = s1EmpSel === c.id || (!s1EmpSel && candidates.length === 1);
 
                       return (
                         <div
@@ -1308,7 +1335,7 @@ export default function LookupPage() {
                           className="glass-card-hover"
                           style={{
                             background: isRowSelected ? 'rgba(99,102,241,0.22)' : 'rgba(255, 255, 255, 0.03)',
-                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            border: isEmpPicked ? '1.5px solid rgba(129,140,248,0.7)' : '1px solid rgba(255, 255, 255, 0.12)',
                             borderRadius: 16,
                             padding: '14px 16px',
                             display: 'flex',
@@ -1323,6 +1350,27 @@ export default function LookupPage() {
                           {/* Card Header: # + Name + Company */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setS1EmpSel(s1EmpSel === c.id ? null : c.id); }}
+                                title={isEmpPicked ? 'الموظف محدد — الشهر اللي تضغطه من الشهور بالأعلى هيتحسب له' : 'اضغط لتحديد الموظف لاختيار شهر س1 من الشهور بالأعلى'}
+                                style={{
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: '50%',
+                                  flexShrink: 0,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  padding: 0,
+                                  border: isEmpPicked ? '2px solid #818cf8' : '2px solid rgba(255,255,255,0.25)',
+                                  background: isEmpPicked ? 'rgba(129,140,248,0.35)' : 'transparent',
+                                  transition: 'all 0.15s ease',
+                                }}
+                              >
+                                {isEmpPicked && <Check style={{ width: 11, height: 11, color: '#ffffff' }} />}
+                              </button>
                               <span className="font-mono-pro" style={{ fontSize: 11, color: '#94a3b8', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 6, fontWeight: 800, flexShrink: 0 }}>
                                 #{idx + 1}
                               </span>
